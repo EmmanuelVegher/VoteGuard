@@ -1,0 +1,176 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── HELPER FUNCTIONS ────────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      let role = request.auth.token.role;
+      return isAuthenticated() &&
+        (role in ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE'] || 
+         request.auth.token.email == 'evegher@ccfng.org');
+    }
+
+    function isCoordinator() {
+      let role = request.auth.token.role;
+      return isAuthenticated() &&
+        (role in [
+          'super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE',
+          'regional_coordinator', 'state_coordinator', 'lga_coordinator', 'ward_coordinator',
+          'REGIONAL_COORDINATOR', 'STATE_COORDINATOR', 'LGA_COORDINATOR', 'WARD_COORDINATOR'
+        ]);
+    }
+
+    // ─── USERS ──────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
+      
+      match /{allSubcollections=**} {
+        allow read, write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      }
+    }
+
+    // ─── ELECTIONS ───────────────────────────────────────────────────────────
+    match /elections/{electionId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ─── RESULTS ──────────────────────────────────────────────────────────────
+    match /results/{resultId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated(); 
+      allow update: if isCoordinator() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ─── INCIDENT REPORTS ─────────────────────────────────────────────────────
+    match /incident_reports/{incidentId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin() || (isAuthenticated() && resource.data.observerId == request.auth.uid);
+    }
+    
+    match /incidents/{incidentId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    // ─── APPROVAL REQUESTS ────────────────────────────────────────────────────
+    match /approval_requests/{requestId} {
+      allow read: if isCoordinator() || isAdmin();
+      allow create: if isAuthenticated();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ─── CHECKLISTS ───────────────────────────────────────────────────────────
+    match /checklists/{checklistId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.observerId == request.auth.uid);
+    }
+
+    // ─── NOTIFICATIONS ────────────────────────────────────────────────────────
+    match /notifications/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      
+      match /items/{itemId} {
+        allow read, write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      }
+    }
+
+    // ─── ACTIVITY LOGS ────────────────────────────────────────────────────────
+    match /activity_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    // ─── SETTINGS ─────────────────────────────────────────────────────────────
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ─── GEOGRAPHICAL DATA ────────────────────────────────────────────────────
+    match /geographical_data/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /states/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /lgas/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /wards/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /polling_units/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /parties/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /stats/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+
+    // ─── CHECKLIST TEMPLATES (read-only for all authenticated users) ──────────
+    match /checklist_templates/{templateId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+      
+      match /{allSubcollections=**} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin();
+      }
+    }
+
+    // ─── OBSERVER CHECKLISTS ──────────────────────────────────────────────────
+    match /observer_checklists/{checklistId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin() || isAuthenticated();
+    }
+
+    // ─── ELECTION RESULTS ─────────────────────────────────────────────────────
+    match /election_results/{resultId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    match /election_statistics/{statId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    // ─── DENY ALL ELSE ────────────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
