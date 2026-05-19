@@ -7,6 +7,8 @@ import 'package:voteguard/features/dashboard/ui/dashboard_screen.dart';
 import 'package:voteguard/features/auth/ui/register_screen.dart';
 import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
+import 'package:voteguard/data/local/app_database.dart' as db;
+import 'package:voteguard/services/sync_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -164,6 +166,14 @@ class _LoginScreenState extends State<LoginScreen> {
                           BlocConsumer<AuthBloc, AuthState>(
                             listener: (context, state) {
                               if (state.status == AuthStatus.authenticated) {
+                                // Trigger background sync of metadata (parties, checklists, elections)
+                                try {
+                                  final syncService = SyncService(context.read<db.AppDatabase>());
+                                  syncService.syncAllData().catchError((e) => debugPrint('Background sync failed: $e'));
+                                } catch (e) {
+                                  debugPrint('Failed to start sync: $e');
+                                }
+
                                 Navigator.pushAndRemoveUntil(
                                   context,
                                   MaterialPageRoute(builder: (context) => const ElectionGalleryScreen()),
@@ -171,8 +181,34 @@ class _LoginScreenState extends State<LoginScreen> {
                                 );
                               }
                               if (state.status == AuthStatus.failure) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text(state.errorMessage ?? 'Auth Failed'), backgroundColor: Colors.red),
+                                showDialog(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    backgroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                                    title: Row(
+                                      children: [
+                                        const Icon(LucideIcons.circleAlert, color: Color(0xFF991B1B)),
+                                        const SizedBox(width: 12),
+                                        Text('Login Failed', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF0F172A), fontSize: 20)),
+                                      ],
+                                    ),
+                                    content: Text(
+                                      state.errorMessage ?? 'An unknown error occurred during authentication. Please check your credentials and try again.',
+                                      style: GoogleFonts.outfit(color: const Color(0xFF64748B), fontSize: 14),
+                                    ),
+                                    actions: [
+                                      ElevatedButton(
+                                        onPressed: () => Navigator.pop(ctx),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(0xFF991B1B),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                        ),
+                                        child: Text('OK', style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.bold)),
+                                      ),
+                                    ],
+                                  ),
                                 );
                               }
                             },

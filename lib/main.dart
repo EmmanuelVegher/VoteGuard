@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
 import 'package:voteguard/firebase_options.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
 import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
 import 'package:voteguard/features/auth/ui/login_screen.dart';
 import 'package:voteguard/features/dashboard/ui/dashboard_screen.dart';
 import 'package:voteguard/features/observer/ui/observer_dashboard_screen.dart';
+import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
+import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/ai_service.dart';
 import 'package:voteguard/data/local/app_database.dart';
+import 'package:voteguard/services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,23 +23,57 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Initialize push notification system
+  await NotificationService().init();
+
+  final aiService = AIService();
+  
+  // Dynamic API Key Sync from Firestore
+  FirebaseFirestore.instance
+      .collection('settings')
+      .doc('system_settings')
+      .snapshots()
+      .listen((doc) {
+    if (doc.exists) {
+      try {
+        final valueStr = doc.data()?['value'] as String?;
+        if (valueStr != null) {
+          final valueJson = jsonDecode(valueStr);
+          
+          // 1. Sync API Key
+          final key = valueJson['ai']?['gemini_api_key'] ?? valueJson['gemini_api_key'];
+          if (key != null && key.toString().isNotEmpty) {
+            aiService.setApiKey(key.toString());
+          }
+
+          // 2. Sync Selected OCR Model
+          final modelId = valueJson['ai']?['ocrModel'];
+          if (modelId != null && modelId.toString().isNotEmpty) {
+            aiService.setPrimaryModel(modelId.toString());
+            debugPrint('AI Service: Config Updated (Model: $modelId)');
+          }
+        }
+      } catch (e) {
+        debugPrint('AI Service: Error parsing dynamic config: $e');
+      }
+    }
+  });
   
   runApp(
     MultiRepositoryProvider(
       providers: [
         RepositoryProvider(create: (context) => AuthService()),
         RepositoryProvider(create: (context) => AppDatabase()),
-        RepositoryProvider(
-          create: (context) => AIService(
-            apiKey: 'AIzaSyB2SXvs5KgrAYG1ng2SyRmALwZeL0I20cY',
-          ),
-        ),
       ],
-      child: BlocProvider(
-        create: (context) => AuthBloc(
-          authService: context.read<AuthService>(),
+      child: ChangeNotifierProvider.value(
+        value: aiService,
+        child: BlocProvider(
+          create: (context) => AuthBloc(
+            authService: context.read<AuthService>(),
+          ),
+          child: const VoteGuardApp(),
         ),
-        child: const VoteGuardApp(),
       ),
     ),
   );
@@ -49,6 +89,9 @@ class VoteGuardApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       onGenerateRoute: (settings) {
+        if (settings.name == '/login') {
+          return MaterialPageRoute(builder: (context) => const LoginScreen());
+        }
         if (settings.name == '/observer/dashboard') {
           final electionId = settings.arguments as String;
           return MaterialPageRoute(
@@ -60,8 +103,12 @@ class VoteGuardApp extends StatelessWidget {
       home: BlocBuilder<AuthBloc, AuthState>(
         builder: (context, state) {
           if (state.status == AuthStatus.authenticated) {
-            return const DashboardScreen();
-          } else if (state.status == AuthStatus.authenticating) {
+            final role = state.role?.toUpperCase();
+            if (role == 'SUPER_ADMIN' || role == 'ADMIN') {
+              return const SituationRoomScreen();
+            }
+            return const ElectionGalleryScreen();
+          } else if (state.status == AuthStatus.authenticating || state.status == AuthStatus.unknown) {
             return const Scaffold(
               body: Center(child: CircularProgressIndicator(color: AppColors.accent)),
             );

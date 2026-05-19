@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -9,6 +11,10 @@ import 'package:voteguard/models/election_model.dart';
 import 'package:voteguard/services/time_service.dart';
 import 'package:voteguard/services/export_service.dart';
 import 'package:voteguard/services/geo_service.dart';
+import 'package:voteguard/services/auth_service.dart';
+import 'package:voteguard/services/sync_service.dart';
+import 'package:voteguard/data/local/app_database.dart' as db;
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 class ElectionGalleryScreen extends StatefulWidget {
   const ElectionGalleryScreen({super.key});
@@ -32,6 +38,10 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
   StreamSubscription<QuerySnapshot>? _electionsSubscription;
   bool _isFirstSnapshot = true;
 
+  // Connectivity State
+  bool _isOnline = true;
+  Timer? _connectivityTimer;
+
   // Assignment Edit State
   bool _isEditingAssignment = false;
   String? _selectedState;
@@ -53,6 +63,8 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
         setState(() => _activeTabIndex = _tabController.index);
       }
     });
+    _checkConnectivity();
+    _startConnectivityTimer();
     _updateTime();
     _loadStates();
     _fetchElections();
@@ -61,9 +73,30 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
 
   @override
   void dispose() {
+    _connectivityTimer?.cancel();
     _electionsSubscription?.cancel();
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _startConnectivityTimer() {
+    _connectivityTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      _checkConnectivity();
+    });
+  }
+
+  Future<void> _checkConnectivity() async {
+    try {
+      final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 2));
+      final isNowOnline = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (mounted && _isOnline != isNowOnline) {
+        setState(() => _isOnline = isNowOnline);
+      }
+    } catch (_) {
+      if (mounted && _isOnline) {
+        setState(() => _isOnline = false);
+      }
+    }
   }
 
   Future<void> _loadStates() async {
@@ -89,17 +122,43 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
       _hasUpdates = false;
     });
     try {
+      await _updateTime(); // Ensure we have the latest time for filtering
       final snapshot = await FirebaseFirestore.instance.collection('elections').get();
+      final fetched = snapshot.docs.map((d) => Election.fromFirestore(d.data(), d.id)).toList();
+      
+      // Background Sync to Local DB
+      final syncService = SyncService(context.read<db.AppDatabase>());
+      syncService.syncAllData(); // Trigger full sync (parties + elections)
+
       if (mounted) {
         setState(() {
-          _elections = snapshot.docs.map((d) => Election.fromFirestore(d.data(), d.id)).toList();
+          _elections = fetched;
           _isLoadingElections = false;
         });
       }
     } catch (e) {
-      debugPrint("ElectionGallery: Error fetching elections: $e");
+      debugPrint("ElectionGallery: Network fetch failed, falling back to local storage: $e");
+      final localElections = await context.read<db.AppDatabase>().getAllLocalElections();
+      
       if (mounted) {
         setState(() {
+          _elections = localElections.map<Election>((le) {
+            Map<String, dynamic> metadata = {};
+            if (le.metadataJson != null) {
+              try { metadata = jsonDecode(le.metadataJson!); } catch (_) {}
+            }
+            return Election(
+              id: le.id,
+              name: le.name,
+              type: le.type,
+              startDate: le.startDate,
+              endDate: le.endDate,
+              status: le.status,
+              states: (metadata['state'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+              lgas: (metadata['lga'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+              wards: (metadata['ward'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+            );
+          }).toList();
           _isLoadingElections = false;
         });
       }
@@ -143,6 +202,44 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
               physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
               slivers: [
                 _buildAppBar(userProfile),
+                // Dynamic Connectivity Status Banner
+                SliverToBoxAdapter(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    width: double.infinity,
+                    margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: _isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: _isOnline ? const Color(0xFFD1FAE5) : const Color(0xFFFEE2E2),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isOnline ? LucideIcons.wifi : LucideIcons.wifiOff,
+                          color: _isOnline ? const Color(0xFF059669) : const Color(0xFFEF4444),
+                          size: 16,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _isOnline ? 'NETWORK STABLE' : 'OFFLINE MODE (LOCAL DATABASE READY)',
+                            style: GoogleFonts.outfit(
+                              color: _isOnline ? const Color(0xFF047857) : const Color(0xFF991B1B),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
                 SliverToBoxAdapter(
                   child: AnimatedSize(
                     duration: const Duration(milliseconds: 300),
@@ -211,10 +308,41 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
       backgroundColor: Colors.white,
       elevation: 0,
       pinned: true,
-      title: Text('ELECTION GALLERY', style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w900, color: const Color(0xFF1E293B))),
+      leading: IconButton(
+        icon: const Icon(LucideIcons.logOut, color: Color(0xFF1E293B)),
+        onPressed: () => _showLogoutConfirmation(),
+      ),
+      title: Text(
+        'ELECTION GALLERY',
+        style: GoogleFonts.outfit(
+          fontSize: 14,
+          fontWeight: FontWeight.w900,
+          color: const Color(0xFF1E293B),
+          letterSpacing: 0.5,
+        ),
+      ),
       actions: [
-        IconButton(icon: const Icon(LucideIcons.refreshCw, size: 20, color: Color(0xFF1E293B)), onPressed: _fetchElections),
-        IconButton(icon: const Icon(LucideIcons.bell, size: 20, color: Color(0xFF1E293B)), onPressed: () {}),
+        Stack(
+          alignment: Alignment.center,
+          children: [
+            IconButton(
+              icon: const Icon(LucideIcons.bell, size: 22, color: Color(0xFF1E293B)),
+              onPressed: () {},
+            ),
+            Positioned(
+              top: 12,
+              right: 12,
+              child: Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFEF4444),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ],
+        ),
         Padding(
           padding: const EdgeInsets.only(right: 16.0, left: 8),
           child: CircleAvatar(
@@ -225,6 +353,38 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
           ),
         ),
       ],
+    );
+  }
+
+  void _showLogoutConfirmation() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text('Logout Confirmation', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+        content: Text('Are you sure you want to log out of VoteGuard?', style: GoogleFonts.outfit(color: const Color(0xFF64748B))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(color: const Color(0xFF64748B), fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await AuthService().signOut();
+              if (mounted) {
+                Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: Text('LOGOUT', style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -439,133 +599,446 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
 
   Widget _buildElectionsList(Map<String, dynamic>? profile) {
     if (_isLoadingElections) return const SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: Color(0xFF065F46))));
-    final filtered = _getFilteredElections(_elections, _activeTabIndex);
+    final filtered = _getFilteredElections(_elections, _activeTabIndex, profile);
     if (filtered.isEmpty) return SliverFillRemaining(child: Center(child: SingleChildScrollView(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(LucideIcons.calendar, size: 48, color: Colors.grey[300]), const SizedBox(height: 16), Text('No elections found.', style: TextStyle(color: Colors.grey[500]))]))));
-    return SliverPadding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24), sliver: SliverList(delegate: SliverChildBuilderDelegate((context, index) => _buildGalleryCard(filtered[index], profile), childCount: filtered.length)));
+    return SliverPadding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24), sliver: SliverList(delegate: SliverChildBuilderDelegate((context, index) => _buildGalleryCard(filtered[index], profile, isCompleted: _activeTabIndex == 2), childCount: filtered.length)));
   }
 
-  List<Election> _getFilteredElections(List<Election> all, int tabIndex) {
-    final today = DateTime(_currentWAT.year, _currentWAT.month, _currentWAT.day);
-    if (tabIndex == 0) return all.where((e) => e.startDate != null && DateTime(e.startDate!.year, e.startDate!.month, e.startDate!.day).isAtSameMomentAs(today)).toList();
-    if (tabIndex == 1) return all.where((e) => e.startDate != null && DateTime(e.startDate!.year, e.startDate!.month, e.startDate!.day).isAfter(today)).toList();
-    return all.where((e) => e.startDate != null && today.difference(DateTime(e.startDate!.year, e.startDate!.month, e.startDate!.day)).inDays > 0).toList();
+  List<Election> _getFilteredElections(List<Election> all, int tabIndex, Map<String, dynamic>? profile) {
+    final now = _currentWAT;
+    final observerState = profile?['assignedState']?.toString();
+    final observerLga = profile?['assignedLga']?.toString();
+    final observerWard = profile?['assignedWard']?.toString();
+    
+    return all.where((e) {
+      if (e.startDate == null) return false;
+
+      // GEOGRAPHIC VISIBILITY FILTERING
+      bool isVisible = false;
+      final type = e.type.toUpperCase().replaceAll('_', ' ');
+      
+      // Helper function to check if a value is contained in targeting arrays case-insensitively
+      bool matchGeographic(List<String> targets, String? value) {
+        if (value == null || value.trim().isEmpty) return false;
+        final normalizedValue = value.trim().toUpperCase();
+        return targets.any((t) {
+          final normalizedTarget = t.trim().toUpperCase();
+          // Match if target equals value, or if it includes it (e.g. "ABAJI (FCT)" contains "ABAJI")
+          return normalizedTarget == normalizedValue || normalizedTarget.contains(normalizedValue);
+        });
+      }
+
+      if (type.contains('PRESIDENTIAL') || type.contains('GENERAL')) {
+        isVisible = true; // Nationwide visibility
+      } else if (type.contains('GOVERNORSHIP') || type.contains('GUBERNATORIAL') || type.contains('GOVERNOR')) {
+        // Filter by state
+        isVisible = matchGeographic(e.states, observerState);
+      } else if (type.contains('SENATORIAL') || type.contains('SENATE') || 
+                 type.contains('REPRESENTATIVE') || type.contains('REPS') || 
+                 type.contains('LOCAL GOVERNMENT') || type.contains('LGA')) {
+        // Filter by LGA
+        isVisible = matchGeographic(e.lgas, observerLga);
+      } else if (type.contains('STATE ASSEMBLY') || type.contains('HOUSE OF ASSEMBLY') || type.contains('STATE HOUSE')) {
+        // Filter by Ward
+        isVisible = matchGeographic(e.lgas, observerLga) && matchGeographic(e.wards, observerWard);
+      } else {
+        // Unknown types fallback: if targeting is configured, apply defensive matching.
+        if (e.states.isNotEmpty) {
+          isVisible = matchGeographic(e.states, observerState);
+        } else if (e.lgas.isNotEmpty) {
+          isVisible = matchGeographic(e.lgas, observerLga);
+        } else {
+          isVisible = true;
+        }
+      }
+
+      if (!isVisible) return false;
+
+      final start = e.startDate!;
+      final end = e.endDate ?? start;
+      
+      // If time is not specified (midnight), treat end date as inclusive of that entire day
+      final effectiveEnd = (end.hour == 0 && end.minute == 0) 
+          ? end.add(const Duration(days: 1)) 
+          : end;
+
+      if (tabIndex == 0) {
+        // ACTIVE: current time is within the [startDate, effectiveEnd) window
+        return !now.isBefore(start) && now.isBefore(effectiveEnd);
+      }
+      
+      if (tabIndex == 1) {
+        // UPCOMING: startDate is in the future
+        return now.isBefore(start);
+      }
+
+      // COMPLETED: effectiveEnd has passed. 
+      // Elections stay in this tab forever for historical access/downloads.
+      return !now.isBefore(effectiveEnd);
+    }).toList();
   }
 
-  Widget _buildGalleryCard(Election election, Map<String, dynamic>? profile) {
-    final statusLabel = _activeTabIndex == 0 ? 'ACTIVE' : (_activeTabIndex == 1 ? 'UPCOMING' : 'COMPLETED');
-    final statusColor = _activeTabIndex == 0 ? const Color(0xFF10B981) : (_activeTabIndex == 1 ? const Color(0xFF0EA5E9) : const Color(0xFF64748B));
+  String formatElectionDate(DateTime? dt) {
+    if (dt == null) return 'TBA';
+    final datePart = DateFormat('MMM d, yyyy').format(dt);
+    final timePart = DateFormat('h:mm a').format(dt);
+    return '$datePart • $timePart';
+  }
+
+  Widget _buildGalleryCard(Election election, Map<String, dynamic>? profile, {bool isCompleted = false}) {
+    final statusLabel = _activeTabIndex == 0 ? 'ACTIVE ELECTION' : (_activeTabIndex == 1 ? 'UPCOMING ELECTION' : 'COMPLETED ELECTION');
+    final statusBgColor = _activeTabIndex == 0 
+        ? const Color(0xFFECFDF5) 
+        : (_activeTabIndex == 1 ? const Color(0xFFF0F9FF) : const Color(0xFFF8FAFC));
+    final statusTextColor = _activeTabIndex == 0 
+        ? const Color(0xFF047857) 
+        : (_activeTabIndex == 1 ? const Color(0xFF0284C7) : const Color(0xFF64748B));
+
+    final String startDateText = formatElectionDate(election.startDate);
+    final String endDateText = formatElectionDate(election.endDate ?? election.startDate);
 
     return _buildElectionStatsWrapper(election, profile, (stats) {
       return Container(
         margin: const EdgeInsets.only(bottom: 24),
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(40),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 20, offset: const Offset(0, 10))],
-          border: Border.all(color: const Color(0xFFF1F5F9)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 24,
+              offset: const Offset(0, 8),
+            )
+          ],
+          border: Border.all(color: const Color(0xFFF1F5F9), width: 1.5),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Left Icon
+            // Centered Top Icon
             Container(
-              width: 80, height: 80,
-              decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(24)),
-              child: const Icon(LucideIcons.archive, size: 36, color: Color(0xFF1E293B)),
-            ),
-            const SizedBox(width: 20),
-
-            // All Content
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Top badges
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      _buildChipBadge('ID: ${election.id.substring(0, 1).toUpperCase()}', const Color(0xFFF1F5F9), const Color(0xFF64748B)),
-                      _buildChipBadge(statusLabel, statusColor.withOpacity(0.1), statusColor),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-
-                  // Election name
-                  Text(election.name, style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.w900, color: const Color(0xFF0F172A), letterSpacing: -0.3)),
-                  const SizedBox(height: 8),
-
-                  // Location & Date
-                  Row(
-                    children: [
-                      Expanded(child: _buildInlineInfo(LucideIcons.mapPin, profile?['assignedState']?.toString() ?? 'NATIONAL')),
-                      const SizedBox(width: 8),
-                      Expanded(child: _buildInlineInfo(LucideIcons.calendar, election.startDate != null ? DateFormat('MMM d, yyyy').format(election.startDate!) : 'TBA')),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Action buttons — below the election name
-                  Row(
-                    children: [
-                      // Download button
-                      GestureDetector(
-                        onTap: () => _showReportArchive(election, stats, profile),
-                        child: Container(
-                          width: 44, height: 44,
-                          decoration: BoxDecoration(color: const Color(0xFFF8FAFC), shape: BoxShape.circle, border: Border.all(color: const Color(0xFFE2E8F0))),
-                          child: const Icon(LucideIcons.download, size: 18, color: Color(0xFF64748B)),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-
-                      // Complete Reporting button
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () => Navigator.pushNamed(context, '/observer/dashboard', arguments: election.id),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00A651),
-                            elevation: 0,
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  'COMPLETE REPORTING',
-                                  style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.w900, color: Colors.white),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              const Icon(LucideIcons.externalLink, size: 12, color: Colors.white),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Status chips
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      _buildStatusChip('CHECKLIST', stats['checklist']),
-                      _buildStatusChip('INCIDENT REPORT', stats['incidents'] > 0),
-                      _buildStatusChip('RESULTS', stats['result']),
-                    ],
-                  ),
-                ],
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(24),
               ),
+              child: const Icon(
+                LucideIcons.briefcase, 
+                size: 36, 
+                color: Color(0xFF475569),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Status Badge
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: statusBgColor,
+                borderRadius: BorderRadius.circular(100),
+              ),
+              child: Text(
+                statusLabel,
+                style: GoogleFonts.outfit(
+                  color: statusTextColor,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Election Title
+            Text(
+              election.name,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.outfit(
+                fontSize: 22,
+                fontWeight: FontWeight.w900,
+                color: const Color(0xFF0F172A),
+                letterSpacing: -0.5,
+                height: 1.2,
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Location Row
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const Icon(
+                  LucideIcons.mapPin,
+                  size: 14,
+                  color: Color(0xFF64748B),
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    (profile?['assignedPollingUnit']?.toString() ?? 'ARAE FI/ (V.I.O) F.C.D.A. OFFICE').toUpperCase(),
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.outfit(
+                      color: const Color(0xFF64748B),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 28),
+
+            // Start Datetime Item
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE6FDF4),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(
+                    LucideIcons.calendar,
+                    color: Color(0xFF10B981),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'START DATETIME',
+                      style: GoogleFonts.outfit(
+                        color: const Color(0xFF94A3B8),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      startDateText,
+                      style: GoogleFonts.outfit(
+                        color: const Color(0xFF1E293B),
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // End Datetime Item
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(
+                    LucideIcons.clock,
+                    color: Color(0xFFEF4444),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'END DATETIME',
+                      style: GoogleFonts.outfit(
+                        color: const Color(0xFF94A3B8),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      endDateText,
+                      style: GoogleFonts.outfit(
+                        color: const Color(0xFF1E293B),
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 28),
+
+            // Action Button Row
+            Row(
+              children: [
+                // Download button (Only visible on Completed tab card)
+                if (_activeTabIndex == 2) ...[
+                  GestureDetector(
+                    onTap: () => _showReportArchive(election, stats, profile),
+                    child: Container(
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: const Icon(LucideIcons.download, size: 20, color: Color(0xFF64748B)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+
+                Expanded(
+                  child: _buildActionButton(election, stats, profile),
+                ),
+              ],
             ),
           ],
         ),
       );
     });
+  }
+
+  Widget _buildActionButton(Election election, Map<String, dynamic> stats, Map<String, dynamic>? profile) {
+    if (_activeTabIndex == 1) {
+      // Upcoming tab: locked to prevent accessing forms
+      return SizedBox(
+        height: 52,
+        child: ElevatedButton(
+          onPressed: () {
+            showDialog(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                backgroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                title: Row(
+                  children: [
+                    const Icon(LucideIcons.lock, color: Color(0xFF94A3B8)),
+                    const SizedBox(width: 12),
+                    Text('Election Upcoming', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF0F172A), fontSize: 18)),
+                  ],
+                ),
+                content: Text(
+                  'This election has not started yet. You will be able to access the monitoring forms and report details starting on ${formatElectionDate(election.startDate)}.',
+                  style: GoogleFonts.outfit(color: const Color(0xFF64748B), fontSize: 14),
+                ),
+                actions: [
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF064E3B),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: Text('OK', style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+            );
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF94A3B8).withOpacity(0.2),
+            elevation: 0,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'LOCKED UNTIL START',
+                style: GoogleFonts.outfit(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFF94A3B8),
+                  letterSpacing: 1,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(LucideIcons.lock, size: 16, color: Color(0xFF94A3B8)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_activeTabIndex == 2) {
+      // Completed tab: check grace period
+      final ref = election.endDate ?? election.startDate;
+      final withinGrace = ref == null || _currentWAT.difference(ref).inHours < 48;
+
+      if (!withinGrace) {
+        // Locked
+        return Container(
+          height: 52,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(LucideIcons.lock, size: 16, color: Color(0xFF94A3B8)),
+              const SizedBox(width: 8),
+              Text(
+                'REPORTING CLOSED',
+                style: GoogleFonts.outfit(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFF94A3B8),
+                  letterSpacing: 1,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    // Active tab or within grace Completed tab
+    return SizedBox(
+      height: 52,
+      child: ElevatedButton(
+        onPressed: () => Navigator.pushNamed(
+          context, 
+          '/observer/dashboard',
+          arguments: election.id,
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF064E3B),
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              'VIEW DETAILS',
+              style: GoogleFonts.outfit(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                letterSpacing: 1,
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(LucideIcons.arrowRight, size: 16, color: Colors.white),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildChipBadge(String label, Color bg, Color text) => Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10)), child: Text(label, style: GoogleFonts.outfit(color: text, fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1)));
@@ -576,16 +1049,38 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
 
   Widget _buildElectionStatsWrapper(Election election, Map<String, dynamic>? profile, Widget Function(Map<String, dynamic>) builder) {
     final user = FirebaseAuth.instance.currentUser;
-    return StreamBuilder<List<int>>(
+    final state = profile?['assignedState'] ?? '';
+    final lga = profile?['assignedLga'] ?? '';
+    final ward = profile?['assignedWard'] ?? '';
+    final pu = profile?['assignedPollingUnit'] ?? '';
+    
+    if (state.isEmpty || lga.isEmpty || ward.isEmpty || pu.isEmpty) {
+      return builder({'checklist': false, 'incidents': 0, 'result': false});
+    }
+
+    final puKey = '${state}_${lga}_${ward}_$pu'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+    final docId = '${election.id}_$puKey';
+
+    return StreamBuilder<List<dynamic>>(
       stream: Rx.combineLatest3(
         FirebaseFirestore.instance.collection('observer_checklists').where('electionId', isEqualTo: election.id).where('observerId', isEqualTo: user?.uid).snapshots(),
         FirebaseFirestore.instance.collection('incident_reports').where('electionId', isEqualTo: election.id).where('observerId', isEqualTo: user?.uid).snapshots(),
-        FirebaseFirestore.instance.collection('election_results').where('electionId', isEqualTo: election.id).where('submittedBy', isEqualTo: user?.uid).where('status', isEqualTo: 'final').snapshots(),
-        (check, inc, res) => [check.docs.length, inc.docs.length, res.docs.length]
+        FirebaseFirestore.instance.collection('election_results').doc(docId).snapshots(),
+        (check, inc, resSnap) {
+          bool hasSubmittedResult = false;
+          if (resSnap.exists && resSnap.data() != null) {
+            final data = resSnap.data()!;
+            final submissionsList = data['submissions'] as List<dynamic>? ?? [];
+            hasSubmittedResult = submissionsList.any(
+              (s) => s['submittedBy'] == user?.uid && s['status'] == 'final'
+            );
+          }
+          return [check.docs.length, inc.docs.length, hasSubmittedResult];
+        }
       ),
       builder: (context, snapshot) {
-        final data = snapshot.data ?? [0, 0, 0];
-        return builder({'checklist': data[0] > 0, 'incidents': data[1], 'result': data[2] > 0});
+        final data = snapshot.data ?? [0, 0, false];
+        return builder({'checklist': data[0] > 0, 'incidents': data[1], 'result': data[2]});
       }
     );
   }
@@ -628,13 +1123,26 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
                   }
                 }
               } else if (type == 'result_pdf' || type == 'result_excel') {
+                final state = profile?['assignedState'] ?? '';
+                final lga = profile?['assignedLga'] ?? '';
+                final ward = profile?['assignedWard'] ?? '';
+                final pu = profile?['assignedPollingUnit'] ?? '';
+                final puKey = '${state}_${lga}_${ward}_$pu'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+                final docId = '${election.id}_$puKey';
+
                 final snap = await FirebaseFirestore.instance
                     .collection('election_results')
-                    .where('electionId', isEqualTo: election.id)
-                    .where('submittedBy', isEqualTo: user?.uid)
-                    .limit(1).get();
-                if (snap.docs.isNotEmpty) {
-                  await ExportService().exportResultReport(election, snap.docs.first.data());
+                    .doc(docId).get();
+                if (snap.exists && snap.data() != null) {
+                  final data = snap.data()!;
+                  final submissionsList = data['submissions'] as List<dynamic>? ?? [];
+                  final sub = submissionsList.firstWhere(
+                    (s) => s['submittedBy'] == user?.uid,
+                    orElse: () => null,
+                  );
+                  if (sub != null) {
+                    await ExportService().exportResultReport(election, Map<String, dynamic>.from(sub));
+                  }
                 }
               }
             } catch (e) {

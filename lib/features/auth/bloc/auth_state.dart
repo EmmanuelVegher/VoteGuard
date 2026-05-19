@@ -7,9 +7,12 @@ class AuthState extends Equatable {
   final User? user;
   final String? errorMessage;
 
+  final String? role;
+
   const AuthState._({
     this.status = AuthStatus.unknown,
     this.user,
+    this.role,
     this.errorMessage,
   });
 
@@ -17,8 +20,8 @@ class AuthState extends Equatable {
 
   const AuthState.authenticating() : this._(status: AuthStatus.authenticating);
 
-  const AuthState.authenticated(User user)
-      : this._(status: AuthStatus.authenticated, user: user);
+  const AuthState.authenticated(User user, {String? role})
+      : this._(status: AuthStatus.authenticated, user: user, role: role);
 
   const AuthState.unauthenticated() : this._(status: AuthStatus.unauthenticated);
 
@@ -26,5 +29,5 @@ class AuthState extends Equatable {
       : this._(status: AuthStatus.failure, errorMessage: message);
 
   @override
-  List<Object?> get props => [status, user, errorMessage];
+  List<Object?> get props => [status, user, role, errorMessage];
 }

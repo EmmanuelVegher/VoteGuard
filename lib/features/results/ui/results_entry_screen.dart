@@ -45,24 +45,27 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
 
       // Process with AI
       final aiService = context.read<AIService>();
-      final results = await aiService.processEC8A(_ec8aImage!);
+      // Use the keys from _partyVotes as the abbreviations
+      final abbs = _partyVotes.keys.toList();
+      final result = await aiService.processEC8A(_ec8aImage!, abbs);
 
-      if (results != null) {
+      if (result.data != null) {
         setState(() {
+          final data = result.data!;
           // Fill party votes
-          results.forEach((key, value) {
+          data.forEach((key, value) {
             if (_partyVotes.containsKey(key)) {
               _partyVotes[key]!.text = value.toString();
             }
           });
 
           // Fill stats (mapping flexible JSON keys to controllers)
-          _votersInRegister.text = (results['voters_in_register'] ?? results['Voters in Register'] ?? '').toString();
-          _accreditedVoters.text = (results['accredited_voters'] ?? results['Accredited Voters'] ?? '').toString();
-          _ballotsIssued.text = (results['ballots_issued'] ?? results['Ballots Issued'] ?? '').toString();
-          _unusedBallots.text = (results['unused_ballots'] ?? results['Unused Ballots'] ?? '').toString();
-          _spoiledBallots.text = (results['spoiled_ballots'] ?? results['Spoiled Ballots'] ?? '').toString();
-          _rejectedBallots.text = (results['rejected_ballots'] ?? results['Rejected Ballots'] ?? '').toString();
+          _votersInRegister.text = (data['votersInRegister'] ?? data['voters_in_register'] ?? data['Voters in Register'] ?? '').toString();
+          _accreditedVoters.text = (data['accreditedVoters'] ?? data['accredited_voters'] ?? data['Accredited Voters'] ?? '').toString();
+          _ballotsIssued.text = (data['ballotsIssued'] ?? data['ballots_issued'] ?? data['Ballots Issued'] ?? '').toString();
+          _unusedBallots.text = (data['unusedBallots'] ?? data['unused_ballots'] ?? data['Unused Ballots'] ?? '').toString();
+          _spoiledBallots.text = (data['spoiledBallots'] ?? data['spoiled_ballots'] ?? data['Spoiled Ballots'] ?? '').toString();
+          _rejectedBallots.text = (data['rejectedBallots'] ?? data['rejected_ballots'] ?? data['Rejected Ballots'] ?? '').toString();
         });
       }
 

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -19,6 +21,19 @@ import 'package:file_picker/file_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:voteguard/services/auth_service.dart';
+import 'package:voteguard/data/local/app_database.dart' as db;
+import 'package:drift/drift.dart' as drift;
+Future<String> _getPublicIP() async {
+  try {
+    final response = await http.get(Uri.parse('https://api.ipify.org')).timeout(const Duration(seconds: 3));
+    if (response.statusCode == 200) {
+      return response.body.trim();
+    }
+  } catch (_) {}
+  return '192.168.1.1'; // fallback local IP
+}
 
 class ObserverDashboardScreen extends StatefulWidget {
   final String electionId;
@@ -34,12 +49,296 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   Election? _election;
   bool _loading = true;
+  final Map<int, bool> _syncingMap = {};
+  bool _isOffline = false;
+  Timer? _networkCheckTimer;
+  late BehaviorSubject<List<dynamic>> _unsyncedSubject;
+
+  String _sanitizeId(String text) {
+    return text.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '_');
+  }
+
+  Future<void> _deleteOfflineResult(int localId) async {
+    showDialog(
+      context: context,
+      builder: (confirmCtx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete Offline Draft', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.black)),
+        content: Text('Are you sure you want to permanently delete this offline draft results sheet?', style: GoogleFonts.outfit(color: Colors.black)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(confirmCtx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(confirmCtx);
+              await context.read<db.AppDatabase>().deleteResult(localId);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Offline draft deleted'), backgroundColor: Colors.red),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            child: Text('DELETE', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _syncOfflineResult(db.Result result, [StateSetter? modalState]) async {
+    if (modalState != null) {
+      modalState(() => _syncingMap[result.id] = true);
+    } else {
+      if (mounted) setState(() => _syncingMap[result.id] = true);
+    }
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      String? evidenceUrl;
+
+      // Parse JSON details
+      final stats = jsonDecode(result.ballotStatsJson) as Map<String, dynamic>;
+      final electionId = stats['electionId']?.toString() ?? widget.electionId;
+      final state = stats['state']?.toString() ?? '';
+      final lga = stats['lga']?.toString() ?? '';
+      final ward = stats['ward']?.toString() ?? '';
+      final pu = stats['pollingUnit']?.toString() ?? '';
+      final isFinal = stats['isFinal'] == true;
+      final partyVotes = Map<String, int>.from(
+        jsonDecode(result.partyVotesJson).map((k, v) => MapEntry(k, int.tryParse(v.toString()) ?? 0))
+      );
+
+      // Upload local image if exists
+      if (result.imagePath != null && result.imagePath!.isNotEmpty) {
+        final file = File(result.imagePath!);
+        if (await file.exists()) {
+          final ref = FirebaseStorage.instance.ref().child('results/$electionId/${user?.uid}.jpg');
+          await ref.putFile(file).timeout(const Duration(seconds: 15));
+          evidenceUrl = await ref.getDownloadURL();
+        }
+      }
+
+      final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+      final docRef = FirebaseFirestore.instance.collection('election_results').doc('${electionId}_$puKey');
+      final docSnap = await docRef.get().timeout(const Duration(seconds: 10));
+
+      List<dynamic> submissionsList = [];
+      if (docSnap.exists && docSnap.data() != null) {
+        final data = docSnap.data() as Map<String, dynamic>;
+        submissionsList = List.from(data['submissions'] ?? []);
+      }
+
+      // Load user profile name
+      final userSnap = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
+      final userProfile = userSnap.data();
+
+      final newReport = {
+        'submittedBy': user?.uid,
+        'submittedByName': userProfile?['fullName'] ?? userProfile?['name'] ?? 'Observer',
+        'submittedAt': Timestamp.now(),
+        'state': state,
+        'lga': lga,
+        'ward': ward,
+        'pollingUnit': pu,
+        'partyVotes': partyVotes,
+        'evidenceUrl': evidenceUrl ?? '',
+        'status': isFinal ? 'final' : 'draft',
+        ...stats..remove('electionId')..remove('state')..remove('lga')..remove('ward')..remove('pollingUnit')..remove('isFinal'),
+      };
+
+      final index = submissionsList.indexWhere((sub) => sub['submittedBy'] == user?.uid);
+      if (index != -1) {
+        submissionsList[index] = newReport;
+      } else {
+        submissionsList.add(newReport);
+      }
+
+      final isNewDoc = !docSnap.exists;
+      final Map<String, dynamic> docPayload = {
+        'electionId': electionId,
+        'state': state,
+        'lga': lga,
+        'ward': ward,
+        'pollingUnit': pu,
+        'partyVotes': partyVotes,
+        if (evidenceUrl != null) 'evidenceUrl': evidenceUrl,
+        'submittedBy': user?.uid,
+        'submittedByName': userProfile?['fullName'] ?? userProfile?['name'] ?? 'Observer',
+        'updatedAt': FieldValue.serverTimestamp(),
+        if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
+        ...stats..remove('electionId')..remove('state')..remove('lga')..remove('ward')..remove('pollingUnit')..remove('isFinal'),
+        'submissions': submissionsList,
+      };
+
+      await docRef.set(docPayload, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+
+      // Mark as synced locally
+      await context.read<db.AppDatabase>().markResultSynced(result.id);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Offline Form for $pu Synced Successfully!'),
+            backgroundColor: const Color(0xFF10B981),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync Failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (modalState != null) {
+        modalState(() => _syncingMap[result.id] = false);
+      } else {
+        if (mounted) setState(() => _syncingMap.remove(result.id));
+      }
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     _loadElection();
+    _startNetworkTimer();
+
+    _unsyncedSubject = BehaviorSubject<List<dynamic>>();
+
+    final resultsStream = context.read<db.AppDatabase>().watchUnsyncedResults();
+    final checklistsStream = context.read<db.AppDatabase>().watchUnsyncedChecklists();
+    final incidentsStream = context.read<db.AppDatabase>().watchUnsyncedIncidents();
+    
+    Rx.combineLatest3(
+      resultsStream,
+      checklistsStream,
+      incidentsStream,
+      (List<db.Result> r, List<db.Checklist> c, List<db.Incident> i) {
+        final filteredResults = r.where((item) {
+          try {
+            final stats = jsonDecode(item.ballotStatsJson) as Map<String, dynamic>;
+            return stats['electionId'] == widget.electionId;
+          } catch (e) {
+            return false;
+          }
+        }).toList();
+
+        final filteredChecklists = c.where((item) {
+          return item.title.endsWith(widget.electionId);
+        }).toList();
+
+        final filteredIncidents = i.where((item) {
+          return item.severity == 'reported_${widget.electionId}';
+        }).toList();
+
+        return [...filteredResults, ...filteredChecklists, ...filteredIncidents];
+      },
+    ).listen((event) {
+      if (!_unsyncedSubject.isClosed) {
+        _unsyncedSubject.add(event);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _networkCheckTimer?.cancel();
+    _tabController.dispose();
+    _unsyncedSubject.close();
+    super.dispose();
+  }
+
+  void _startNetworkTimer() {
+    // Initial check
+    _checkNetwork();
+    // Periodic check
+    _networkCheckTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkNetwork());
+  }
+
+  bool _isAutoSyncing = false;
+
+  Future<void> _autoSyncOfflineItems() async {
+    if (_isOffline || _isAutoSyncing) return;
+    _isAutoSyncing = true;
+
+    try {
+      final database = context.read<db.AppDatabase>();
+      
+      // Fetch and filter results (only final submissions)
+      final results = await database.getUnsyncedResults();
+      final filteredResults = results.where((item) {
+        try {
+          final stats = jsonDecode(item.ballotStatsJson) as Map<String, dynamic>;
+          final isFinal = stats['isFinal'] == true;
+          return stats['electionId'] == widget.electionId && isFinal;
+        } catch (e) {
+          return false;
+        }
+      }).toList();
+
+      // Fetch and filter checklists (only completed/final checklists)
+      final checklists = await database.getUnsyncedChecklists();
+      final filteredChecklists = checklists.where((item) {
+        return item.title.endsWith(widget.electionId) && item.isCompleted;
+      }).toList();
+
+      // Fetch and filter incidents (incidents submitted offline are always final reports)
+      final incidents = await database.getUnsyncedIncidents();
+      final filteredIncidents = incidents.where((item) {
+        return item.severity == 'reported_${widget.electionId}';
+      }).toList();
+
+      if (filteredResults.isEmpty && filteredChecklists.isEmpty && filteredIncidents.isEmpty) {
+        _isAutoSyncing = false;
+        return;
+      }
+
+      debugPrint('[AutoSync] Restored connection. Auto-syncing ${filteredResults.length} final results, ${filteredChecklists.length} final checklists, ${filteredIncidents.length} incidents.');
+
+      for (final result in filteredResults) {
+        await _syncOfflineResult(result);
+      }
+      for (final checklist in filteredChecklists) {
+        await _syncOfflineChecklist(checklist);
+      }
+      for (final incident in filteredIncidents) {
+        await _syncOfflineIncident(incident);
+      }
+    } catch (e) {
+      debugPrint('[AutoSync] Error: $e');
+    } finally {
+      _isAutoSyncing = false;
+    }
+  }
+
+  Future<void> _checkNetwork() async {
+    try {
+      final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 3));
+      final isConnected = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (_isOffline != !isConnected) {
+        if (mounted) {
+          setState(() {
+            _isOffline = !isConnected;
+          });
+          if (isConnected) {
+            _autoSyncOfflineItems();
+          }
+        }
+      }
+    } catch (_) {
+      if (!_isOffline) {
+        if (mounted) {
+          setState(() {
+            _isOffline = true;
+          });
+        }
+      }
+    }
   }
 
   Future<void> _loadElection() async {
@@ -50,6 +349,611 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
         _loading = false;
       });
     }
+  }
+
+  void _showLogoutConfirmation() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Text('Logout Confirmation', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+        content: Text('Are you sure you want to log out of VoteGuard? Any unsaved progress may be lost.', style: GoogleFonts.outfit(color: const Color(0xFF64748B))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(color: const Color(0xFF64748B), fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await AuthService().signOut();
+              if (mounted) {
+                Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: Text('LOGOUT', style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Stream<List<dynamic>> _watchAllUnsynced() {
+    final resultsStream = context.read<db.AppDatabase>().watchUnsyncedResults();
+    final checklistsStream = context.read<db.AppDatabase>().watchUnsyncedChecklists();
+    final incidentsStream = context.read<db.AppDatabase>().watchUnsyncedIncidents();
+    
+    return Rx.combineLatest3(
+      resultsStream,
+      checklistsStream,
+      incidentsStream,
+      (List<db.Result> r, List<db.Checklist> c, List<db.Incident> i) {
+        return [...r, ...c, ...i];
+      },
+    );
+  }
+
+  Future<void> _deleteOfflineChecklist(int localId) async {
+    showDialog(
+      context: context,
+      builder: (confirmCtx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete Offline Checklist', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.black)),
+        content: Text('Are you sure you want to permanently delete this offline saved checklist draft?', style: GoogleFonts.outfit(color: Colors.black)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(confirmCtx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(confirmCtx);
+              await context.read<db.AppDatabase>().deleteChecklist(localId);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Offline checklist draft deleted'), backgroundColor: Colors.red),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            child: Text('DELETE', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteOfflineIncident(int localId) async {
+    showDialog(
+      context: context,
+      builder: (confirmCtx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete Offline Incident', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.black)),
+        content: Text('Are you sure you want to permanently delete this offline saved incident report?', style: GoogleFonts.outfit(color: Colors.black)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(confirmCtx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(confirmCtx);
+              await context.read<db.AppDatabase>().deleteIncident(localId);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Offline incident report deleted'), backgroundColor: Colors.red),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            child: Text('DELETE', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _syncOfflineChecklist(db.Checklist checklist, [StateSetter? modalState]) async {
+    if (modalState != null) {
+      modalState(() => _syncingMap[checklist.id] = true);
+    } else {
+      if (mounted) setState(() => _syncingMap[checklist.id] = true);
+    }
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final answers = jsonDecode(checklist.category) as Map<String, dynamic>;
+      
+      final userSnap = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
+      final userProfile = userSnap.data();
+
+      final payload = {
+        'electionId': widget.electionId,
+        'observerId': user?.uid,
+        'state': userProfile?['assignedState'],
+        'lga': userProfile?['assignedLga'],
+        'ward': userProfile?['assignedWard'],
+        'pollingUnit': userProfile?['assignedPollingUnit'],
+        'answers': answers,
+        'status': checklist.isCompleted ? 'submitted' : 'draft',
+        'timestamp': FieldValue.serverTimestamp(),
+      };
+
+      await FirebaseFirestore.instance.collection('observer_checklists')
+          .doc(checklist.title).set(payload, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+
+      await context.read<db.AppDatabase>().markChecklistSynced(checklist.id);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Offline Checklist Synced Successfully!'), backgroundColor: Color(0xFF10B981)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Checklist Sync Failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (modalState != null) {
+        modalState(() => _syncingMap[checklist.id] = false);
+      } else {
+        if (mounted) setState(() => _syncingMap.remove(checklist.id));
+      }
+    }
+  }
+
+  Future<void> _syncOfflineIncident(db.Incident incident, [StateSetter? modalState]) async {
+    if (modalState != null) {
+      modalState(() => _syncingMap[incident.id] = true);
+    } else {
+      if (mounted) setState(() => _syncingMap[incident.id] = true);
+    }
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final mediaPaths = List<String>.from(jsonDecode(incident.mediaPathsJson));
+      final List<Map<String, String>> mediaItems = [];
+
+      for (int i = 0; i < mediaPaths.length; i++) {
+        final file = File(mediaPaths[i]);
+        if (await file.exists()) {
+          final ref = FirebaseStorage.instance.ref().child('incidents/${user?.uid}/${DateTime.now().millisecondsSinceEpoch}_$i');
+          await ref.putFile(file).timeout(const Duration(seconds: 15));
+          final url = await ref.getDownloadURL();
+          mediaItems.add({'url': url, 'type': 'photo'});
+        }
+      }
+
+      final userSnap = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
+      final userProfile = userSnap.data();
+
+      final payload = {
+        'electionId': widget.electionId,
+        'observerId': user?.uid,
+        'submittedBy': user?.uid,
+        'incidentType': incident.category,
+        'description': incident.description,
+        'mediaItems': mediaItems,
+        'mediaUrls': mediaItems.map((e) => e['url']).toList(),
+        'state': userProfile?['assignedState'],
+        'lga': userProfile?['assignedLga'],
+        'ward': userProfile?['assignedWard'],
+        'pollingUnit': userProfile?['assignedPollingUnit'],
+        'latitude': incident.latitude,
+        'longitude': incident.longitude,
+        'deviceId': 'OBS-${DateTime.now().millisecondsSinceEpoch}',
+        'status': 'reported',
+        'isSynced': true,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      await FirebaseFirestore.instance.collection('incident_reports').add(payload).timeout(const Duration(seconds: 10));
+
+      await context.read<db.AppDatabase>().markIncidentSynced(incident.id);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Offline Incident Synced Successfully!'), backgroundColor: Color(0xFF10B981)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Incident Sync Failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (modalState != null) {
+        modalState(() => _syncingMap[incident.id] = false);
+      } else {
+        if (mounted) setState(() => _syncingMap.remove(incident.id));
+      }
+    }
+  }
+
+  Widget _buildOfflineSyncBanner() {
+    return StreamBuilder<List<dynamic>>(
+      stream: _unsyncedSubject.stream,
+      builder: (context, snapshot) {
+        final unsynced = snapshot.data ?? [];
+        
+        // If there's no offline unsynced data and we are online, hide the banner
+        if (unsynced.isEmpty && !_isOffline) return const SizedBox.shrink();
+
+        final colors = _isOffline
+            ? [const Color(0xFFEF4444), const Color(0xFFF87171)] // Red alert gradient for offline
+            : [const Color(0xFFD97706), const Color(0xFFF59E0B)]; // Amber warning gradient for pending sync
+
+        final text = _isOffline
+            ? 'Offline Mode: Data will be saved locally. Tap to manage & upload'
+            : "${unsynced.length} Form${unsynced.length > 1 ? 's' : ''} Stored Offline (Pending Sync)";
+
+        final actionLabel = _isOffline ? 'MANAGE' : 'SYNC NOW';
+        final iconData = _isOffline ? LucideIcons.wifiOff : LucideIcons.cloudLightning;
+
+        return Builder(
+          builder: (builderContext) => Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: colors,
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: colors[0].withOpacity(0.2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: InkWell(
+              onTap: () => Scaffold.of(builderContext).openEndDrawer(),
+              child: Row(
+                children: [
+                  Icon(iconData, color: Colors.white, size: 16),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      text,
+                      style: GoogleFonts.outfit(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Text(
+                        actionLabel,
+                        style: GoogleFonts.outfit(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 10,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(LucideIcons.chevronRight, color: Colors.white, size: 14),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildOfflineSyncSidebar() {
+    return Drawer(
+      backgroundColor: Colors.white,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+              ),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.cloudLightning, color: Color(0xFFD97706), size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Sync Manager', style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+                        Text('Offline Saved Submissions', style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: StreamBuilder<List<dynamic>>(
+                stream: _unsyncedSubject.stream,
+                builder: (context, snapshot) {
+                  final unsynced = snapshot.data ?? [];
+                  if (unsynced.isEmpty) {
+                    return Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(LucideIcons.check, color: Color(0xFF10B981), size: 48),
+                          const SizedBox(height: 16),
+                          Text('All Forms Synced!', style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+                          Text('No offline items pending.', style: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF64748B))),
+                        ],
+                      ),
+                    );
+                  }
+                  
+                  return StatefulBuilder(
+                    builder: (context, setStateModal) => ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: unsynced.length,
+                      itemBuilder: (context, index) {
+                        try {
+                          final item = unsynced[index];
+                          
+                          if (item is db.Result) {
+                            Map<String, dynamic> stats = {};
+                            try {
+                              stats = jsonDecode(item.ballotStatsJson) as Map<String, dynamic>;
+                            } catch (e) {}
+                            final pu = stats['pollingUnit'] ?? '';
+                            final isFinal = stats['isFinal'] == true;
+                            final isSyncing = _syncingMap[item.id] == true;
+                            
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              color: const Color(0xFFF8FAFC),
+                              elevation: 0,
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            pu.isNotEmpty ? pu : 'Election Result Form',
+                                            style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 13, color: const Color(0xFF0F172A)),
+                                          ),
+                                        ),
+                                        _buildSidebarTypeBadge('RESULTS'),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Status: ${isFinal ? 'FINAL' : 'DRAFT'}',
+                                      style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFF64748B)),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(LucideIcons.trash2, color: Color(0xFFEF4444), size: 18),
+                                          onPressed: isSyncing ? null : () => _deleteOfflineResult(item.id),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _buildSidebarSyncButton(
+                                          isSyncing: isSyncing,
+                                          onTap: () => _syncOfflineResult(item, setStateModal),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          } else if (item is db.Checklist) {
+                            final isFinal = item.isCompleted;
+                            final isSyncing = _syncingMap[item.id] == true;
+                            
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              color: const Color(0xFFF8FAFC),
+                              elevation: 0,
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            'Observer Checklist Form',
+                                            style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 13, color: const Color(0xFF0F172A)),
+                                          ),
+                                        ),
+                                        _buildSidebarTypeBadge('CHECKLIST'),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Status: ${isFinal ? 'SUBMITTED' : 'DRAFT'}',
+                                      style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFF64748B)),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(LucideIcons.trash2, color: Color(0xFFEF4444), size: 18),
+                                          onPressed: isSyncing ? null : () => _deleteOfflineChecklist(item.id),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _buildSidebarSyncButton(
+                                          isSyncing: isSyncing,
+                                          onTap: () => _syncOfflineChecklist(item, setStateModal),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          } else if (item is db.Incident) {
+                            final isSyncing = _syncingMap[item.id] == true;
+                            final label = item.category.replaceAll('_', ' ').toUpperCase();
+                            
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              color: const Color(0xFFF8FAFC),
+                              elevation: 0,
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            label,
+                                            style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 13, color: const Color(0xFF0F172A)),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        _buildSidebarTypeBadge('INCIDENT'),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      item.description,
+                                      style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFF64748B)),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(LucideIcons.trash2, color: Color(0xFFEF4444), size: 18),
+                                          onPressed: isSyncing ? null : () => _deleteOfflineIncident(item.id),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _buildSidebarSyncButton(
+                                          isSyncing: isSyncing,
+                                          onTap: () => _syncOfflineIncident(item, setStateModal),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }
+                          
+                          // Fallback debug card if type is unknown
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            color: const Color(0xFFFEF2F2),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                'Unrecognized Item Type: ${item.runtimeType}\nDetails: $item',
+                                style: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF991B1B)),
+                              ),
+                            ),
+                          );
+                        } catch (e, stack) {
+                          print('Error building sync card: $e\n$stack');
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            color: const Color(0xFFFEF2F2),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                'Error rendering card: $e',
+                                style: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF991B1B), fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSidebarTypeBadge(String label) {
+    Color color = const Color(0xFF065F46);
+    Color bg = const Color(0xFFECFDF5);
+    if (label == 'CHECKLIST') {
+      color = const Color(0xFF1E3A8A);
+      bg = const Color(0xFFEFF6FF);
+    } else if (label == 'INCIDENT') {
+      color = const Color(0xFFB45309);
+      bg = const Color(0xFFFEF3C7);
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        label,
+        style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.w900, color: color),
+      ),
+    );
+  }
+
+  Widget _buildSidebarSyncButton({required bool isSyncing, required VoidCallback onTap}) {
+    return ElevatedButton.icon(
+      onPressed: isSyncing ? null : onTap,
+      icon: isSyncing
+        ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+        : const Icon(LucideIcons.cloudLightning, size: 12, color: Colors.white),
+      label: Text(
+        isSyncing ? 'SYNCING...' : 'SYNC NOW', 
+        style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: Colors.white),
+      ),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: const Color(0xFFD97706),
+        minimumSize: const Size(0, 36),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+    );
   }
 
   @override
@@ -73,6 +977,14 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
             Text('OBSERVER DASHBOARD', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF10B981), letterSpacing: 1)),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(LucideIcons.logOut, color: Color(0xFFEF4444), size: 20),
+            onPressed: () => _showLogoutConfirmation(),
+            tooltip: 'Logout',
+          ),
+          const SizedBox(width: 8),
+        ],
         bottom: TabBar(
           controller: _tabController,
           isScrollable: false, // Forces all tabs to fit on screen
@@ -89,15 +1001,23 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+      body: Column(
         children: [
-          _DashboardTab(electionId: widget.electionId, tabController: _tabController),
-          _ChecklistTab(electionId: widget.electionId),
-          _IncidentsTab(electionId: widget.electionId),
-          _EC8AResultsTab(electionId: widget.electionId),
+          _buildOfflineSyncBanner(),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _DashboardTab(electionId: widget.electionId, tabController: _tabController),
+                _ChecklistTab(electionId: widget.electionId),
+                _IncidentsTab(electionId: widget.electionId),
+                _EC8AResultsTab(electionId: widget.electionId),
+              ],
+            ),
+          ),
         ],
       ),
+      endDrawer: _buildOfflineSyncSidebar(),
       floatingActionButton: FloatingActionButton(
         onPressed: _showChatOverlay,
         backgroundColor: const Color(0xFF0F172A),
@@ -118,7 +1038,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
     final data = profile.data() ?? {};
     final state = data['assignedState']?.toString().toLowerCase() ?? 'national';
     final groupId = 'group_state_$state';
-    final fullName = data['fullName'] ?? 'Observer';
+    final fullName = data['name'] ?? data['fullName'] ?? 'Observer';
 
     if (!mounted) return;
 
@@ -174,7 +1094,7 @@ class _DashboardTab extends StatelessWidget {
                 const SizedBox(height: 24),
                 _buildQuickActions(context),
                 const SizedBox(height: 24),
-                _buildSupportSection(),
+                _buildSupportSection(context),
                 const SizedBox(height: 32),
               ],
             );
@@ -498,7 +1418,35 @@ class _DashboardTab extends StatelessWidget {
     );
   }
 
-  Widget _buildSupportSection() {
+
+  Future<void> _initiateCall(BuildContext context) async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('settings').doc('system_settings').get();
+      if (doc.exists) {
+        final valueStr = doc.data()?['value'] as String?;
+        if (valueStr != null) {
+          final valueJson = jsonDecode(valueStr);
+          final phone = valueJson['support']?['phone'];
+          if (phone != null && phone.toString().isNotEmpty) {
+            final Uri url = Uri.parse('tel:$phone');
+            if (await canLaunchUrl(url)) {
+              await launchUrl(url);
+              return;
+            }
+          }
+        }
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not initiate call. Support number not found.')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
+  Widget _buildSupportSection(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(32),
       decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(32)),
@@ -510,7 +1458,10 @@ class _DashboardTab extends StatelessWidget {
           const SizedBox(height: 8),
           Text('DIRECT ENCRYPTED UPLINK TO THE NATIONAL COMMAND CENTER.', textAlign: TextAlign.center, style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.bold, color: const Color(0xFF94A3B8), height: 1.5)),
           const SizedBox(height: 24),
-          Text('INITIATE VOICE CALL', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: const Color(0xFF10B981), letterSpacing: 1)),
+          InkWell(
+            onTap: () => _initiateCall(context),
+            child: Text('INITIATE VOICE CALL', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: const Color(0xFF10B981), letterSpacing: 1)),
+          ),
         ],
       ),
     );
@@ -566,32 +1517,84 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
       }
 
       // Step 3: Fetch questions from the sub-collection
+      List<dynamic> questionsData = [];
       if (templateId != null) {
-        final qDocs = await FirebaseFirestore.instance.collection('checklist_templates')
-            .doc(templateId).collection('questions').orderBy('order').get();
-        _questions = qDocs.docs.map((d) => d.data()).toList();
+        try {
+          final qDocs = await FirebaseFirestore.instance.collection('checklist_templates')
+              .doc(templateId).collection('questions').orderBy('order').get();
+          questionsData = qDocs.docs.map((d) => d.data()).toList();
+        } catch (e) {
+          debugPrint('Checklist: Offline questions fallback');
+          final localQs = await context.read<db.AppDatabase>().getLocalChecklistQuestions(templateId);
+          questionsData = localQs.map((q) => {
+            'id': q.id,
+            'text': q.questionText,
+            'type': q.type,
+            'order': q.order,
+            'category': q.category,
+          }).toList();
+        }
+      } else {
+        // Fallback to latest local template if no network and no templateId from election
+        final latestLocal = await context.read<db.AppDatabase>().getLocalLatestTemplate();
+        if (latestLocal != null) {
+          final localQs = await context.read<db.AppDatabase>().getLocalChecklistQuestions(latestLocal.id);
+          questionsData = localQs.map((q) => {
+            'id': q.id,
+            'text': q.questionText,
+            'type': q.type,
+            'order': q.order,
+            'category': q.category,
+          }).toList();
+        }
       }
+      _questions = questionsData;
 
       final pu = _userProfile?['assignedPollingUnit'] ?? 'unknown_pu';
       final primaryId = '${user?.uid}_${widget.electionId}';
       final secondaryId = '${widget.electionId}_${user?.uid}_$pu';
       
       // Step 4: Load draft/submission
-      var draft = await FirebaseFirestore.instance.collection('observer_checklists')
-          .doc(primaryId).get();
-      
-      // Fallback for different ID formats
-      if (!draft.exists) {
-        draft = await FirebaseFirestore.instance.collection('observer_checklists')
-            .doc(secondaryId).get();
+      bool loadedLocal = false;
+      try {
+        final localChecklists = await context.read<db.AppDatabase>().getUnsyncedChecklists();
+        final matchIndex = localChecklists.indexWhere((c) => c.title == primaryId || c.title == secondaryId);
+        if (matchIndex != -1) {
+          final match = localChecklists[matchIndex];
+          _answers.addAll(Map<String, dynamic>.from(jsonDecode(match.category)));
+          _isFinalized = match.isCompleted;
+          _hasSavedDraft = !match.isCompleted;
+          loadedLocal = true;
+        }
+      } catch (localDbError) {
+        debugPrint('Checklist: Error loading local unsynced checklist: $localDbError');
       }
-      
-      final docId = draft.exists ? draft.id : primaryId;
+
+      DocumentSnapshot? draft;
+      if (!loadedLocal) {
+        try {
+          draft = await FirebaseFirestore.instance.collection('observer_checklists').doc(primaryId).get();
+          if (!draft.exists) {
+            draft = await FirebaseFirestore.instance.collection('observer_checklists').doc(secondaryId).get();
+          }
+        } catch (e) {
+          debugPrint('Checklist: Error fetching Firestore draft: $e');
+        }
+      }
 
       if (mounted) {
         setState(() {
-          if (draft.exists) {
-            final data = draft.data()!;
+          if (loadedLocal) {
+            // Initialize controllers with saved local data
+            _answers.forEach((key, value) {
+              if (!_controllers.containsKey(key)) {
+                _controllers[key] = TextEditingController(text: value?.toString());
+              } else {
+                _controllers[key]!.text = value?.toString() ?? '';
+              }
+            });
+          } else if (draft != null && draft.exists) {
+            final data = draft.data() as Map<String, dynamic>;
             _answers.addAll(Map<String, dynamic>.from(data['answers'] ?? {}));
             _isFinalized = data['status'] == 'submitted';
             _hasSavedDraft = data['status'] == 'draft';
@@ -610,13 +1613,21 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
           for (var q in _questions) {
             final text = (q['text'] ?? '').toString().toLowerCase();
             final qId = q['id'];
-            if (_answers[qId] == null) {
+            if (_answers[qId] == null || _answers[qId].toString().trim().isEmpty) {
               String? autoValue;
-              if (text.contains('name')) autoValue = _userProfile?['fullName'];
-              if (text.contains('phone')) autoValue = _userProfile?['phone'];
-              if (text.contains('lga')) autoValue = _userProfile?['assignedLga'];
-              if (text.contains('ward')) autoValue = _userProfile?['assignedWard'];
-              if (text.contains('polling unit')) autoValue = _userProfile?['assignedPollingUnit'];
+              if (text.contains('name')) {
+                autoValue = _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'];
+              } else if (text.contains('phone') || text.contains('number') || text.contains('mobile')) {
+                autoValue = _userProfile?['phone'] ?? _userProfile?['phoneNumber'];
+              } else if (text.contains('lga') || text.contains('local government') || text.contains('l.g.a') || text.contains('government')) {
+                autoValue = _userProfile?['assignedLga'];
+              } else if (text.contains('ward')) {
+                autoValue = _userProfile?['assignedWard'];
+              } else if (text.contains('polling unit') || text.contains('polling') || text.contains('pu')) {
+                autoValue = _userProfile?['assignedPollingUnit'];
+              } else if (text.contains('state')) {
+                autoValue = _userProfile?['assignedState'];
+              }
               
               if (autoValue != null) {
                 _answers[qId] = autoValue;
@@ -659,20 +1670,55 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
   }
 
   bool _isQuestionVisible(Map<String, dynamic> q) {
-    // COMMISSION MEMBERS RULE
-    if ((q['text'] ?? '').toString().contains('present?') && q['id'] != 'commission_present') {
-       // This is a sub-question example
-    }
-    
-    // Technical Spec Rules
-    if ((q['text'] ?? '').toString().toLowerCase().contains('how many of them') && 
-        (q['text'] ?? '').toString().toLowerCase().contains('members')) {
-      final parent = _questions.firstWhere((item) => (item['text'] ?? '').toString().toLowerCase().contains('commission members present?'), orElse: () => null);
+    final textLower = (q['text'] ?? '').toString().toLowerCase();
+
+    // electoral commission members presence conditional visibility
+    if (textLower.contains('how many') && textLower.contains('them')) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('electoral commission') && t.contains('present')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
       if (parent != null && _answers[parent['id']] != 'yes') return false;
     }
 
-    if ((q['text'] ?? '').toString().toLowerCase().contains('refuse to sign')) {
-      final parent = _questions.firstWhere((item) => (item['text'] ?? '').toString().toLowerCase().contains('party agents present sign'), orElse: () => null);
+    // polling agents presence conditional visibility
+    if (textLower.contains('how many') && textLower.contains('part')) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('agent') && t.contains('present')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
+      if (parent != null && _answers[parent['id']] != 'yes') return false;
+    }
+
+    // agents signed / refused to sign conditional visibility
+    final isSignedOrRefusedChild = (textLower.contains('if not') && textLower.contains('signed')) ||
+                                   textLower.contains('refuse to sign') ||
+                                   textLower.contains('refused to sign') ||
+                                   textLower.contains('why did they refuse');
+                                   
+    if (isSignedOrRefusedChild) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('agent') && t.contains('sign')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
       if (parent != null && _answers[parent['id']] != 'no') return false;
     }
 
@@ -711,21 +1757,33 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
       final docId = '${user?.uid}_${widget.electionId}';
 
       await FirebaseFirestore.instance.collection('observer_checklists')
-          .doc(docId).set(payload, SetOptions(merge: true));
+          .doc(docId).set(payload, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
 
-      // Audit Log
-      await FirebaseFirestore.instance.collection('audit_logs').add({
-        'userId': user?.uid,
-        'userEmail': user?.email,
-        'action': isFinal ? 'CHECKLIST_SUBMIT' : 'CHECKLIST_SAVE_DRAFT',
-        'resource': 'checklist',
-        'details': {
-          'electionId': widget.electionId,
-          'pollingUnit': pu,
-          'answeredCount': _answers.length,
-        },
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      final ipAddress = await _getPublicIP();
+
+      // Audit Log (swallow permission errors gracefully so it does not block the submission)
+      try {
+        await FirebaseFirestore.instance.collection('audit_logs').add({
+          'userId': user?.uid,
+          'userEmail': user?.email,
+          'action': isFinal ? 'CHECKLIST_SUBMIT' : 'CHECKLIST_SAVE_DRAFT',
+          'resource': 'checklist',
+          'ipAddress': ipAddress,
+          'details': {
+            'observerName': _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'] ?? 'Observer',
+            'phone': _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A',
+            'electionId': widget.electionId,
+            'state': _userProfile?['assignedState'] ?? 'N/A',
+            'lga': _userProfile?['assignedLga'] ?? 'N/A',
+            'ward': _userProfile?['assignedWard'] ?? 'N/A',
+            'pollingUnit': pu,
+            'answeredCount': _answers.length,
+          },
+          'createdAt': FieldValue.serverTimestamp(),
+        }).timeout(const Duration(seconds: 5));
+      } catch (auditError) {
+        debugPrint('Graceful: Failed to write checklist audit log to Firestore (rules constraint): $auditError');
+      }
       
       if (mounted) {
         setState(() {
@@ -736,6 +1794,52 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
           content: Text(isFinal ? 'Checklist Finalized Successfully!' : 'Progress Saved as Draft'),
           backgroundColor: const Color(0xFF065F46),
         ));
+      }
+    } catch (e) {
+      final errorStr = e.toString().toLowerCase();
+      final isNetworkError = errorStr.contains('socket') ||
+          errorStr.contains('network') ||
+          errorStr.contains('unavailable') ||
+          errorStr.contains('host-lookup') ||
+          errorStr.contains('connection') ||
+          errorStr.contains('timeout');
+
+      if (isNetworkError) {
+        try {
+          final user = FirebaseAuth.instance.currentUser;
+          final docId = '${user?.uid}_${widget.electionId}';
+          
+          final checklistCompanion = db.ChecklistsCompanion(
+            title: drift.Value(docId),
+            category: drift.Value(jsonEncode(_answers)),
+            isCompleted: drift.Value(isFinal),
+            isSynced: const drift.Value(false),
+          );
+
+          await context.read<db.AppDatabase>().insertChecklist(checklistCompanion);
+
+          if (mounted) {
+            setState(() {
+              _isFinalized = isFinal;
+              _hasSavedDraft = !isFinal;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('No internet connection. Checklist saved locally to offline drafts!'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        } catch (localDbError) {
+          debugPrint('Local DB Save failed: $localDbError');
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Checklist save failed: $e'), backgroundColor: Colors.red),
+        );
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -774,43 +1878,49 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
       grouped[section]!.add(q);
     }
 
-    return Column(
-      children: [
-        if (_isFinalized)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0F172A),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.lock, color: Color(0xFF10B981), size: 16),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('CHECKLIST FINALIZED', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 1)),
-                      const SizedBox(height: 2),
-                      Text('All responses are now locked for synchronization.', style: GoogleFonts.outfit(fontSize: 12, color: Colors.white70)),
-                    ],
+    final showBottomActions = MediaQuery.of(context).viewInsets.bottom == 0;
+
+    return GestureDetector(
+      onTap: () => FocusScope.of(context).unfocus(),
+      child: Column(
+        children: [
+          if (_isFinalized)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock, color: Color(0xFF10B981), size: 16),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('CHECKLIST FINALIZED', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 1)),
+                        const SizedBox(height: 2),
+                        Text('All responses are now locked for synchronization.', style: GoogleFonts.outfit(fontSize: 12, color: Colors.white70)),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
+            ),
+          _buildProgressHUD(),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+              children: grouped.entries.map((entry) => _buildSection(entry.key, entry.value)).toList(),
             ),
           ),
-        _buildProgressHUD(),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-            children: grouped.entries.map((entry) => _buildSection(entry.key, entry.value)).toList(),
-          ),
-        ),
-        _buildBottomActions(),
-      ],
+          if (showBottomActions)
+            _buildBottomActions(),
+        ],
+      ),
     );
   }
 
@@ -859,8 +1969,31 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
     final id = q['id'];
     final isAnswered = _answers[id] != null && _answers[id].toString().isNotEmpty;
     final text = (q['text'] ?? '').toString();
-    final isLocationField = text.toLowerCase().contains('lga') || text.toLowerCase().contains('ward') || text.toLowerCase().contains('polling unit');
-    final isEditable = _editableFields.contains(id) || !isLocationField;
+    final type = q['type'] ?? 'text';
+    
+    // Strict identification field check
+    final textLower = text.toLowerCase();
+    final isIdentificationField = (type == 'text' || type == 'number') && (
+      textLower == 'state' ||
+      textLower == 'lga' ||
+      textLower == 'local government' ||
+      textLower == 'local government area' ||
+      textLower == 'ward' ||
+      textLower == 'polling unit' ||
+      textLower == 'polling unit name' ||
+      textLower == 'polling unit code' ||
+      textLower.contains('your lga') ||
+      textLower.contains('your ward') ||
+      textLower.contains('your state') ||
+      textLower.contains('your polling unit') ||
+      textLower.contains('your name') ||
+      textLower.contains('observer name') ||
+      textLower.contains('full name') ||
+      textLower.contains('phone number') ||
+      textLower.contains('phone')
+    );
+
+    final isEditable = _editableFields.contains(id) || !isIdentificationField;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -876,7 +2009,7 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
           Row(
             children: [
               Expanded(child: Text(text, style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w600, color: const Color(0xFF1E293B)))),
-              if (text.toLowerCase().contains('name') || text.toLowerCase().contains('phone'))
+              if (isIdentificationField)
                 IconButton(
                   icon: Icon(_editableFields.contains(id) ? LucideIcons.check : LucideIcons.pencil, size: 14, color: const Color(0xFF64748B)),
                   onPressed: _isFinalized ? null : () => setState(() {
@@ -936,11 +2069,14 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
                     ? AudioPlayerWidget(url: url)
                     : GestureDetector(
                         onTap: () => _showFullScreenImage(url),
-                        child: CachedNetworkImage(
-                          imageUrl: url, 
-                          fit: BoxFit.cover, 
-                          placeholder: (c,u) => const Center(child: CircularProgressIndicator()),
-                        ),
+                        child: (!url.startsWith('http://') && !url.startsWith('https://'))
+                          ? Image.file(File(url), fit: BoxFit.cover)
+                          : CachedNetworkImage(
+                              imageUrl: url, 
+                              fit: BoxFit.cover, 
+                              placeholder: (c,u) => const Center(child: CircularProgressIndicator()),
+                              errorWidget: (c,u,e) => const Center(child: Icon(LucideIcons.image, color: Colors.grey)),
+                            ),
                       ),
               ),
             ),
@@ -962,6 +2098,70 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
             ),
           ),
         ],
+      );
+    }
+
+    final isTimeField = type == 'time' || (q['text'] ?? '').toString().toLowerCase().contains('time');
+    
+    if (isTimeField) {
+      if (!_controllers.containsKey(id)) {
+        _controllers[id] = TextEditingController(text: _answers[id]?.toString());
+      }
+      
+      return InkWell(
+        onTap: !enabled ? null : () async {
+          TimeOfDay initialTime = TimeOfDay.now();
+          if (_controllers[id]!.text.isNotEmpty) {
+            try {
+              final parts = _controllers[id]!.text.split(':');
+              if (parts.length >= 2) {
+                final hour = int.parse(parts[0].trim());
+                final minute = int.parse(parts[1].replaceAll(RegExp(r'[^0-9]'), '').trim());
+                initialTime = TimeOfDay(hour: hour, minute: minute);
+              }
+            } catch (_) {}
+          }
+          
+          final selectedTime = await showTimePicker(
+            context: context,
+            initialTime: initialTime,
+            builder: (BuildContext context, Widget? child) {
+              return Theme(
+                data: ThemeData.light().copyWith(
+                  colorScheme: const ColorScheme.light(
+                    primary: Color(0xFF065F46),
+                    onPrimary: Colors.white,
+                    surface: Colors.white,
+                    onSurface: Color(0xFF0F172A),
+                  ),
+                  dialogBackgroundColor: Colors.white,
+                ),
+                child: child!,
+              );
+            },
+          );
+          
+          if (selectedTime != null) {
+            final formattedTime = '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
+            setState(() {
+              _answers[id] = formattedTime;
+              _controllers[id]!.text = formattedTime;
+            });
+          }
+        },
+        child: IgnorePointer(
+          child: TextField(
+            controller: _controllers[id],
+            style: GoogleFonts.outfit(fontSize: 14, color: Colors.black, fontWeight: FontWeight.w600),
+            decoration: InputDecoration(
+              hintText: 'Select time...',
+              suffixIcon: const Icon(LucideIcons.clock, color: Color(0xFF64748B), size: 18),
+              filled: true, 
+              fillColor: const Color(0xFFF8FAFC),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            ),
+          ),
+        ),
       );
     }
 
@@ -1040,11 +2240,13 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
               child: InteractiveViewer(
                 minScale: 0.5,
                 maxScale: 4.0,
-                child: CachedNetworkImage(
-                  imageUrl: url,
-                  fit: BoxFit.contain,
-                  placeholder: (c, u) => const CircularProgressIndicator(color: Colors.white),
-                ),
+                child: (!url.startsWith('http://') && !url.startsWith('https://'))
+                  ? Image.file(File(url), fit: BoxFit.contain)
+                  : CachedNetworkImage(
+                      imageUrl: url,
+                      fit: BoxFit.contain,
+                      placeholder: (c, u) => const CircularProgressIndicator(color: Colors.white),
+                    ),
               ),
             ),
             Positioned(
@@ -1358,7 +2560,7 @@ class _IncidentsTabState extends State<_IncidentsTab> {
           setState(() => _uploadProgress = (i / _media.length) + p);
         });
 
-        await uploadTask;
+        await uploadTask.timeout(const Duration(seconds: 15));
         final url = await ref.getDownloadURL();
         mediaItems.add({'url': url, 'type': type});
       }
@@ -1384,7 +2586,33 @@ class _IncidentsTabState extends State<_IncidentsTab> {
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
-      await FirebaseFirestore.instance.collection('incident_reports').add(payload);
+      await FirebaseFirestore.instance.collection('incident_reports').add(payload).timeout(const Duration(seconds: 10));
+
+      final ipAddress = await _getPublicIP();
+
+      // Audit Log for Incident Submission
+      try {
+        await FirebaseFirestore.instance.collection('audit_logs').add({
+          'userId': user?.uid,
+          'userEmail': user?.email,
+          'action': 'INCIDENT_SUBMIT',
+          'resource': 'incident',
+          'ipAddress': ipAddress,
+          'details': {
+            'observerName': _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'] ?? 'Observer',
+            'phone': _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A',
+            'electionId': widget.electionId,
+            'incidentType': _selectedType ?? 'other',
+            'state': _userProfile?['assignedState'] ?? 'N/A',
+            'lga': _userProfile?['assignedLga'] ?? 'N/A',
+            'ward': _userProfile?['assignedWard'] ?? 'N/A',
+            'pollingUnit': _userProfile?['assignedPollingUnit'] ?? 'N/A',
+          },
+          'createdAt': FieldValue.serverTimestamp(),
+        }).timeout(const Duration(seconds: 5));
+      } catch (auditError) {
+        debugPrint('Graceful: Failed to write incident audit log: $auditError');
+      }
 
       // Clean up draft if it exists
       await FirebaseFirestore.instance.collection('incident_reports')
@@ -1399,6 +2627,54 @@ class _IncidentsTabState extends State<_IncidentsTab> {
         });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incident report submitted successfully!'), backgroundColor: Color(0xFF10B981)));
         DefaultTabController.maybeOf(context)?.animateTo(0);
+      }
+    } catch (e) {
+      final errorStr = e.toString().toLowerCase();
+      final isNetworkError = errorStr.contains('socket') ||
+          errorStr.contains('network') ||
+          errorStr.contains('unavailable') ||
+          errorStr.contains('host-lookup') ||
+          errorStr.contains('connection') ||
+          errorStr.contains('timeout');
+
+      if (isNetworkError) {
+        try {
+          final incidentCompanion = db.IncidentsCompanion(
+            category: drift.Value(_selectedType ?? 'other'),
+            severity: drift.Value('reported_${widget.electionId}'),
+            description: drift.Value(_descriptionController.text),
+            latitude: drift.Value(_currentPosition?.latitude),
+            longitude: drift.Value(_currentPosition?.longitude),
+            mediaPathsJson: drift.Value(jsonEncode(_media.map((e) => (e['file'] as File).path).toList())),
+            isSynced: const drift.Value(false),
+          );
+
+          await context.read<db.AppDatabase>().insertIncident(incidentCompanion);
+
+          if (mounted) {
+            _descriptionController.clear();
+            setState(() {
+              _selectedType = null;
+              _media.clear();
+              _uploadProgress = 1.0;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('No internet connection. Incident saved locally to offline reports!'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        } catch (localDbError) {
+          debugPrint('Local DB Save failed: $localDbError');
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Incident submission failed: $e'), backgroundColor: Colors.red),
+        );
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -1985,7 +3261,14 @@ class _IncidentsTabState extends State<_IncidentsTab> {
                                         ? VideoPlayerWidget(url: url)
                                         : type == 'audio'
                                           ? AudioPlayerWidget(url: url)
-                                          : CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+                                          : (!url.startsWith('http://') && !url.startsWith('https://'))
+                                            ? Image.file(File(url), fit: BoxFit.cover)
+                                            : CachedNetworkImage(
+                                                imageUrl: url, 
+                                                fit: BoxFit.cover,
+                                                placeholder: (context, url) => const Center(child: CircularProgressIndicator(color: Color(0xFF065F46))),
+                                                errorWidget: (context, url, error) => const Center(child: Icon(LucideIcons.image, color: Colors.grey)),
+                                              ),
                                     ),
                                   ),
                                 );
@@ -2082,7 +3365,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     'rejectedBallots': 0,
   };
   
-  List<DocumentSnapshot> _parties = [];
+  List<Map<String, dynamic>> _parties = [
+    {'id': 'apc', 'name': 'All Progressives Congress', 'abbreviation': 'APC', 'logoUrl': null},
+    {'id': 'pdp', 'name': 'Peoples Democratic Party', 'abbreviation': 'PDP', 'logoUrl': null},
+    {'id': 'lp', 'name': 'Labour Party', 'abbreviation': 'LP', 'logoUrl': null},
+    {'id': 'nnpp', 'name': 'New Nigeria Peoples Party', 'abbreviation': 'NNPP', 'logoUrl': null},
+    {'id': 'apga', 'name': 'All Progressives Grand Alliance', 'abbreviation': 'APGA', 'logoUrl': null},
+  ];
   bool _loading = true;
   bool _scanning = false;
   bool _submitting = false;
@@ -2096,15 +3385,19 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   String? _expectedType;
   final Map<String, TextEditingController> _partyControllers = {};
   final Map<String, TextEditingController> _statControllers = {};
+  bool _isOffline = false;
+  Timer? _networkCheckTimer;
 
   @override
   void initState() {
     super.initState();
     _loadData();
+    _startNetworkTimer();
   }
 
   @override
   void dispose() {
+    _networkCheckTimer?.cancel();
     for (var c in _partyControllers.values) {
       c.dispose();
     }
@@ -2112,6 +3405,33 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  void _startNetworkTimer() {
+    _checkNetwork();
+    _networkCheckTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkNetwork());
+  }
+
+  Future<void> _checkNetwork() async {
+    try {
+      final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 3));
+      final isConnected = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (_isOffline != !isConnected) {
+        if (mounted) {
+          setState(() {
+            _isOffline = !isConnected;
+          });
+        }
+      }
+    } catch (_) {
+      if (!_isOffline) {
+        if (mounted) {
+          setState(() {
+            _isOffline = true;
+          });
+        }
+      }
+    }
   }
 
   String _sanitizeId(String id) {
@@ -2137,9 +3457,6 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       final profileSnap = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
       _userProfile = profileSnap.data();
       
-      final parties = await FirebaseFirestore.instance.collection('parties').orderBy('abbreviation').get();
-      final electionDoc = await FirebaseFirestore.instance.collection('elections').doc(widget.electionId).get();
-      
       final state = _userProfile?['assignedState'] ?? '';
       final lga = _userProfile?['assignedLga'] ?? '';
       final ward = _userProfile?['assignedWard'] ?? '';
@@ -2148,37 +3465,138 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
       final webDocId = '${widget.electionId}_$puKey';
       final mobileDocId = '${widget.electionId}_${user?.uid}';
+      final submissionId = '${widget.electionId}_${puKey}_${user?.uid}';
 
-      // Load Results
-      var existing = await FirebaseFirestore.instance.collection('election_results')
-          .doc(mobileDocId).get();
-      if (!existing.exists) {
-        existing = await FirebaseFirestore.instance.collection('election_results')
-            .doc(webDocId).get();
-        if (existing.exists) debugPrint('📱 Found web-formatted results: $webDocId');
+      // Load Parties and Election
+      List<Map<String, dynamic>> partiesData = [];
+      try {
+        final partiesSnap = await FirebaseFirestore.instance.collection('parties').orderBy('abbreviation').get();
+        partiesData = partiesSnap.docs.map((d) => d.data() as Map<String, dynamic>).toList();
+      } catch (e) {
+        debugPrint('EC8A: Offline parties fallback');
+        final localParties = await context.read<db.AppDatabase>().getAllLocalParties();
+        partiesData = localParties.map((p) => {
+          'id': p.id,
+          'name': p.name,
+          'abbreviation': p.abbreviation,
+          'logoUrl': p.logoUrl,
+        }).toList();
       }
-          
-      // Load Statistics
-      var existingStats = await FirebaseFirestore.instance.collection('election_statistics')
-          .doc(mobileDocId).get();
-      if (!existingStats.exists) {
-        existingStats = await FirebaseFirestore.instance.collection('election_statistics')
-            .doc('${webDocId}_stats').get();
-        if (existingStats.exists) debugPrint('📱 Found web-formatted statistics');
+      
+      if (partiesData.isEmpty) {
+        partiesData = [
+          {'id': 'apc', 'name': 'All Progressives Congress', 'abbreviation': 'APC', 'logoUrl': null},
+          {'id': 'pdp', 'name': 'Peoples Democratic Party', 'abbreviation': 'PDP', 'logoUrl': null},
+          {'id': 'lp', 'name': 'Labour Party', 'abbreviation': 'LP', 'logoUrl': null},
+          {'id': 'nnpp', 'name': 'New Nigeria Peoples Party', 'abbreviation': 'NNPP', 'logoUrl': null},
+          {'id': 'apga', 'name': 'All Progressives Grand Alliance', 'abbreviation': 'APGA', 'logoUrl': null},
+        ];
+      }
+
+      DocumentSnapshot? electionDoc;
+      try {
+        electionDoc = await FirebaseFirestore.instance.collection('elections').doc(widget.electionId).get();
+      } catch (e) {
+        debugPrint('EC8A: Offline election fallback');
+        // We can optionally load from local DB here if needed, but we mainly need year/type
+      }
+      Map<String, dynamic>? observerSubmission;
+      Map<String, dynamic>? observerStats;
+      
+      // 1. Check local unsynced result first!
+      try {
+        final localResults = await context.read<db.AppDatabase>().getUnsyncedResults();
+        final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey');
+        if (matchIndex != -1) {
+          final match = localResults[matchIndex];
+          final statsMap = jsonDecode(match.ballotStatsJson) as Map<String, dynamic>;
+          observerSubmission = {
+            'partyVotes': jsonDecode(match.partyVotesJson),
+            'evidenceUrl': match.imagePath,
+            'status': statsMap['isFinal'] == true ? 'final' : 'draft',
+          };
+          observerStats = statsMap;
+        }
+      } catch (localDbError) {
+        debugPrint('EC8A: Error loading local unsynced result: $localDbError');
+      }
+      
+      if (observerSubmission == null) {
+        try {
+        final docSnap = await FirebaseFirestore.instance.collection('election_results').doc(webDocId).get();
+        if (docSnap.exists && docSnap.data() != null) {
+          final data = docSnap.data() as Map<String, dynamic>;
+          final submissionsList = data['submissions'] as List<dynamic>? ?? [];
+          final sub = submissionsList.firstWhere(
+            (s) => s['submittedBy'] == user?.uid,
+            orElse: () => null,
+          );
+          if (sub != null) {
+            observerSubmission = Map<String, dynamic>.from(sub);
+            observerStats = observerSubmission; // Stats are stored in the submission map too
+          }
+        }
+      } catch (e) {
+        debugPrint('EC8A: Error loading election_results: $e');
+      }
+      }
+
+      // If no submission is found in the array, check legacy paths
+      if (observerSubmission == null) {
+        try {
+          var legacyDoc = await FirebaseFirestore.instance.collection('election_submissions').doc(submissionId).get();
+          if (legacyDoc.exists) {
+            observerSubmission = legacyDoc.data();
+          } else {
+            legacyDoc = await FirebaseFirestore.instance.collection('election_results').doc(mobileDocId).get();
+            if (legacyDoc.exists) {
+              observerSubmission = legacyDoc.data();
+            } else {
+              legacyDoc = await FirebaseFirestore.instance.collection('election_results').doc(webDocId).get();
+              if (legacyDoc.exists) {
+                observerSubmission = legacyDoc.data();
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('EC8A: Error loading legacy results: $e');
+        }
+      }
+
+      if (observerStats == null) {
+        try {
+          var legacyStats = await FirebaseFirestore.instance.collection('election_statistics_submissions').doc(submissionId).get();
+          if (legacyStats.exists) {
+            observerStats = legacyStats.data();
+          } else {
+            legacyStats = await FirebaseFirestore.instance.collection('election_statistics').doc(mobileDocId).get();
+            if (legacyStats.exists) {
+              observerStats = legacyStats.data();
+            } else {
+              legacyStats = await FirebaseFirestore.instance.collection('election_statistics').doc('${webDocId}_stats').get();
+              if (legacyStats.exists) {
+                observerStats = legacyStats.data();
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('EC8A: Error loading legacy statistics: $e');
+        }
       }
 
       if (mounted) {
         setState(() {
-          _userProfile = profileSnap.data();
-          _parties = parties.docs;
-          if (electionDoc.exists && electionDoc.data()?['startDate'] != null) {
-            _expectedYear = (electionDoc.data()!['startDate'] as Timestamp).toDate().year;
-            _expectedType = electionDoc.data()?['type']?.toString().toUpperCase();
+          _parties = partiesData;
+          if (electionDoc?.exists == true && electionDoc?.data() != null) {
+            final data = electionDoc!.data() as Map<String, dynamic>;
+            if (data['startDate'] != null) {
+              _expectedYear = (data['startDate'] as Timestamp).toDate().year;
+              _expectedType = data['type']?.toString().toUpperCase();
+            }
           }
           
           // Initialize controllers
-          for (var doc in _parties) {
-            final data = doc.data() as Map<String, dynamic>;
+          for (var data in _parties) {
             final abb = data['abbreviation'] as String;
             if (!_partyControllers.containsKey(abb)) {
               _partyControllers[abb] = TextEditingController();
@@ -2191,24 +3609,21 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           });
 
           // Hydrate Party Votes Draft Data
-          if (existing.exists && existing.data() != null) {
-            final data = existing.data()!;
-            final votes = data['partyVotes'] as Map<String, dynamic>? ?? {};
-            votes.forEach((k, v) => _partyVotes[k] = v as int);
-            _isFinal = data['status'] == 'final';
-            _evidenceUrl = data['evidenceUrl'] as String?;
+          if (observerSubmission != null) {
+            final votes = observerSubmission!['partyVotes'] as Map<String, dynamic>? ?? {};
+            votes.forEach((k, v) => _partyVotes[k] = int.tryParse(v.toString()) ?? 0);
+            _isFinal = observerSubmission!['status'] == 'final';
+            _evidenceUrl = observerSubmission!['evidenceUrl'] as String?;
           }
-          
+
           // Hydrate EC8A Statistics Draft Data
-          if (existingStats.exists && existingStats.data() != null) {
-            final data = existingStats.data()!;
+          if (observerStats != null) {
             _stats.keys.forEach((key) {
-              if (data.containsKey(key)) {
-                _stats[key] = int.tryParse(data[key].toString()) ?? 0;
+              if (observerStats!.containsKey(key)) {
+                _stats[key] = int.tryParse(observerStats![key].toString()) ?? 0;
               }
             });
           }
-          
           _loading = false;
           _updateControllers();
         });
@@ -2322,6 +3737,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     );
   }
 
+  String? _lastUsedModel;
+
   Future<void> _runOCR() async {
     if (_evidenceFile == null) return;
     
@@ -2334,12 +3751,26 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       bool usedFallback = false;
 
       try {
-        result = await aiService.processEC8A(_evidenceFile!);
+        List<String> abbs = _parties.map((d) => d['abbreviation'] as String).toList();
+        final aiResult = await aiService.processEC8A(_evidenceFile!, abbs);
+        result = aiResult.data;
+        _lastUsedModel = aiResult.modelName;
       } catch (geminiError) {
         debugPrint("Gemini failed, falling back to ML Kit: $geminiError");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Gemini AI failed (falling back to offline mode): $geminiError'),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
         usedFallback = true;
-        List<String> abbs = _parties.map((d) => (d.data() as Map<String, dynamic>)['abbreviation'] as String).toList();
-        result = await aiService.processEC8ALocal(_evidenceFile!, abbs);
+        List<String> abbs = _parties.map((d) => d['abbreviation'] as String).toList();
+        final aiResult = await aiService.processEC8ALocal(_evidenceFile!, abbs);
+        result = aiResult.data;
+        _lastUsedModel = aiResult.modelName;
       }
       
       if (result != null && mounted) {
@@ -2381,8 +3812,20 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           return; // Abort extraction entirely
         }
 
-        String? detectedType = result['electionType']?.toString().toUpperCase();
-        if (detectedType != null && _expectedType != null && detectedType != _expectedType && detectedType.isNotEmpty) {
+        String _normalizeType(String? raw) {
+          if (raw == null) return '';
+          final t = raw.toUpperCase();
+          if (t.contains('CHAIRMAN') || t.contains('COUNCIL') || t.contains('MUNICIPAL')) return 'LOCAL GOVERNMENT';
+          if (t.contains('GOVERNOR') || t.contains('GUBERNATORIAL')) return 'GUBERNATORIAL';
+          if (t.contains('SENATE') || t.contains('SENATORIAL')) return 'SENATORIAL';
+          if (t.contains('REPS') || t.contains('HOUSE OF REPS')) return 'HOUSE OF REPS';
+          return t;
+        }
+
+        String detectedType = _normalizeType(result['electionType']?.toString());
+        String expectedType = _normalizeType(_expectedType);
+
+        if (detectedType.isNotEmpty && expectedType.isNotEmpty && detectedType != expectedType) {
           // Clear the image to force re-upload
           setState(() {
             _evidenceFile = null;
@@ -2400,7 +3843,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                 ],
               ),
               content: Text(
-                'Data Extraction Aborted.\n\nThe AI detected this is a $detectedType election result sheet, but you are assigned to observe the $_expectedType election.\n\nPlease upload the correct EC8A image for the actual election type.',
+                'Data Extraction Aborted.\n\nThe AI detected this is a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nPlease upload the correct EC8A image for the actual election type.',
                 style: GoogleFonts.outfit(fontSize: 14, color: Colors.black, fontWeight: FontWeight.w600),
               ),
               actions: [
@@ -2421,18 +3864,26 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
         // Proceed to map data since year and type matches (or wasn't detected)
         setState(() {
-          // Map party votes
-          _parties.forEach((doc) {
-            final data = doc.data() as Map<String, dynamic>;
+          // Robust mapping of party votes (handles nested "partyVotes" and flat keys)
+          final dynamic rawPartyVotes = result?['partyVotes'];
+          Map<String, dynamic> partyVotesMap = {};
+          if (rawPartyVotes is Map) {
+            partyVotesMap = Map<String, dynamic>.from(rawPartyVotes);
+          }
+
+          _parties.forEach((data) {
             final key = data['abbreviation'] as String;
-            if (result!.containsKey(key)) {
-              _partyVotes[key] = int.tryParse(result![key].toString()) ?? 0;
+            if (partyVotesMap.containsKey(key)) {
+              _partyVotes[key] = int.tryParse(partyVotesMap[key].toString()) ?? 0;
+            } else if (result != null && result.containsKey(key)) {
+              _partyVotes[key] = int.tryParse(result[key].toString()) ?? 0;
             }
           });
+
           // Map stats
           _stats.keys.forEach((key) {
-            if (result!.containsKey(key)) {
-              _stats[key] = int.tryParse(result![key].toString()) ?? 0;
+            if (result != null && result.containsKey(key)) {
+              _stats[key] = int.tryParse(result[key].toString()) ?? 0;
             }
           });
           _updateControllers();
@@ -2456,7 +3907,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               ],
             ),
             content: Text(
-              'The EC8A data has been extracted.\n\nPlease carefully cross-check the populated numbers with your original EC8A image to ensure 100% accuracy before you submit.',
+              'The EC8A data has been extracted using $_lastUsedModel.\n\nPlease carefully cross-check the populated numbers with your original EC8A image to ensure 100% accuracy before you submit.',
               style: GoogleFonts.outfit(fontSize: 14, color: Colors.black),
             ),
             actions: [
@@ -2531,7 +3982,43 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         ),
       );
     } else {
-      _submit(isFinal);
+      // Missing EC8A Warning Dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.white,
+          title: Row(
+            children: [
+              const Icon(LucideIcons.image, color: Colors.orange),
+              const SizedBox(width: 10),
+              Text('Missing EC8A Form', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.black)),
+            ],
+          ),
+          content: Text(
+            'There is no EC8A Form image uploaded to support this entry. Please upload the physical result sheet before finalizing your submission.',
+            style: GoogleFonts.outfit(fontSize: 14, color: Colors.black, fontWeight: FontWeight.w600),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _submit(isFinal);
+              },
+              child: Text('CONTINUE WITHOUT FORM', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.grey[600])),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F172A),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text('OK, UPLOAD FORM', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+            ),
+          ],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        ),
+      );
     }
   }
 
@@ -2548,45 +4035,96 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       
       if (_evidenceFile != null) {
         final ref = FirebaseStorage.instance.ref().child('results/${widget.electionId}/${user?.uid}.jpg');
-        await ref.putFile(_evidenceFile!);
+        await ref.putFile(_evidenceFile!).timeout(const Duration(seconds: 15));
         evidenceUrl = await ref.getDownloadURL();
       }
 
       // 1. Data Preparation (Both Modes)
-      final pollingUnitInfo = {
-        'state': _userProfile?['assignedState'],
-        'lga': _userProfile?['assignedLga'],
-        'ward': _userProfile?['assignedWard'],
-        'pollingUnit': _userProfile?['assignedPollingUnit'],
-      };
+      final state = _userProfile?['assignedState'] ?? '';
+      final lga = _userProfile?['assignedLga'] ?? '';
+      final ward = _userProfile?['assignedWard'] ?? '';
+      final pu = _userProfile?['assignedPollingUnit'] ?? '';
+      final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
 
-      final payload1 = {
-        'electionId': widget.electionId,
-        'pollingUnitInfo': pollingUnitInfo,
+      final docRef = FirebaseFirestore.instance.collection('election_results').doc('${widget.electionId}_$puKey');
+      final docSnap = await docRef.get().timeout(const Duration(seconds: 10));
+
+      List<dynamic> submissionsList = [];
+      if (docSnap.exists && docSnap.data() != null) {
+        final data = docSnap.data() as Map<String, dynamic>;
+        submissionsList = List.from(data['submissions'] ?? []);
+      }
+
+      final newReport = {
+        'submittedBy': user?.uid,
+        'submittedByName': _userProfile?['fullName'] ?? 'Observer',
+        'submittedAt': Timestamp.now(),
+        'state': state,
+        'lga': lga,
+        'ward': ward,
+        'pollingUnit': pu,
         'partyVotes': _partyVotes,
-        if (evidenceUrl != null) 'evidenceUrl': evidenceUrl,
-        'status': isFinal ? 'final' : 'draft',
-        if (isFinal) 'submittedBy': user?.uid,
-        if (isFinal) 'submittedByName': _userProfile?['fullName'],
-        if (isFinal) 'submittedAt': FieldValue.serverTimestamp(),
-        if (!isFinal) 'updatedBy': user?.uid,
-        if (!isFinal) 'updatedAt': FieldValue.serverTimestamp(),
-      };
-
-      final payload2 = {
-        'electionId': widget.electionId,
-        'pollingUnitInfo': pollingUnitInfo,
+        'evidenceUrl': evidenceUrl ?? _evidenceUrl ?? '',
         'status': isFinal ? 'final' : 'draft',
         ..._stats,
         'totalValidVotes': _totalValidVotes,
         'totalUsedBallots': _totalUsedBallots,
       };
 
-      // Write 1: election_results
-      await FirebaseFirestore.instance.collection('election_results').doc('${widget.electionId}_${user?.uid}').set(payload1, SetOptions(merge: true));
+      final index = submissionsList.indexWhere((sub) => sub['submittedBy'] == user?.uid);
+      if (index != -1) {
+        submissionsList[index] = newReport;
+      } else {
+        submissionsList.add(newReport);
+      }
 
-      // Write 2: election_statistics
-      await FirebaseFirestore.instance.collection('election_statistics').doc('${widget.electionId}_${user?.uid}').set(payload2, SetOptions(merge: true));
+      final isNewDoc = !docSnap.exists;
+      final Map<String, dynamic> docPayload = {
+        'electionId': widget.electionId,
+        'state': state,
+        'lga': lga,
+        'ward': ward,
+        'pollingUnit': pu,
+        'partyVotes': _partyVotes,
+        if (evidenceUrl != null || _evidenceUrl != null) 'evidenceUrl': evidenceUrl ?? _evidenceUrl,
+        'submittedBy': user?.uid,
+        'submittedByName': _userProfile?['fullName'] ?? 'Observer',
+        'updatedAt': FieldValue.serverTimestamp(),
+        if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
+        ..._stats,
+        'totalValidVotes': _totalValidVotes,
+        'totalUsedBallots': _totalUsedBallots,
+        'submissions': submissionsList,
+      };
+
+      await docRef.set(docPayload, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+
+      final ipAddress = await _getPublicIP();
+
+      // Audit Log for Results Submission
+      try {
+        await FirebaseFirestore.instance.collection('audit_logs').add({
+          'userId': user?.uid,
+          'userEmail': user?.email,
+          'action': isFinal ? 'RESULTS_SUBMIT' : 'RESULTS_SAVE_DRAFT',
+          'resource': 'results',
+          'ipAddress': ipAddress,
+          'details': {
+            'observerName': _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'] ?? 'Observer',
+            'phone': _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A',
+            'electionId': widget.electionId,
+            'state': state,
+            'lga': lga,
+            'ward': ward,
+            'pollingUnit': pu,
+            'totalValidVotes': _totalValidVotes,
+            'totalUsedBallots': _totalUsedBallots,
+          },
+          'createdAt': FieldValue.serverTimestamp(),
+        }).timeout(const Duration(seconds: 5));
+      } catch (auditError) {
+        debugPrint('Graceful: Failed to write results audit log: $auditError');
+      }
 
       if (mounted) {
         if (isFinal) {
@@ -2599,6 +4137,68 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           // 2. Save Progress Post-Action
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Draft Saved'), backgroundColor: Color(0xFF3B82F6)));
         }
+      }
+    } catch (e) {
+      final errorStr = e.toString().toLowerCase();
+      final isNetworkError = errorStr.contains('socket') ||
+          errorStr.contains('network') ||
+          errorStr.contains('unavailable') ||
+          errorStr.contains('host-lookup') ||
+          errorStr.contains('connection') ||
+          errorStr.contains('timeout');
+
+      if (isNetworkError) {
+        try {
+          final user = FirebaseAuth.instance.currentUser;
+          final state = _userProfile?['assignedState'] ?? '';
+          final lga = _userProfile?['assignedLga'] ?? '';
+          final ward = _userProfile?['assignedWard'] ?? '';
+          final pu = _userProfile?['assignedPollingUnit'] ?? '';
+          final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+
+          final resultCompanion = db.ResultsCompanion(
+            observerId: drift.Value(user?.uid ?? ''),
+            pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
+            partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+            ballotStatsJson: drift.Value(jsonEncode({
+              ..._stats,
+              'electionId': widget.electionId,
+              'state': state,
+              'lga': lga,
+              'ward': ward,
+              'pollingUnit': pu,
+              'totalValidVotes': _totalValidVotes,
+              'totalUsedBallots': _totalUsedBallots,
+              'isFinal': isFinal,
+            })),
+            imagePath: drift.Value(_evidenceFile?.path),
+            isSynced: const drift.Value(false),
+          );
+
+          await context.read<db.AppDatabase>().insertResult(resultCompanion);
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('No internet connection. Saved locally to offline drafts!'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+            if (isFinal) {
+              setState(() => _isFinal = true);
+              DefaultTabController.maybeOf(context)?.animateTo(0);
+            }
+          }
+          return;
+        } catch (localDbError) {
+          debugPrint('Local DB Save failed: $localDbError');
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Submission failed: $e'), backgroundColor: Colors.red),
+        );
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -2645,7 +4245,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             ],
           ),
         ),
-        _buildStatusBadge('LIVE CONNECTION', const Color(0xFFECFDF5), const Color(0xFF10B981)),
+        _isOffline 
+            ? _buildStatusBadge('OFFLINE CONNECTION', const Color(0xFFFEF2F2), const Color(0xFFEF4444))
+            : _buildStatusBadge('LIVE CONNECTION', const Color(0xFFECFDF5), const Color(0xFF10B981)),
       ],
     );
   }
@@ -2737,7 +4339,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                 childAspectRatio: 1.5,
               ),
               itemCount: _parties.length,
-              itemBuilder: (context, i) => _buildPartyEntryCard(_parties[i].data() as Map<String, dynamic>),
+              itemBuilder: (context, i) => _buildPartyEntryCard(_parties[i]),
             ),
         ],
       ),
@@ -2764,7 +4366,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       physics: const NeverScrollableScrollPhysics(),
       itemCount: _parties.length,
       separatorBuilder: (context, i) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
-      itemBuilder: (context, i) => _buildPartyEntryRow(_parties[i].data() as Map<String, dynamic>),
+      itemBuilder: (context, i) => _buildPartyEntryRow(_parties[i]),
     );
   }
 
@@ -2917,7 +4519,14 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                     fit: BoxFit.cover,
                     colorFilter: _scanning ? ColorFilter.mode(Colors.black.withOpacity(0.6), BlendMode.darken) : null,
                   ) 
-                : (_evidenceUrl != null ? DecorationImage(image: CachedNetworkImageProvider(_evidenceUrl!), fit: BoxFit.cover) : null),
+                : (_evidenceUrl != null
+                    ? DecorationImage(
+                        image: (!_evidenceUrl!.startsWith('http://') && !_evidenceUrl!.startsWith('https://'))
+                            ? FileImage(File(_evidenceUrl!)) as ImageProvider
+                            : CachedNetworkImageProvider(_evidenceUrl!),
+                        fit: BoxFit.cover,
+                      )
+                    : null),
             ),
             child: _scanning
               ? Center(
@@ -2976,8 +4585,6 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               ],
             )
           else
-            Column(
-              children: [
                 Row(
                   children: [
                     Expanded(child: _buildActionButton('CHANGE IMAGE', LucideIcons.refreshCw, () {
@@ -2996,7 +4603,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                                 const SizedBox(height: 16),
                                 ListTile(
                                   leading: const Icon(LucideIcons.camera, color: Colors.black),
-                                  title: Text('Camera Snapshot', style: GoogleFonts.outfit(fontWeight: FontWeight.w600, color: Colors.black)),
+                                  title: Text('Take New Photo', style: GoogleFonts.outfit(fontWeight: FontWeight.w600, color: Colors.black)),
                                   onTap: () {
                                     Navigator.pop(ctx);
                                     _handleOCR(ImageSource.camera);
@@ -3040,8 +4647,31 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                     ),
                   ],
                 ),
-              ],
-            ),
+                const SizedBox(height: 12),
+                Center(
+                  child: ListenableBuilder(
+                    listenable: context.read<AIService>(),
+                    builder: (context, _) {
+                      final aiService = context.read<AIService>();
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                         // Icon(LucideIcons.cpu, size: 12, color: Colors.blueGrey.withOpacity(0.6)),
+                         // const SizedBox(width: 6),
+                          // Text(
+                          //   'ACTIVE ENGINE: ${aiService.currentModelName.toUpperCase()}',
+                          //   style: GoogleFonts.outfit(
+                          //     fontSize: 9, 
+                          //     fontWeight: FontWeight.w900, 
+                          //     color: Colors.blueGrey.withOpacity(0.7),
+                          //     letterSpacing: 0.8,
+                          //   ),
+                          // ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
         ],
       ),
     );
@@ -3060,7 +4690,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               child: Center(
                 child: _evidenceFile != null 
                   ? Image.file(_evidenceFile!) 
-                  : CachedNetworkImage(imageUrl: _evidenceUrl!),
+                  : ((!_evidenceUrl!.startsWith('http://') && !_evidenceUrl!.startsWith('https://'))
+                      ? Image.file(File(_evidenceUrl!))
+                      : CachedNetworkImage(imageUrl: _evidenceUrl!)),
               ),
             ),
             Positioned(
@@ -3194,40 +4826,48 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             ],
           ),
           const SizedBox(height: 32),
-          Row(
+          Column(
             children: [
-              Expanded(
+              SizedBox(
+                width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: _isFinal ? null : () => _attemptSubmit(false),
-                  icon: const Icon(LucideIcons.save, size: 16),
-                  label: Text('SAVE PROGRESS', style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w900)),
-                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 24), side: const BorderSide(color: Color(0xFFF1F5F9)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24))),
+                  onPressed: (_isFinal || _submitting) ? null : () => _attemptSubmit(false),
+                  icon: _submitting 
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF0F172A)))
+                    : const Icon(LucideIcons.save, size: 16),
+                  label: Text(_submitting ? 'SAVING...' : 'SAVE PROGRESS / DRAFT', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900)),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 24), 
+                    side: const BorderSide(color: Color(0xFFF1F5F9)), 
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                  ),
                 ),
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Container(
-                  height: 72,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF064E3B), Color(0xFF065F46)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [
-                      BoxShadow(color: const Color(0xFF064E3B).withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 6)),
-                    ],
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                height: 72,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF064E3B), Color(0xFF065F46)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
-                  child: ElevatedButton.icon(
-                    onPressed: _isFinal ? null : () => _attemptSubmit(true),
-                    icon: const Icon(LucideIcons.send, size: 16, color: Colors.white),
-                    label: Text('FINAL SUBMISSION', style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w900, color: Colors.white)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.transparent,
-                      shadowColor: Colors.transparent,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    ),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(color: const Color(0xFF059669).withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10)),
+                  ],
+                ),
+                child: ElevatedButton.icon(
+                  onPressed: (_isFinal || _submitting) ? null : () => _attemptSubmit(true),
+                  icon: _submitting 
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(LucideIcons.check, size: 16, color: Colors.white),
+                  label: Text(_submitting ? 'SUBMITTING...' : 'FINAL SUBMISSION', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
                   ),
                 ),
               ),
@@ -3644,6 +5284,7 @@ class _ChatWidget extends StatefulWidget {
 class _ChatWidgetState extends State<_ChatWidget> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  Map<String, dynamic>? _replyingToMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -3705,31 +5346,217 @@ class _ChatWidgetState extends State<_ChatWidget> {
                     final d = docs[i].data() as Map<String, dynamic>;
                     final isMe = d['senderId'] == widget.userId;
                     final sender = d['sender'] as Map<String, dynamic>? ?? {};
+                    final isDeleted = d['isDeleted'] == true;
+                    final isEdited = d['isEdited'] == true;
+                    final docId = docs[i].id;
                     
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: isMe ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.only(
-                            topLeft: const Radius.circular(16),
-                            topRight: const Radius.circular(16),
-                            bottomLeft: Radius.circular(isMe ? 16 : 0),
-                            bottomRight: Radius.circular(isMe ? 0 : 16),
+                    if (isDeleted) {
+                      return Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 16),
+                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Text(
+                            "This message has been deleted",
+                            style: GoogleFonts.outfit(
+                              color: const Color(0xFF94A3B8),
+                              fontStyle: FontStyle.italic,
+                              fontSize: 13,
+                            ),
                           ),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (!isMe)
-                              Text('${sender['firstName']} ${sender['lastName']}', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF64748B))),
-                            if (!isMe) const SizedBox(height: 4),
-                            Text(d['content'] ?? '', style: GoogleFonts.outfit(fontSize: 13, color: isMe ? Colors.white : const Color(0xFF0F172A), height: 1.4)),
-                          ],
-                        ),
+                      );
+                    }
+
+                    return Align(
+                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Column(
+                        crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            margin: const EdgeInsets.only(bottom: 4),
+                            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: isMe ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.only(
+                                topLeft: const Radius.circular(16),
+                                topRight: const Radius.circular(16),
+                                bottomLeft: Radius.circular(isMe ? 16 : 0),
+                                bottomRight: Radius.circular(isMe ? 0 : 16),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (!isMe) ...[
+                                  Text(sender['name'] ?? '${sender['firstName'] ?? ''} ${sender['lastName'] ?? ''}'.trim(), style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF64748B))),
+                                  const SizedBox(height: 4),
+                                ],
+                                if (d['replyTo'] != null) ...[
+                                  Container(
+                                    width: double.infinity,
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: isMe ? Colors.white.withOpacity(0.1) : const Color(0xFFE2E8F0),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border(
+                                        left: BorderSide(
+                                          color: isMe ? Colors.white54 : const Color(0xFF991B1B),
+                                          width: 3.0,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          d['replyTo']['senderName'] ?? '',
+                                          style: GoogleFonts.outfit(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            color: isMe ? Colors.white70 : const Color(0xFF991B1B),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          d['replyTo']['content'] ?? '',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: GoogleFonts.outfit(
+                                            fontSize: 11,
+                                            color: isMe ? Colors.white60 : const Color(0xFF475569),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                                if (d['type'] == 'image' && d['imageUrl'] != null && d['imageUrl'].toString().isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8.0),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: CachedNetworkImage(
+                                        imageUrl: d['imageUrl'],
+                                        width: double.infinity,
+                                        fit: BoxFit.cover,
+                                        placeholder: (context, url) => Container(
+                                          height: 150,
+                                          color: isMe ? Colors.white12 : Colors.black12,
+                                          child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                                        ),
+                                        errorWidget: (context, url, error) => const Icon(Icons.error, color: Colors.red),
+                                      ),
+                                    ),
+                                  ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        d['content'] ?? '',
+                                        style: GoogleFonts.outfit(
+                                          color: isMe ? Colors.white : const Color(0xFF0F172A),
+                                          fontSize: 13,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ),
+                                    if (isMe) ...[
+                                      const SizedBox(width: 12),
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(LucideIcons.cornerUpLeft, size: 13, color: Colors.white70),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(),
+                                            onPressed: () {
+                                              setState(() {
+                                                _replyingToMessage = {
+                                                  'messageId': docId,
+                                                  'senderName': 'You',
+                                                  'content': d['content'] ?? (d['type'] == 'image' ? '[Image]' : ''),
+                                                  'type': d['type'] ?? 'text',
+                                                };
+                                              });
+                                            },
+                                          ),
+                                          const SizedBox(width: 8),
+                                          if (d['type'] != 'image') ...[
+                                            IconButton(
+                                              icon: const Icon(LucideIcons.pencil, size: 13, color: Colors.white70),
+                                              padding: EdgeInsets.zero,
+                                              constraints: const BoxConstraints(),
+                                              onPressed: () {
+                                                _showEditDialog(docId, d['content'] ?? '');
+                                              },
+                                            ),
+                                            const SizedBox(width: 8),
+                                          ],
+                                          IconButton(
+                                            icon: const Icon(LucideIcons.trash2, size: 13, color: Color(0xFFFCA5A5)),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(),
+                                            onPressed: () {
+                                              _confirmDelete(docId);
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ] else ...[
+                                      const SizedBox(width: 12),
+                                      IconButton(
+                                        icon: const Icon(LucideIcons.cornerUpLeft, size: 13, color: Color(0xFF64748B)),
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        onPressed: () {
+                                          setState(() {
+                                            _replyingToMessage = {
+                                              'messageId': docId,
+                                              'senderName': sender['name'] ?? '${sender['firstName'] ?? ''} ${sender['lastName'] ?? ''}'.trim(),
+                                              'content': d['content'] ?? (d['type'] == 'image' ? '[Image]' : ''),
+                                              'type': d['type'] ?? 'text',
+                                            };
+                                          });
+                                        },
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(left: 12.0, right: 12.0, bottom: 12.0),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _formatTimestamp(d['createdAt']),
+                                  style: GoogleFonts.outfit(fontSize: 10, color: const Color(0xFF64748B)),
+                                ),
+                                if (isEdited)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 4.0),
+                                    child: Text(
+                                      "(edited)",
+                                      style: GoogleFonts.outfit(fontSize: 10, color: const Color(0xFF94A3B8), fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -3737,6 +5564,49 @@ class _ChatWidgetState extends State<_ChatWidget> {
               },
             ),
           ),
+          if (_replyingToMessage != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              decoration: const BoxDecoration(
+                color: Color(0xFFF8FAFC),
+                border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+              ),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.cornerUpRight, size: 16, color: Color(0xFF991B1B)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          "Replying to ${_replyingToMessage!['senderName']}",
+                          style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.bold, color: const Color(0xFF991B1B)),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _replyingToMessage!['content'] ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF475569)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(LucideIcons.x, size: 16, color: Color(0xFF64748B)),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () {
+                      setState(() {
+                        _replyingToMessage = null;
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
           Container(
             padding: EdgeInsets.fromLTRB(24, 16, 24, MediaQuery.of(context).viewInsets.bottom + 24),
             decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Color(0xFFF1F5F9)))),
@@ -3745,7 +5615,7 @@ class _ChatWidgetState extends State<_ChatWidget> {
                 Expanded(
                   child: TextField(
                     controller: _controller,
-                    style: GoogleFonts.outfit(fontSize: 14),
+                    style: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF0F172A)),
                     decoration: InputDecoration(
                       hintText: 'Type a message...',
                       hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF94A3B8)),
@@ -3773,9 +5643,133 @@ class _ChatWidgetState extends State<_ChatWidget> {
     );
   }
 
+  void _showMessageOptions(BuildContext context, String docId, String currentContent) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 24),
+            ListTile(
+              leading: const Icon(LucideIcons.pencil, color: Colors.blue),
+              title: Text('Edit Message', style: GoogleFonts.outfit(fontWeight: FontWeight.w600, color: const Color(0xFF0F172A))),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showEditDialog(docId, currentContent);
+              },
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.trash2, color: Colors.red),
+              title: Text('Delete Message', style: GoogleFonts.outfit(fontWeight: FontWeight.w600, color: const Color(0xFFEF4444))),
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmDelete(docId);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showEditDialog(String docId, String currentContent) {
+    final editController = TextEditingController(text: currentContent);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Edit Message', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+        content: TextField(
+          controller: editController,
+          autofocus: true,
+          style: GoogleFonts.outfit(color: const Color(0xFF0F172A)),
+          decoration: InputDecoration(
+            hintText: 'Edit message...',
+            fillColor: const Color(0xFFF8FAFC),
+            filled: true,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF64748B))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newContent = editController.text.trim();
+              if (newContent.isNotEmpty) {
+                await FirebaseFirestore.instance.collection('chat_messages').doc(docId).update({
+                  'content': newContent,
+                  'isEdited': true,
+                  'updatedAt': FieldValue.serverTimestamp(),
+                });
+              }
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF10B981),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text('SAVE', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDelete(String docId) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Delete Message', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFFEF4444))),
+        content: Text('Are you sure you want to delete this message?', style: GoogleFonts.outfit(color: const Color(0xFF64748B))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: const Color(0xFF64748B))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await FirebaseFirestore.instance.collection('chat_messages').doc(docId).update({
+                'isDeleted': true,
+                'content': '',
+                'imageUrl': '',
+                'type': 'text',
+                'updatedAt': FieldValue.serverTimestamp(),
+              });
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text('DELETE', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _sendMessage() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+
+    final replyData = _replyingToMessage;
+    setState(() {
+      _replyingToMessage = null;
+    });
 
     _controller.clear();
     
@@ -3789,12 +5783,25 @@ class _ChatWidgetState extends State<_ChatWidget> {
       'groupId': widget.groupId,
       'isRead': false,
       'senderId': widget.userId,
+      'type': 'text',
       'sender': {
         'firstName': firstName,
         'lastName': lastName,
+        'name': widget.userName,
         'role': widget.role,
         'senderId': widget.userId,
       },
+      if (replyData != null) 'replyTo': replyData,
     });
+  }
+
+  String _formatTimestamp(dynamic createdAt) {
+    if (createdAt == null) return '';
+    if (createdAt is Timestamp) {
+      final date = createdAt.toDate();
+      final minutes = date.minute.toString().padLeft(2, '0');
+      return "${date.hour}:$minutes";
+    }
+    return '';
   }
 }

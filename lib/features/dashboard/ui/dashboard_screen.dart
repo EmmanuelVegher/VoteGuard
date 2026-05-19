@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -6,6 +8,7 @@ import 'package:voteguard/core/theme/app_theme.dart';
 import 'package:voteguard/features/results/ui/results_entry_screen.dart';
 import 'package:voteguard/features/incidents/ui/incident_report_screen.dart';
 import 'package:voteguard/features/checklists/ui/verification_checklist_screen.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
@@ -34,7 +37,7 @@ class DashboardScreen extends StatelessWidget {
                   const SizedBox(height: 16),
                   _buildTelemetryCard(context),
                   const SizedBox(height: 40),
-                  _buildEmergencyButton(),
+                  _buildEmergencyButton(context),
                 ],
               ),
             ),
@@ -247,7 +250,35 @@ class DashboardScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildEmergencyButton() {
+
+  Future<void> _initiateCall(BuildContext context) async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('settings').doc('system_settings').get();
+      if (doc.exists) {
+        final valueStr = doc.data()?['value'] as String?;
+        if (valueStr != null) {
+          final valueJson = jsonDecode(valueStr);
+          final phone = valueJson['support']?['phone'];
+          if (phone != null && phone.toString().isNotEmpty) {
+            final Uri url = Uri.parse('tel:$phone');
+            if (await canLaunchUrl(url)) {
+              await launchUrl(url);
+              return;
+            }
+          }
+        }
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not initiate call. Support number not found.')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
+  Widget _buildEmergencyButton(BuildContext context) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(4),
@@ -257,7 +288,7 @@ class DashboardScreen extends StatelessWidget {
         border: Border.all(color: AppColors.error.withOpacity(0.2)),
       ),
       child: ElevatedButton(
-        onPressed: () {},
+        onPressed: () => _initiateCall(context),
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.error,
           padding: const EdgeInsets.symmetric(vertical: 16),

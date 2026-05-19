@@ -168,6 +168,12 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ─── AUDIT LOGS ───────────────────────────────────────────────────────────
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
     // ─── DENY ALL ELSE ────────────────────────────────────────────────────────
     match /{document=**} {
       allow read, write: if isAdmin();
