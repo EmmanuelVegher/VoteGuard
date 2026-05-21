@@ -9,6 +9,8 @@ import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:voteguard/services/sync_service.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:voteguard/services/auth_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -21,7 +23,8 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isPasswordVisible = false;
-
+  bool _rememberMe = false;
+  final LocalAuthentication _localAuth = LocalAuthentication();
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -148,8 +151,10 @@ class _LoginScreenState extends State<LoginScreen> {
                                 height: 24,
                                 width: 24,
                                 child: Checkbox(
-                                  value: false,
-                                  onChanged: (v) {},
+                                  value: _rememberMe,
+                                  onChanged: (v) {
+                                    setState(() => _rememberMe = v ?? false);
+                                  },
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                                 ),
                               ),
@@ -166,6 +171,12 @@ class _LoginScreenState extends State<LoginScreen> {
                           BlocConsumer<AuthBloc, AuthState>(
                             listener: (context, state) {
                               if (state.status == AuthStatus.authenticated) {
+                                if (_rememberMe) {
+                                  context.read<AuthService>().saveCredentials(_emailController.text, _passwordController.text);
+                                } else {
+                                  context.read<AuthService>().clearCredentials();
+                                }
+
                                 // Trigger background sync of metadata (parties, checklists, elections)
                                 try {
                                   final syncService = SyncService(context.read<db.AppDatabase>());
@@ -251,7 +262,38 @@ class _LoginScreenState extends State<LoginScreen> {
                           
                           // Biometric Button
                           OutlinedButton(
-                            onPressed: () {},
+                            onPressed: () async {
+                              try {
+                                final bool canAuthenticateWithBiometrics = await _localAuth.canCheckBiometrics;
+                                final bool canAuthenticate = canAuthenticateWithBiometrics || await _localAuth.isDeviceSupported();
+                                
+                                if (!canAuthenticate) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Biometrics not supported on this device', style: TextStyle(color: Colors.white)), backgroundColor: Color(0xFF991B1B)));
+                                  }
+                                  return;
+                                }
+
+                                final bool didAuthenticate = await _localAuth.authenticate(
+                                  localizedReason: 'Authenticate to access VoteGuard Portal',
+                                  options: const AuthenticationOptions(biometricOnly: true),
+                                );
+
+                                if (didAuthenticate && mounted) {
+                                  final credentials = await context.read<AuthService>().getStoredCredentials();
+                                  if (credentials != null) {
+                                    context.read<AuthBloc>().add(LoginRequested(
+                                      email: credentials['email']!,
+                                      password: credentials['password']!,
+                                    ));
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No saved credentials. Please login manually and check "Remember this device".', style: TextStyle(color: Colors.white)), backgroundColor: Color(0xFF991B1B)));
+                                  }
+                                }
+                              } catch (e) {
+                                debugPrint('Biometric Error: $e');
+                              }
+                            },
                             style: OutlinedButton.styleFrom(
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               minimumSize: const Size(double.infinity, 45),
@@ -267,6 +309,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           
+                          /*
                           const SizedBox(height: 16),
                           const Center(
                             child: Text(
@@ -300,6 +343,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                             ),
                           ),
+                          */
                         ],
                       ),
                     ),

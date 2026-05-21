@@ -41,6 +41,6 @@ class DefaultFirebaseOptions {
     messagingSenderId: '239455988709',
     projectId: 'naijaobserve',
     storageBucket: 'naijaobserve.firebasestorage.app',
-    iosBundleId: 'com.example.voteguard',
+    iosBundleId: 'org.caritasnigeria.voteguard',
   );
 }

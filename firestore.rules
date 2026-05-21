@@ -9,20 +9,28 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      let role = request.auth.token.role;
-      return isAuthenticated() &&
-        (role in ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE'] || 
+      let tokenRole = request.auth.token.role;
+      let isTokenAdmin = isAuthenticated() &&
+        (tokenRole in ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE'] || 
          request.auth.token.email == 'evegher@ccfng.org');
+         
+      return isTokenAdmin || (isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE']);
     }
 
     function isCoordinator() {
-      let role = request.auth.token.role;
-      return isAuthenticated() &&
-        (role in [
+      let tokenRole = request.auth.token.role;
+      let isTokenCoord = isAuthenticated() &&
+        (tokenRole in [
           'super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE',
           'regional_coordinator', 'state_coordinator', 'lga_coordinator', 'ward_coordinator',
           'REGIONAL_COORDINATOR', 'STATE_COORDINATOR', 'LGA_COORDINATOR', 'WARD_COORDINATOR'
         ]);
+        
+      return isTokenCoord || (isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in [
+          'super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE',
+          'regional_coordinator', 'state_coordinator', 'lga_coordinator', 'ward_coordinator',
+          'REGIONAL_COORDINATOR', 'STATE_COORDINATOR', 'LGA_COORDINATOR', 'WARD_COORDINATOR'
+      ]);
     }
 
     // ─── USERS ──────────────────────────────────────────────────────────────
@@ -64,8 +72,15 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // ─── APPROVAL REQUESTS ────────────────────────────────────────────────────
+    // ─── APPROVAL REQUESTS & APPROVALS ───────────────────────────────────────────
     match /approval_requests/{requestId} {
+      allow read: if isCoordinator() || isAdmin();
+      allow create: if isAuthenticated();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /approvals/{approvalId} {
       allow read: if isCoordinator() || isAdmin();
       allow create: if isAuthenticated();
       allow update: if isAdmin();

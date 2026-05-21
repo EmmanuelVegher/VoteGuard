@@ -1,4 +1,4 @@
-package com.example.voteguard
+package org.caritasnigeria.voteguard
 
 import io.flutter.embedding.android.FlutterActivity
 

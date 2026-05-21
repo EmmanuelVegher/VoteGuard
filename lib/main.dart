@@ -16,6 +16,7 @@ import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/ai_service.dart';
 import 'package:voteguard/data/local/app_database.dart';
 import 'package:voteguard/services/notification_service.dart';
+import 'package:voteguard/features/splash/ui/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -100,22 +101,7 @@ class VoteGuardApp extends StatelessWidget {
         }
         return null;
       },
-      home: BlocBuilder<AuthBloc, AuthState>(
-        builder: (context, state) {
-          if (state.status == AuthStatus.authenticated) {
-            final role = state.role?.toUpperCase();
-            if (role == 'SUPER_ADMIN' || role == 'ADMIN') {
-              return const SituationRoomScreen();
-            }
-            return const ElectionGalleryScreen();
-          } else if (state.status == AuthStatus.authenticating || state.status == AuthStatus.unknown) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator(color: AppColors.accent)),
-            );
-          }
-          return const LoginScreen();
-        },
-      ),
+      home: const SplashScreen(),
     );
   }
 }

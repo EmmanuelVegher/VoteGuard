@@ -134,10 +134,12 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
       // Load user profile name
       final userSnap = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
       final userProfile = userSnap.data();
+      final observerName = FirebaseAuth.instance.currentUser?.displayName ?? userProfile?['fullName'] ?? userProfile?['name'] ?? userProfile?['displayName'] ?? 'Observer';
 
       final newReport = {
         'submittedBy': user?.uid,
-        'submittedByName': userProfile?['fullName'] ?? userProfile?['name'] ?? 'Observer',
+        'submittedByName': observerName,
+        'phone': userProfile?['phone'] ?? userProfile?['phoneNumber'] ?? 'N/A',
         'submittedAt': Timestamp.now(),
         'state': state,
         'lga': lga,
@@ -166,7 +168,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
         'partyVotes': partyVotes,
         if (evidenceUrl != null) 'evidenceUrl': evidenceUrl,
         'submittedBy': user?.uid,
-        'submittedByName': userProfile?['fullName'] ?? userProfile?['name'] ?? 'Observer',
+        'submittedByName': observerName,
         'updatedAt': FieldValue.serverTimestamp(),
         if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
         ...stats..remove('electionId')..remove('state')..remove('lga')..remove('ward')..remove('pollingUnit')..remove('isFinal'),
@@ -1008,7 +1010,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
             child: TabBarView(
               controller: _tabController,
               children: [
-                _DashboardTab(electionId: widget.electionId, tabController: _tabController),
+                _DashboardTab(electionId: widget.electionId, tabController: _tabController, isOffline: _isOffline),
                 _ChecklistTab(electionId: widget.electionId),
                 _IncidentsTab(electionId: widget.electionId),
                 _EC8AResultsTab(electionId: widget.electionId),
@@ -1060,8 +1062,9 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
 class _DashboardTab extends StatelessWidget {
   final String electionId;
   final TabController tabController;
+  final bool isOffline;
 
-  const _DashboardTab({required this.electionId, required this.tabController});
+  const _DashboardTab({required this.electionId, required this.tabController, required this.isOffline});
 
   @override
   Widget build(BuildContext context) {
@@ -1120,12 +1123,15 @@ class _DashboardTab extends StatelessWidget {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(color: const Color(0xFFECFDF5), borderRadius: BorderRadius.circular(100)),
+                decoration: BoxDecoration(
+                  color: isOffline ? const Color(0xFFFEF2F2) : const Color(0xFFECFDF5), 
+                  borderRadius: BorderRadius.circular(100),
+                ),
                 child: Row(
                   children: [
-                    Container(width: 6, height: 6, decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle)),
+                    Container(width: 6, height: 6, decoration: BoxDecoration(color: isOffline ? const Color(0xFFEF4444) : const Color(0xFF10B981), shape: BoxShape.circle)),
                     const SizedBox(width: 6),
-                    Text('SYSTEM LIVE', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF065F46), letterSpacing: 0.5)),
+                    Text(isOffline ? 'SYSTEM OFFLINE' : 'SYSTEM LIVE', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: isOffline ? const Color(0xFFB91C1C) : const Color(0xFF065F46), letterSpacing: 0.5)),
                   ],
                 ),
               ),
@@ -1487,6 +1493,8 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
   bool _isFinalized = false;
   bool _hasSavedDraft = false;
   final Set<String> _editableFields = {};
+  bool _isOffline = false;
+  Timer? _networkCheckTimer;
 
   @override
   bool get wantKeepAlive => true;
@@ -1495,24 +1503,50 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
   void initState() {
     super.initState();
     _loadData();
+    _startNetworkTimer();
   }
 
   Future<void> _loadData() async {
+    // Force clear state to prevent cross-election data bleed
+    if (mounted) {
+      setState(() {
+        _answers.clear();
+        for (var c in _controllers.values) c.clear();
+        _isFinalized = false;
+        _hasSavedDraft = false;
+      });
+    }
+
     try {
       final user = FirebaseAuth.instance.currentUser;
-      final profile = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
-      _userProfile = profile.data();
+      
+      // Load user profile safely
+      try {
+        final profile = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get().timeout(const Duration(seconds: 5));
+        _userProfile = profile.data();
+      } catch (profileError) {
+        debugPrint('Checklist: Profile load failed/offline: $profileError');
+      }
 
-      // Step 1: Get the election to find its templateId
-      final electionDoc = await FirebaseFirestore.instance.collection('elections').doc(widget.electionId).get();
-      String? templateId = electionDoc.data()?['checklistTemplateId'];
+      // Step 1: Get the election template ID safely
+      String? templateId;
+      try {
+        final electionDoc = await FirebaseFirestore.instance.collection('elections').doc(widget.electionId).get().timeout(const Duration(seconds: 5));
+        templateId = electionDoc.data()?['checklistTemplateId'];
+      } catch (electionError) {
+        debugPrint('Checklist: Election load failed/offline: $electionError');
+      }
 
       // Step 2: Fallback to the latest template if not specified in the election
       if (templateId == null) {
-        final latestTemplate = await FirebaseFirestore.instance.collection('checklist_templates')
-            .orderBy('updatedAt', descending: true).limit(1).get();
-        if (latestTemplate.docs.isNotEmpty) {
-          templateId = latestTemplate.docs.first.id;
+        try {
+          final latestTemplate = await FirebaseFirestore.instance.collection('checklist_templates')
+              .orderBy('updatedAt', descending: true).limit(1).get().timeout(const Duration(seconds: 5));
+          if (latestTemplate.docs.isNotEmpty) {
+            templateId = latestTemplate.docs.first.id;
+          }
+        } catch (templateListError) {
+          debugPrint('Checklist: Template list fetch failed: $templateListError');
         }
       }
 
@@ -1521,10 +1555,10 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
       if (templateId != null) {
         try {
           final qDocs = await FirebaseFirestore.instance.collection('checklist_templates')
-              .doc(templateId).collection('questions').orderBy('order').get();
+              .doc(templateId).collection('questions').orderBy('order').get().timeout(const Duration(seconds: 10));
           questionsData = qDocs.docs.map((d) => d.data()).toList();
         } catch (e) {
-          debugPrint('Checklist: Offline questions fallback');
+          debugPrint('Checklist: Offline questions fallback: $e');
           final localQs = await context.read<db.AppDatabase>().getLocalChecklistQuestions(templateId);
           questionsData = localQs.map((q) => {
             'id': q.id,
@@ -1557,7 +1591,7 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
       // Step 4: Load draft/submission
       bool loadedLocal = false;
       try {
-        final localChecklists = await context.read<db.AppDatabase>().getUnsyncedChecklists();
+        final localChecklists = await context.read<db.AppDatabase>().getAllChecklists();
         final matchIndex = localChecklists.indexWhere((c) => c.title == primaryId || c.title == secondaryId);
         if (matchIndex != -1) {
           final match = localChecklists[matchIndex];
@@ -1567,25 +1601,44 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
           loadedLocal = true;
         }
       } catch (localDbError) {
-        debugPrint('Checklist: Error loading local unsynced checklist: $localDbError');
+        debugPrint('Checklist: Error loading local checklist: $localDbError');
       }
 
       DocumentSnapshot? draft;
-      if (!loadedLocal) {
-        try {
-          draft = await FirebaseFirestore.instance.collection('observer_checklists').doc(primaryId).get();
-          if (!draft.exists) {
-            draft = await FirebaseFirestore.instance.collection('observer_checklists').doc(secondaryId).get();
-          }
-        } catch (e) {
-          debugPrint('Checklist: Error fetching Firestore draft: $e');
+      try {
+        draft = await FirebaseFirestore.instance.collection('observer_checklists').doc(primaryId).get();
+        if (!draft.exists) {
+          draft = await FirebaseFirestore.instance.collection('observer_checklists').doc(secondaryId).get();
         }
+        // Query Fallback to make absolutely sure we find the document by fields!
+        if (!draft.exists) {
+          final querySnap = await FirebaseFirestore.instance.collection('observer_checklists')
+              .where('observerId', isEqualTo: user?.uid)
+              .where('electionId', isEqualTo: widget.electionId)
+              .limit(1)
+              .get();
+          if (querySnap.docs.isNotEmpty) {
+            draft = querySnap.docs.first;
+            debugPrint('Checklist: Found document via query fallback!');
+          }
+        }
+      } catch (e) {
+        debugPrint('Checklist: Error fetching Firestore draft: $e');
       }
+
+      final dataMap = draft?.data() as Map<String, dynamic>?;
+      debugPrint('Checklist load diagnostic: primaryId=$primaryId, draft.exists=${draft?.exists}, status=${dataMap?['status']}');
 
       if (mounted) {
         setState(() {
-          if (loadedLocal) {
-            // Initialize controllers with saved local data
+          if (draft != null && draft.exists) {
+            final data = draft.data() as Map<String, dynamic>;
+            _answers.clear(); // Clear any local data to prioritize the remote Firestore master document
+            _answers.addAll(Map<String, dynamic>.from(data['answers'] ?? {}));
+            _isFinalized = data['status'] == 'submitted';
+            _hasSavedDraft = data['status'] == 'draft';
+            
+            // Initialize controllers with saved data from Firestore
             _answers.forEach((key, value) {
               if (!_controllers.containsKey(key)) {
                 _controllers[key] = TextEditingController(text: value?.toString());
@@ -1593,13 +1646,37 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
                 _controllers[key]!.text = value?.toString() ?? '';
               }
             });
-          } else if (draft != null && draft.exists) {
-            final data = draft.data() as Map<String, dynamic>;
-            _answers.addAll(Map<String, dynamic>.from(data['answers'] ?? {}));
-            _isFinalized = data['status'] == 'submitted';
-            _hasSavedDraft = data['status'] == 'draft';
-            
-            // Initialize controllers with saved data
+
+            // Auto-sync the local database record to match Firestore
+            try {
+              final dbInstance = context.read<db.AppDatabase>();
+              dbInstance.getAllChecklists().then((localList) {
+                final idx = localList.indexWhere((c) => c.title == primaryId || c.title == secondaryId);
+                if (idx != -1) {
+                  dbInstance.updateChecklistItem(
+                    localList[idx].copyWith(
+                      category: jsonEncode(_answers),
+                      isCompleted: _isFinalized,
+                      isSynced: true,
+                      updatedAt: DateTime.now(),
+                    ),
+                  );
+                } else {
+                  dbInstance.insertChecklist(
+                    db.ChecklistsCompanion(
+                      title: drift.Value(primaryId),
+                      category: drift.Value(jsonEncode(_answers)),
+                      isCompleted: drift.Value(_isFinalized),
+                      isSynced: const drift.Value(true),
+                    ),
+                  );
+                }
+              });
+            } catch (err) {
+              debugPrint('Local DB sync from Firestore failed: $err');
+            }
+          } else if (loadedLocal) {
+            // Initialize controllers with saved local data
             _answers.forEach((key, value) {
               if (!_controllers.containsKey(key)) {
                 _controllers[key] = TextEditingController(text: value?.toString());
@@ -1613,9 +1690,15 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
           for (var q in _questions) {
             final text = (q['text'] ?? '').toString().toLowerCase();
             final qId = q['id'];
+
+            // Skip any time or date related inputs from identity/geography auto-fill
+            if (text.contains('time') || text.contains('date') || text.contains('at what time')) {
+              continue;
+            }
+
             if (_answers[qId] == null || _answers[qId].toString().trim().isEmpty) {
               String? autoValue;
-              if (text.contains('name')) {
+              if (text.contains('name') && !text.contains('officer') && !text.contains('agent')) {
                 autoValue = _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'];
               } else if (text.contains('phone') || text.contains('number') || text.contains('mobile')) {
                 autoValue = _userProfile?['phone'] ?? _userProfile?['phoneNumber'];
@@ -1623,7 +1706,7 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
                 autoValue = _userProfile?['assignedLga'];
               } else if (text.contains('ward')) {
                 autoValue = _userProfile?['assignedWard'];
-              } else if (text.contains('polling unit') || text.contains('polling') || text.contains('pu')) {
+              } else if (text.contains('polling unit') || text.contains('polling_unit') || text == 'pu' || text.endsWith(' pu') || text.startsWith('pu ')) {
                 autoValue = _userProfile?['assignedPollingUnit'];
               } else if (text.contains('state')) {
                 autoValue = _userProfile?['assignedState'];
@@ -1785,6 +1868,35 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
         debugPrint('Graceful: Failed to write checklist audit log to Firestore (rules constraint): $auditError');
       }
       
+      // Also ALWAYS store/update in local Drift database!
+      try {
+        final dbInstance = context.read<db.AppDatabase>();
+        final localChecklists = await dbInstance.getAllChecklists();
+        final matchIndex = localChecklists.indexWhere((c) => c.title == docId);
+
+        if (matchIndex != -1) {
+          final existing = localChecklists[matchIndex];
+          await dbInstance.updateChecklistItem(
+            existing.copyWith(
+              category: jsonEncode(_answers),
+              isCompleted: isFinal,
+              isSynced: true,
+              updatedAt: DateTime.now(),
+            ),
+          );
+        } else {
+          final checklistCompanion = db.ChecklistsCompanion(
+            title: drift.Value(docId),
+            category: drift.Value(jsonEncode(_answers)),
+            isCompleted: drift.Value(isFinal),
+            isSynced: const drift.Value(true),
+          );
+          await dbInstance.insertChecklist(checklistCompanion);
+        }
+      } catch (localDbError) {
+        debugPrint('Local DB Sync/Save failed: $localDbError');
+      }
+
       if (mounted) {
         setState(() {
           _isFinalized = isFinal;
@@ -1809,14 +1921,29 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
           final user = FirebaseAuth.instance.currentUser;
           final docId = '${user?.uid}_${widget.electionId}';
           
-          final checklistCompanion = db.ChecklistsCompanion(
-            title: drift.Value(docId),
-            category: drift.Value(jsonEncode(_answers)),
-            isCompleted: drift.Value(isFinal),
-            isSynced: const drift.Value(false),
-          );
+          final dbInstance = context.read<db.AppDatabase>();
+          final localChecklists = await dbInstance.getAllChecklists();
+          final matchIndex = localChecklists.indexWhere((c) => c.title == docId);
 
-          await context.read<db.AppDatabase>().insertChecklist(checklistCompanion);
+          if (matchIndex != -1) {
+            final existing = localChecklists[matchIndex];
+            await dbInstance.updateChecklistItem(
+              existing.copyWith(
+                category: jsonEncode(_answers),
+                isCompleted: isFinal,
+                isSynced: false,
+                updatedAt: DateTime.now(),
+              ),
+            );
+          } else {
+            final checklistCompanion = db.ChecklistsCompanion(
+              title: drift.Value(docId),
+              category: drift.Value(jsonEncode(_answers)),
+              isCompleted: drift.Value(isFinal),
+              isSynced: const drift.Value(false),
+            );
+            await dbInstance.insertChecklist(checklistCompanion);
+          }
 
           if (mounted) {
             setState(() {
@@ -1862,8 +1989,51 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
 
   @override
   void dispose() {
+    _networkCheckTimer?.cancel();
     _controllers.values.forEach((c) => c.dispose());
     super.dispose();
+  }
+
+  void _startNetworkTimer() {
+    _checkNetwork();
+    _networkCheckTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkNetwork());
+  }
+
+  Future<void> _checkNetwork() async {
+    try {
+      final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 3));
+      final isConnected = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (_isOffline != !isConnected) {
+        if (mounted) {
+          setState(() {
+            _isOffline = !isConnected;
+          });
+        }
+      }
+    } catch (_) {
+      if (!_isOffline) {
+        if (mounted) {
+          setState(() {
+            _isOffline = true;
+          });
+        }
+      }
+    }
+  }
+
+  Widget _buildConnectionStatusBadge(String text, Color bg, Color textCol) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(100)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(width: 8, height: 8, decoration: BoxDecoration(color: textCol, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(text, style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.w900, color: const Color(0xFF0F172A))),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1930,24 +2100,37 @@ class _ChecklistTabState extends State<_ChecklistTab> with AutomaticKeepAliveCli
       padding: const EdgeInsets.all(24),
       decoration: const BoxDecoration(color: Colors.white),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          SizedBox(
-            width: 48, height: 48,
-            child: CircularProgressIndicator(
-              value: progress,
-              backgroundColor: const Color(0xFFF1F5F9),
-              valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
-              strokeWidth: 6,
+          Expanded(
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 48, height: 48,
+                  child: CircularProgressIndicator(
+                    value: progress,
+                    backgroundColor: const Color(0xFFF1F5F9),
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
+                    strokeWidth: 6,
+                  ),
+                ),
+                const SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('COMPLETION TRACKER', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF64748B), letterSpacing: 1)),
+                      Text('${(progress * 100).toInt()}% Questions Answered', style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(width: 20),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('COMPLETION TRACKER', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF64748B), letterSpacing: 1)),
-              Text('${(progress * 100).toInt()}% Questions Answered', style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
-            ],
-          ),
+          const SizedBox(width: 12),
+          _isOffline 
+              ? _buildConnectionStatusBadge('OFFLINE CONNECTION', const Color(0xFFFEF2F2), const Color(0xFFEF4444))
+              : _buildConnectionStatusBadge('LIVE CONNECTION', const Color(0xFFECFDF5), const Color(0xFF10B981)),
         ],
       ),
     );
@@ -2376,6 +2559,8 @@ class _IncidentsTabState extends State<_IncidentsTab> {
   Map<String, dynamic>? _userProfile;
   final String _deviceId = 'OBS-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
   Timer? _clockTimer;
+  bool _isOffline = false;
+  Timer? _networkCheckTimer;
 
   final List<Map<String, String>> _types = [
     {'id': 'ballot_snatching', 'label': 'Ballot Snatching'},
@@ -2392,6 +2577,7 @@ class _IncidentsTabState extends State<_IncidentsTab> {
   void initState() {
     super.initState();
     _initData();
+    _startNetworkTimer();
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -2399,12 +2585,51 @@ class _IncidentsTabState extends State<_IncidentsTab> {
 
   @override
   void dispose() {
+    _networkCheckTimer?.cancel();
     _clockTimer?.cancel();
     _descriptionController.dispose();
     super.dispose();
   }
 
+  void _startNetworkTimer() {
+    _checkNetwork();
+    _networkCheckTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkNetwork());
+  }
+
+  Future<void> _checkNetwork() async {
+    try {
+      final result = await InternetAddress.lookup('google.com').timeout(const Duration(seconds: 3));
+      final isConnected = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (_isOffline != !isConnected) {
+        if (mounted) {
+          setState(() {
+            _isOffline = !isConnected;
+          });
+        }
+      }
+    } catch (_) {
+      if (!_isOffline) {
+        if (mounted) {
+          setState(() {
+            _isOffline = true;
+          });
+        }
+      }
+    }
+  }
+
   Future<void> _initData() async {
+    // Force clear state to prevent cross-election data bleed
+    if (mounted) {
+      setState(() {
+        _descriptionController.clear();
+        _selectedType = null;
+        _media.clear();
+        _savingDraft = false;
+        _submitting = false;
+      });
+    }
+
     try {
       final user = FirebaseAuth.instance.currentUser;
       final profile = await FirebaseFirestore.instance.collection('users').doc(user?.uid).get();
@@ -2746,25 +2971,25 @@ class _IncidentsTabState extends State<_IncidentsTab> {
             ],
           ),
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(100), border: Border.all(color: const Color(0xFFF1F5F9))),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle)),
-              const SizedBox(width: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('STATUS', style: GoogleFonts.outfit(fontSize: 7, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8))),
-                  Text('CONNECTED', style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.w900, color: const Color(0xFF0F172A))),
-                ],
-              ),
-            ],
-          ),
-        ),
+        _isOffline 
+            ? _buildConnectionStatusBadge('OFFLINE CONNECTION', const Color(0xFFFEF2F2), const Color(0xFFEF4444))
+            : _buildConnectionStatusBadge('LIVE CONNECTION', const Color(0xFFECFDF5), const Color(0xFF10B981)),
       ],
+    );
+  }
+
+  Widget _buildConnectionStatusBadge(String text, Color bg, Color textCol) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(100)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(width: 8, height: 8, decoration: BoxDecoration(color: textCol, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(text, style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.w900, color: const Color(0xFF0F172A))),
+        ],
+      ),
     );
   }
 
@@ -3377,6 +3602,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   bool _submitting = false;
   bool _isFinal = false;
   Map<String, dynamic>? _userProfile;
+  List<dynamic> _puSubmissions = [];
+  String? _puResultStatus;
   File? _evidenceFile;
   String? _evidenceUrl;
   bool _isPrecisionView = true; 
@@ -3503,42 +3730,71 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       Map<String, dynamic>? observerSubmission;
       Map<String, dynamic>? observerStats;
       
-      // 1. Check local unsynced result first!
-      try {
-        final localResults = await context.read<db.AppDatabase>().getUnsyncedResults();
-        final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey');
-        if (matchIndex != -1) {
-          final match = localResults[matchIndex];
-          final statsMap = jsonDecode(match.ballotStatsJson) as Map<String, dynamic>;
-          observerSubmission = {
-            'partyVotes': jsonDecode(match.partyVotesJson),
-            'evidenceUrl': match.imagePath,
-            'status': statsMap['isFinal'] == true ? 'final' : 'draft',
-          };
-          observerStats = statsMap;
-        }
-      } catch (localDbError) {
-        debugPrint('EC8A: Error loading local unsynced result: $localDbError');
-      }
-      
-      if (observerSubmission == null) {
+      bool checkLocalOnly = _isOffline;
+      List<dynamic> localSubmissions = [];
+      String? localStatus;
+
+      if (!_isOffline) {
         try {
-        final docSnap = await FirebaseFirestore.instance.collection('election_results').doc(webDocId).get();
-        if (docSnap.exists && docSnap.data() != null) {
-          final data = docSnap.data() as Map<String, dynamic>;
-          final submissionsList = data['submissions'] as List<dynamic>? ?? [];
-          final sub = submissionsList.firstWhere(
-            (s) => s['submittedBy'] == user?.uid,
-            orElse: () => null,
-          );
-          if (sub != null) {
-            observerSubmission = Map<String, dynamic>.from(sub);
-            observerStats = observerSubmission; // Stats are stored in the submission map too
+          final docSnap = await FirebaseFirestore.instance.collection('election_results').doc(webDocId).get().timeout(const Duration(seconds: 5));
+          if (docSnap.exists && docSnap.data() != null) {
+            final data = docSnap.data() as Map<String, dynamic>;
+            localStatus = data['status']?.toString();
+            localSubmissions = data['submissions'] as List<dynamic>? ?? [];
+            
+            final sub = localSubmissions.firstWhere(
+              (s) => s['submittedBy'] == user?.uid,
+              orElse: () => null,
+            );
+            if (sub != null) {
+              observerSubmission = Map<String, dynamic>.from(sub);
+              observerStats = observerSubmission;
+            } else {
+              // Not found in submissions array -> Deleted or wiped on Firestore!
+              // Automatically wipe local copy from Drift DB
+              final dbInstance = context.read<db.AppDatabase>();
+              final localResults = await dbInstance.getAllResults();
+              final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey' && r.observerId == user?.uid);
+              if (matchIndex != -1) {
+                await dbInstance.deleteResult(localResults[matchIndex].id);
+                debugPrint('EC8A: Wiped local result because submission was deleted in Firestore submissions array');
+              }
+            }
+          } else {
+            // Entire document deleted on Firestore!
+            // Automatically wipe local copy from Drift DB
+            final dbInstance = context.read<db.AppDatabase>();
+            final localResults = await dbInstance.getAllResults();
+            final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey' && r.observerId == user?.uid);
+            if (matchIndex != -1) {
+              await dbInstance.deleteResult(localResults[matchIndex].id);
+              debugPrint('EC8A: Wiped local result because Firestore document was deleted');
+            }
           }
+        } catch (e) {
+          debugPrint('EC8A: Error checking Firestore, fallback to local: $e');
+          checkLocalOnly = true;
         }
-      } catch (e) {
-        debugPrint('EC8A: Error loading election_results: $e');
       }
+
+      if (checkLocalOnly || observerSubmission == null) {
+        // Fallback or read from local database
+        try {
+          final localResults = await context.read<db.AppDatabase>().getAllResults();
+          final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey' && r.observerId == user?.uid);
+          if (matchIndex != -1) {
+            final match = localResults[matchIndex];
+            final statsMap = jsonDecode(match.ballotStatsJson) as Map<String, dynamic>;
+            observerSubmission = {
+              'partyVotes': jsonDecode(match.partyVotesJson),
+              'evidenceUrl': match.imagePath,
+              'status': statsMap['isFinal'] == true ? 'final' : 'draft',
+            };
+            observerStats = statsMap;
+          }
+        } catch (localDbError) {
+          debugPrint('EC8A: Error loading local result: $localDbError');
+        }
       }
 
       // If no submission is found in the array, check legacy paths
@@ -3587,6 +3843,22 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       if (mounted) {
         setState(() {
           _parties = partiesData;
+          _puSubmissions = localSubmissions;
+          _puResultStatus = localStatus;
+          
+          if (_puSubmissions.isEmpty && observerSubmission != null) {
+            final observerName = FirebaseAuth.instance.currentUser?.displayName ?? _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'] ?? 'Observer';
+            _puSubmissions = [{
+              'submittedBy': user?.uid,
+              'submittedByName': observerName,
+              'phone': _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A',
+              'status': observerSubmission!['status'],
+              'partyVotes': observerSubmission!['partyVotes'],
+              'evidenceUrl': observerSubmission!['evidenceUrl'] ?? '',
+            }];
+            _puResultStatus = observerSubmission!['status'] == 'final' ? 'Verified' : 'Draft';
+          }
+
           if (electionDoc?.exists == true && electionDoc?.data() != null) {
             final data = electionDoc!.data() as Map<String, dynamic>;
             if (data['startDate'] != null) {
@@ -3907,7 +4179,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               ],
             ),
             content: Text(
-              'The EC8A data has been extracted using $_lastUsedModel.\n\nPlease carefully cross-check the populated numbers with your original EC8A image to ensure 100% accuracy before you submit.',
+              'The EC8A data has been extracted using Smart Scan AI.\n\nPlease carefully cross-check the populated numbers with your original EC8A image to ensure 100% accuracy before you submit.',
               style: GoogleFonts.outfit(fontSize: 14, color: Colors.black),
             ),
             actions: [
@@ -3951,6 +4223,63 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
+  }
+
+  Future<void> _handleDeleteLocalSubmission() async {
+    showDialog(
+      context: context,
+      builder: (confirmCtx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete Local Submission Copy', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.black)),
+        content: Text('Are you sure you want to delete this locally stored results sheet submission copy? This will unlock the result entry form.', style: GoogleFonts.outfit(color: Colors.black)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(confirmCtx),
+            child: Text('CANCEL', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(confirmCtx);
+              try {
+                final user = FirebaseAuth.instance.currentUser;
+                final state = _userProfile?['assignedState'] ?? '';
+                final lga = _userProfile?['assignedLga'] ?? '';
+                final ward = _userProfile?['assignedWard'] ?? '';
+                final pu = _userProfile?['assignedPollingUnit'] ?? '';
+                final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+
+                final dbInstance = context.read<db.AppDatabase>();
+                final localResults = await dbInstance.getAllResults();
+                final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey' && r.observerId == user?.uid);
+                
+                if (matchIndex != -1) {
+                  await dbInstance.deleteResult(localResults[matchIndex].id);
+                }
+
+                if (mounted) {
+                  setState(() {
+                    _isFinal = false;
+                    _evidenceUrl = null;
+                    _evidenceFile = null;
+                    _partyVotes.clear();
+                    _stats.keys.forEach((k) => _stats[k] = 0);
+                    _updateControllers();
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Local submission copy deleted. Form unlocked.'), backgroundColor: Colors.red),
+                  );
+                }
+              } catch (e) {
+                debugPrint('Error deleting local result: $e');
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            child: Text('DELETE COPY', style: GoogleFonts.outfit(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   void _attemptSubmit(bool isFinal) {
@@ -4055,9 +4384,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         submissionsList = List.from(data['submissions'] ?? []);
       }
 
+      final observerName = FirebaseAuth.instance.currentUser?.displayName ?? _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'] ?? 'Observer';
+
       final newReport = {
         'submittedBy': user?.uid,
-        'submittedByName': _userProfile?['fullName'] ?? 'Observer',
+        'submittedByName': observerName,
+        'phone': _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A',
         'submittedAt': Timestamp.now(),
         'state': state,
         'lga': lga,
@@ -4088,7 +4420,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         'partyVotes': _partyVotes,
         if (evidenceUrl != null || _evidenceUrl != null) 'evidenceUrl': evidenceUrl ?? _evidenceUrl,
         'submittedBy': user?.uid,
-        'submittedByName': _userProfile?['fullName'] ?? 'Observer',
+        'submittedByName': observerName,
         'updatedAt': FieldValue.serverTimestamp(),
         if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
         ..._stats,
@@ -4126,6 +4458,41 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         debugPrint('Graceful: Failed to write results audit log: $auditError');
       }
 
+      // Also ALWAYS store/update in local Drift database!
+      try {
+        final dbInstance = context.read<db.AppDatabase>();
+        final localResults = await dbInstance.getAllResults();
+        final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey');
+
+        if (matchIndex != -1) {
+          final existing = localResults[matchIndex];
+          await dbInstance.deleteResult(existing.id);
+        }
+
+        final resultCompanion = db.ResultsCompanion(
+          observerId: drift.Value(user?.uid ?? ''),
+          pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
+          partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+          ballotStatsJson: drift.Value(jsonEncode({
+            ..._stats,
+            'electionId': widget.electionId,
+            'state': state,
+            'lga': lga,
+            'ward': ward,
+            'pollingUnit': pu,
+            'totalValidVotes': _totalValidVotes,
+            'totalUsedBallots': _totalUsedBallots,
+            'isFinal': isFinal,
+          })),
+          imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
+          isSynced: const drift.Value(true),
+        );
+        await dbInstance.insertResult(resultCompanion);
+      } catch (localDbError) {
+        debugPrint('Local DB Sync/Save failed: $localDbError');
+      }
+
+      await _loadData();
       if (mounted) {
         if (isFinal) {
           // 3. Final Submission Post-Action
@@ -4156,6 +4523,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           final pu = _userProfile?['assignedPollingUnit'] ?? '';
           final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
 
+          final dbInstance = context.read<db.AppDatabase>();
+          final localResults = await dbInstance.getAllResults();
+          final matchIndex = localResults.indexWhere((r) => r.pollingUnitId == '${widget.electionId}_$puKey');
+
+          if (matchIndex != -1) {
+            final existing = localResults[matchIndex];
+            await dbInstance.deleteResult(existing.id);
+          }
+
           final resultCompanion = db.ResultsCompanion(
             observerId: drift.Value(user?.uid ?? ''),
             pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
@@ -4175,8 +4551,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             isSynced: const drift.Value(false),
           );
 
-          await context.read<db.AppDatabase>().insertResult(resultCompanion);
+          await dbInstance.insertResult(resultCompanion);
 
+          await _loadData();
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -4224,9 +4601,256 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         const SizedBox(height: 24),
         _buildStatsSidebarCard(),
         const SizedBox(height: 32),
+        _buildPollingUnitSubmissionsSection(),
+        const SizedBox(height: 32),
         _buildProgressFooter(),
         const SizedBox(height: 48),
       ],
+    );
+  }
+
+  Widget _buildPollingUnitSubmissionsSection() {
+    if (_puSubmissions.isEmpty) return const SizedBox.shrink();
+
+    final isDisputed = _puResultStatus?.toLowerCase() == 'disputed';
+    final isResolved = _puResultStatus?.toLowerCase() == 'resolved';
+
+    return Container(
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(32),
+        border: Border.all(color: const Color(0xFFF1F5F9)),
+        boxShadow: [
+          BoxShadow(color: const Color(0xFF0F172A).withOpacity(0.03), blurRadius: 30, offset: const Offset(0, 15)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('POLLING UNIT SUBMISSIONS', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: const Color(0xFF64748B), letterSpacing: 1)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: isDisputed 
+                      ? const Color(0xFFFEF2F2) 
+                      : (isResolved ? const Color(0xFFECFDF5) : const Color(0xFFEFF6FF)),
+                  borderRadius: BorderRadius.circular(100),
+                ),
+                child: Text(
+                  (_puResultStatus ?? 'VERIFIED').toUpperCase(),
+                  style: GoogleFonts.outfit(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    color: isDisputed 
+                        ? const Color(0xFFEF4444) 
+                        : (isResolved ? const Color(0xFF10B981) : const Color(0xFF3B82F6)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          
+          if (isDisputed) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFFFCA5A5)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.triangleAlert, color: Color(0xFFEF4444), size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('DISPUTED ELECTION RESULT DETECTED', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: const Color(0xFF991B1B))),
+                        const SizedBox(height: 4),
+                        Text('Results uploaded by observers have conflicting party figures. Admin review has been initiated.', style: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF7F1D1D))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ] else if (isResolved) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECFDF5),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFFA7F3D0)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.shieldCheck, color: Color(0xFF10B981), size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('CONFLICT RESOLVED BY ADMINISTRATOR', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: const Color(0xFF065F46))),
+                        const SizedBox(height: 4),
+                        Text('The conflicting entries have been officially audited and resolved by election officials.', style: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF064E3B))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _puSubmissions.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 16),
+            itemBuilder: (context, index) {
+              final sub = _puSubmissions[index] as Map<String, dynamic>;
+              final observerName = sub['submittedByName']?.toString() ?? 'Observer';
+              final observerPhone = sub['phone']?.toString() ?? 'N/A';
+              final rawVotes = sub['partyVotes'] as Map<String, dynamic>? ?? {};
+              final evidence = sub['evidenceUrl']?.toString() ?? '';
+
+              return Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: const Color(0xFFF1F5F9)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 40, height: 40,
+                          decoration: const BoxDecoration(color: Color(0xFFE2E8F0), shape: BoxShape.circle),
+                          child: const Icon(LucideIcons.user, size: 18, color: Color(0xFF64748B)),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(observerName, style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.bold, color: const Color(0xFF0F172A))),
+                              const SizedBox(height: 2),
+                              Row(
+                                children: [
+                                  const Icon(LucideIcons.phone, size: 12, color: Color(0xFF94A3B8)),
+                                  const SizedBox(width: 4),
+                                  Text(observerPhone, style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (evidence.isNotEmpty) ...[
+                          IconButton(
+                            onPressed: () => _viewSubmissionEvidence(evidence, observerName),
+                            icon: const Icon(LucideIcons.eye, size: 20, color: Color(0xFF0F172A)),
+                            tooltip: 'View Results Document',
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text('PARTY VOTES SUBMITTED', style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: rawVotes.entries.map((e) {
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(e.key.toUpperCase(), style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w900, color: const Color(0xFF0F172A))),
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(color: const Color(0xFFF1F5F9), borderRadius: BorderRadius.circular(6)),
+                                child: Text('${e.value}', style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.bold, color: const Color(0xFF334155))),
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _viewSubmissionEvidence(String url, String observerName) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Evidence Preview',
+      barrierColor: Colors.black.withOpacity(0.9),
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (context, _, __) {
+        return Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Stack(
+            children: [
+              Center(
+                child: InteractiveViewer(
+                  maxScale: 5.0,
+                  child: Image.network(
+                    url,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (context, child, progress) {
+                      if (progress == null) return child;
+                      return const Center(child: CircularProgressIndicator(color: Colors.white));
+                    },
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 54, left: 24, right: 24,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('RESULTS SHEET', style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w900, color: Colors.white54, letterSpacing: 1)),
+                        Text('Submitted by $observerName', style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(LucideIcons.x, color: Colors.white, size: 28),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -4246,13 +4870,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           ),
         ),
         _isOffline 
-            ? _buildStatusBadge('OFFLINE CONNECTION', const Color(0xFFFEF2F2), const Color(0xFFEF4444))
-            : _buildStatusBadge('LIVE CONNECTION', const Color(0xFFECFDF5), const Color(0xFF10B981)),
+            ? _buildConnectionStatusBadge('OFFLINE CONNECTION', const Color(0xFFFEF2F2), const Color(0xFFEF4444))
+            : _buildConnectionStatusBadge('LIVE CONNECTION', const Color(0xFFECFDF5), const Color(0xFF10B981)),
       ],
     );
   }
 
-  Widget _buildStatusBadge(String text, Color bg, Color textCol) {
+  Widget _buildConnectionStatusBadge(String text, Color bg, Color textCol) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(100)),
@@ -4871,6 +5495,23 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                   ),
                 ),
               ),
+              if (_isFinal) ...[
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _handleDeleteLocalSubmission,
+                    icon: const Icon(LucideIcons.trash2, size: 16, color: Color(0xFFEF4444)),
+                    label: Text('DELETE LOCAL SUBMISSION COPY', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: const Color(0xFFEF4444))),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 24), 
+                      side: const BorderSide(color: Color(0xFFFCA5A5)), 
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                      backgroundColor: const Color(0xFFFEF2F2),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ],

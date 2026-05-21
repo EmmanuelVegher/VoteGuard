@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.voteguard"
+    namespace = "org.caritasnigeria.voteguard"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -22,7 +22,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.voteguard"
+        applicationId = "org.caritasnigeria.voteguard"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -31,11 +31,36 @@ android {
         versionName = flutter.versionName
     }
 
+    // In AGP 8.5+, use 'packaging' instead of 'packagingOptions'
+    packaging {
+        jniLibs {
+            // Keep native libraries uncompressed in the App Bundle.
+            // This is required for some modern device/runtime constraints (including 16KB page-size devices).
+            useLegacyPackaging = false
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    signingConfigs {
+        create("release") {
+            keyAlias = "upload"
+            keyPassword = "Moderated@2023"
+            // WARNING: absolute paths like this will fail if you move the project to another computer.
+            // It is better to use: file("../key.properties") or similar relative paths.
+            storeFile = file("/Users/mac/upload-keystore.jks") 
+            storePassword = "Moderated@2023"
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")
         }
     }
 }
