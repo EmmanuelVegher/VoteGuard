@@ -10,6 +10,8 @@ import 'package:intl/intl.dart';
 import 'package:voteguard/models/election_model.dart';
 import 'package:voteguard/services/time_service.dart';
 import 'package:voteguard/services/export_service.dart';
+import 'package:voteguard/features/auth/ui/login_screen.dart';
+import 'package:voteguard/features/profile/ui/profile_screen.dart';
 import 'package:voteguard/services/geo_service.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/sync_service.dart';
@@ -37,6 +39,9 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
   bool _hasUpdates = false;
   StreamSubscription<QuerySnapshot>? _electionsSubscription;
   bool _isFirstSnapshot = true;
+  String? _userSenatorialDistrict;
+  String? _lastFetchedState;
+  String? _lastFetchedLga;
 
   // Connectivity State
   bool _isOnline = true;
@@ -157,6 +162,10 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
               states: (metadata['state'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
               lgas: (metadata['lga'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
               wards: (metadata['ward'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+              senatorialDistricts: (metadata['senatorialDistricts'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+              primaryParty: metadata['primaryParty']?.toString(),
+              primaryElectionType: metadata['primaryElectionType']?.toString(),
+              aspirants: (metadata['aspirants'] as List<dynamic>?)?.map((e) => Map<String, dynamic>.from(e)).toList() ?? [],
             );
           }).toList();
           _isLoadingElections = false;
@@ -173,12 +182,47 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
       }
       if (snapshot.docChanges.isNotEmpty) {
         if (mounted) {
-          setState(() {
-            _hasUpdates = true;
-          });
+          _fetchElections(); // Automatically fetch the latest data
         }
       }
     });
+  }
+
+  Future<void> _fetchUserSenatorialDistrict(String state, String lga) async {
+    if (state.isEmpty || lga.isEmpty) return;
+    try {
+      // 1. Query flexible state & name
+      final q = await FirebaseFirestore.instance
+          .collection('lgas')
+          .where('state', isEqualTo: state)
+          .where('name', isEqualTo: lga)
+          .get();
+      if (q.docs.isNotEmpty) {
+        final data = q.docs.first.data();
+        final district = data['senatorialDistrict']?.toString() ?? data['senatorial_district']?.toString();
+        if (district != null && mounted) {
+          setState(() {
+            _userSenatorialDistrict = district;
+          });
+          return;
+        }
+      }
+      
+      // 2. Secondary fallback direct document ID lookup
+      final docId = '${state}_$lga';
+      final docSnap = await FirebaseFirestore.instance.collection('lgas').doc(docId).get();
+      if (docSnap.exists) {
+        final data = docSnap.data();
+        final district = data?['senatorialDistrict']?.toString() ?? data?['senatorial_district']?.toString();
+        if (district != null && mounted) {
+          setState(() {
+            _userSenatorialDistrict = district;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching user senatorial district: $e");
+    }
   }
 
   Stream<DocumentSnapshot> get _userStream {
@@ -192,6 +236,18 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
       stream: _userStream,
       builder: (context, userSnapshot) {
         final userProfile = userSnapshot.data?.data() as Map<String, dynamic>?;
+        
+        if (userProfile != null) {
+          final state = userProfile['assignedState']?.toString() ?? userProfile['state']?.toString() ?? '';
+          final lga = userProfile['assignedLga']?.toString() ?? userProfile['lga']?.toString() ?? '';
+          if (state.isNotEmpty && lga.isNotEmpty && (state != _lastFetchedState || lga != _lastFetchedLga)) {
+            _lastFetchedState = state;
+            _lastFetchedLga = lga;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _fetchUserSenatorialDistrict(state, lga);
+            });
+          }
+        }
         
         return Scaffold(
           backgroundColor: const Color(0xFFF8FAFC),
@@ -240,50 +296,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
                     ),
                   ),
                 ),
-                SliverToBoxAdapter(
-                  child: AnimatedSize(
-                    duration: const Duration(milliseconds: 300),
-                    child: _hasUpdates
-                        ? Container(
-                            margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFECFDF5),
-                              border: Border.all(color: const Color(0xFFA7F3D0)),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(LucideIcons.refreshCw, color: Color(0xFF059669), size: 20),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    'New election updates available!',
-                                    style: GoogleFonts.outfit(
-                                      color: const Color(0xFF065F46),
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                                TextButton(
-                                  onPressed: _fetchElections,
-                                  style: TextButton.styleFrom(
-                                    backgroundColor: const Color(0xFF059669),
-                                    foregroundColor: Colors.white,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                    minimumSize: Size.zero,
-                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                  ),
-                                  child: Text('REFRESH', style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w900)),
-                                ),
-                              ],
-                            ),
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                ),
+                // Removed manual refresh banner widget
                 SliverToBoxAdapter(
                   child: Column(
                     children: [
@@ -345,11 +358,23 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
         ),
         Padding(
           padding: const EdgeInsets.only(right: 16.0, left: 8),
-          child: CircleAvatar(
-            radius: 16,
-            backgroundImage: hasImg ? NetworkImage(profile!['profilePictureUrl'].toString()) : null,
-            backgroundColor: const Color(0xFF1E293B),
-            child: !hasImg ? const Icon(LucideIcons.user, size: 16, color: Colors.white) : null,
+          child: GestureDetector(
+            onTap: () {
+              if (profile != null) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ProfileScreen(userProfile: profile),
+                  ),
+                );
+              }
+            },
+            child: CircleAvatar(
+              radius: 16,
+              backgroundImage: hasImg ? NetworkImage(profile!['profilePictureUrl'].toString()) : null,
+              backgroundColor: const Color(0xFF1E293B),
+              child: !hasImg ? const Icon(LucideIcons.user, size: 16, color: Colors.white) : null,
+            ),
           ),
         ),
       ],
@@ -613,42 +638,77 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
     return all.where((e) {
       if (e.startDate == null) return false;
 
-      // GEOGRAPHIC VISIBILITY FILTERING
       bool isVisible = false;
-      final type = e.type.toUpperCase().replaceAll('_', ' ');
-      
-      // Helper function to check if a value is contained in targeting arrays case-insensitively
       bool matchGeographic(List<String> targets, String? value) {
         if (value == null || value.trim().isEmpty) return false;
         final normalizedValue = value.trim().toUpperCase();
         return targets.any((t) {
           final normalizedTarget = t.trim().toUpperCase();
-          // Match if target equals value, or if it includes it (e.g. "ABAJI (FCT)" contains "ABAJI")
           return normalizedTarget == normalizedValue || normalizedTarget.contains(normalizedValue);
         });
       }
 
-      if (type.contains('PRESIDENTIAL') || type.contains('GENERAL')) {
-        isVisible = true; // Nationwide visibility
-      } else if (type.contains('GOVERNORSHIP') || type.contains('GUBERNATORIAL') || type.contains('GOVERNOR')) {
-        // Filter by state
+      final rawType = e.type.toUpperCase();
+
+      if (rawType == 'PRESIDENTIAL') {
+        isVisible = true;
+      } else if (rawType == 'GOVERNORSHIP') {
         isVisible = matchGeographic(e.states, observerState);
-      } else if (type.contains('SENATORIAL') || type.contains('SENATE') || 
-                 type.contains('REPRESENTATIVE') || type.contains('REPS') || 
-                 type.contains('LOCAL GOVERNMENT') || type.contains('LGA')) {
-        // Filter by LGA
+      } else if (rawType == 'SENATORIAL') {
+        if (_userSenatorialDistrict == null) {
+          isVisible = false;
+        } else {
+          isVisible = matchGeographic(e.senatorialDistricts, _userSenatorialDistrict);
+        }
+      } else if (rawType == 'HOUSE_OF_REPRESENTATIVES' || rawType == 'LOCAL_GOVERNMENT') {
         isVisible = matchGeographic(e.lgas, observerLga);
-      } else if (type.contains('STATE ASSEMBLY') || type.contains('HOUSE OF ASSEMBLY') || type.contains('STATE HOUSE')) {
-        // Filter by Ward
-        isVisible = matchGeographic(e.lgas, observerLga) && matchGeographic(e.wards, observerWard);
-      } else {
-        // Unknown types fallback: if targeting is configured, apply defensive matching.
-        if (e.states.isNotEmpty) {
-          isVisible = matchGeographic(e.states, observerState);
+      } else if (rawType == 'STATE_HOUSE_OF_ASSEMBLY') {
+        if (e.wards.isNotEmpty) {
+          isVisible = matchGeographic(e.wards, observerWard);
+        } else {
+          isVisible = matchGeographic(e.lgas, observerLga);
+        }
+      } else if (rawType == 'COUNCILLOR') {
+        isVisible = matchGeographic(e.wards, observerWard);
+      } else if (rawType == 'PARTY_PRIMARIES') {
+        if (e.wards.isNotEmpty) {
+          isVisible = matchGeographic(e.wards, observerWard);
         } else if (e.lgas.isNotEmpty) {
           isVisible = matchGeographic(e.lgas, observerLga);
+        } else if (e.states.isNotEmpty) {
+          isVisible = matchGeographic(e.states, observerState);
         } else {
           isVisible = true;
+        }
+      } else {
+        // Fallback for any other type
+        if (rawType.contains('PRESIDENTIAL') || rawType.contains('GENERAL')) {
+          isVisible = true;
+        } else if (rawType.contains('GOVERNOR')) {
+          isVisible = matchGeographic(e.states, observerState);
+        } else if (rawType.contains('SENATE') || rawType.contains('SENATORIAL')) {
+          isVisible = _userSenatorialDistrict != null && matchGeographic(e.senatorialDistricts, _userSenatorialDistrict);
+        } else if (rawType.contains('REPRESENTATIVE') || rawType.contains('REPS') || rawType.contains('LGA') || rawType.contains('LOCAL GOVERNMENT')) {
+          isVisible = matchGeographic(e.lgas, observerLga);
+        } else if (rawType.contains('STATE ASSEMBLY') || rawType.contains('HOUSE OF ASSEMBLY') || rawType.contains('STATE HOUSE')) {
+          if (e.wards.isNotEmpty) {
+            isVisible = matchGeographic(e.wards, observerWard);
+          } else {
+            isVisible = matchGeographic(e.lgas, observerLga);
+          }
+        } else if (rawType.contains('COUNCILLOR')) {
+          isVisible = matchGeographic(e.wards, observerWard);
+        } else {
+          // Defensive fallback
+          if (e.wards.isNotEmpty) {
+            isVisible = matchGeographic(e.wards, observerWard);
+          } else if (e.lgas.isNotEmpty) {
+            isVisible = matchGeographic(e.lgas, observerLga);
+          } else if (e.states.isNotEmpty) {
+            isVisible = matchGeographic(e.states, observerState);
+          } else {
+            isVisible = true;
+          }
         }
       }
 
@@ -1058,7 +1118,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
       return builder({'checklist': false, 'incidents': 0, 'result': false});
     }
 
-    final puKey = '${state}_${lga}_${ward}_$pu'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+    final puKey = '${state}_${lga}_${ward}_$pu'.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
     final docId = '${election.id}_$puKey';
 
     return StreamBuilder<List<dynamic>>(
@@ -1127,7 +1187,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
                 final lga = profile?['assignedLga'] ?? '';
                 final ward = profile?['assignedWard'] ?? '';
                 final pu = profile?['assignedPollingUnit'] ?? '';
-                final puKey = '${state}_${lga}_${ward}_$pu'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+                final puKey = '${state}_${lga}_${ward}_$pu'.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
                 final docId = '${election.id}_$puKey';
 
                 final snap = await FirebaseFirestore.instance

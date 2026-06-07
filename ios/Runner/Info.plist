@@ -55,5 +55,7 @@
 	<string>This app needs microphone access to record audio evidence of election incidents.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>This app needs access to your photo library to allow uploading evidence from your gallery.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>This app needs access to Face ID to authenticate you securely.</string>
 </dict>
 </plist>

@@ -17,6 +17,7 @@ import 'package:voteguard/services/ai_service.dart';
 import 'package:voteguard/data/local/app_database.dart';
 import 'package:voteguard/services/notification_service.dart';
 import 'package:voteguard/features/splash/ui/splash_screen.dart';
+import 'package:voteguard/features/results/ui/public_results_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -98,6 +99,9 @@ class VoteGuardApp extends StatelessWidget {
           return MaterialPageRoute(
             builder: (context) => ObserverDashboardScreen(electionId: electionId),
           );
+        }
+        if (settings.name == '/public-results') {
+          return MaterialPageRoute(builder: (context) => const PublicResultsScreen());
         }
         return null;
       },

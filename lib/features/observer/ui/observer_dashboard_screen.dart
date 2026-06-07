@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_fonts/google_fonts.dart';
@@ -48,6 +50,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   Election? _election;
+  String? _userSenatorialDistrict;
   bool _loading = true;
   final Map<int, bool> _syncingMap = {};
   bool _isOffline = false;
@@ -55,7 +58,43 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
   late BehaviorSubject<List<dynamic>> _unsyncedSubject;
 
   String _sanitizeId(String text) {
-    return text.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '_');
+    return text.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
+  }
+
+  Future<void> _fetchUserSenatorialDistrict(String state, String lga) async {
+    try {
+      // 1. Query flexible state & name
+      final q = await FirebaseFirestore.instance
+          .collection('lgas')
+          .where('state', isEqualTo: state)
+          .where('name', isEqualTo: lga)
+          .get();
+      if (q.docs.isNotEmpty) {
+        final data = q.docs.first.data();
+        final district = data['senatorialDistrict']?.toString() ?? data['senatorial_district']?.toString();
+        if (district != null && mounted) {
+          setState(() {
+            _userSenatorialDistrict = district;
+          });
+          return;
+        }
+      }
+      
+      // 2. Secondary fallback direct document ID lookup
+      final docId = '${state}_$lga';
+      final docSnap = await FirebaseFirestore.instance.collection('lgas').doc(docId).get();
+      if (docSnap.exists) {
+        final data = docSnap.data();
+        final district = data?['senatorialDistrict']?.toString() ?? data?['senatorial_district']?.toString();
+        if (district != null && mounted) {
+          setState(() {
+            _userSenatorialDistrict = district;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching user senatorial district: $e");
+    }
   }
 
   Future<void> _deleteOfflineResult(int localId) async {
@@ -121,6 +160,65 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
         }
       }
 
+      String? electionType = _election?.type;
+      String? primaryElectionType = _election?.primaryElectionType;
+      String? primaryParty = _election?.primaryParty;
+
+      if (electionType == null) {
+        try {
+          final dbInstance = context.read<db.AppDatabase>();
+          final localElections = await dbInstance.getAllLocalElections();
+          final matchIndex = localElections.indexWhere((e) => e.id == electionId);
+          if (matchIndex != -1) {
+            final le = localElections[matchIndex];
+            electionType = le.type;
+            if (le.metadataJson != null) {
+              final meta = jsonDecode(le.metadataJson!);
+              primaryElectionType = meta['primaryElectionType']?.toString();
+              primaryParty = meta['primaryParty']?.toString();
+            }
+          }
+        } catch (_) {}
+      }
+      electionType ??= 'GENERAL';
+
+      // Let's resolve the Assembly Constituency
+      String? offlineAssemblyConstituency;
+      final isPrimaries = electionType == 'PARTY_PRIMARIES';
+      if (isPrimaries && primaryElectionType == 'STATE_HOUSE_OF_ASSEMBLY' && state.isNotEmpty && lga.isNotEmpty && ward.isNotEmpty) {
+        try {
+          final q = await FirebaseFirestore.instance
+              .collection('wards')
+              .where('state', isEqualTo: state)
+              .where('lga', isEqualTo: lga)
+              .where('name', isEqualTo: ward)
+              .get();
+          if (q.docs.isNotEmpty) {
+            offlineAssemblyConstituency = q.docs.first.data()['stateAssemblyConstituency']?.toString() ?? 
+                                           q.docs.first.data()['assemblyConstituency']?.toString() ?? 
+                                           q.docs.first.data()['constituency']?.toString() ?? 
+                                           q.docs.first.data()['state_assembly_constituency']?.toString() ??
+                                           q.docs.first.data()['assembly_constituency']?.toString();
+          } else {
+            final docId = '${state}_${lga}_$ward'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+            final docSnap = await FirebaseFirestore.instance.collection('wards').doc(docId).get();
+            if (docSnap.exists) {
+              final data = docSnap.data();
+              offlineAssemblyConstituency = data?['stateAssemblyConstituency']?.toString() ?? 
+                                             data?['assemblyConstituency']?.toString() ?? 
+                                             data?['constituency']?.toString() ?? 
+                                             data?['state_assembly_constituency']?.toString() ??
+                                             data?['assembly_constituency']?.toString();
+            }
+          }
+        } catch (e) {
+          debugPrint("Error fetching offline assembly constituency: $e");
+        }
+        if (offlineAssemblyConstituency == null || offlineAssemblyConstituency.isEmpty) {
+          offlineAssemblyConstituency = lga;
+        }
+      }
+
       final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
       final docRef = FirebaseFirestore.instance.collection('election_results').doc('${electionId}_$puKey');
       final docSnap = await docRef.get().timeout(const Duration(seconds: 10));
@@ -136,6 +234,25 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
       final userProfile = userSnap.data();
       final observerName = FirebaseAuth.instance.currentUser?.displayName ?? userProfile?['fullName'] ?? userProfile?['name'] ?? userProfile?['displayName'] ?? 'Observer';
 
+      String? offlineSenatorialDistrict;
+      try {
+        final q = await FirebaseFirestore.instance
+            .collection('lgas')
+            .where('state', isEqualTo: state)
+            .where('name', isEqualTo: lga)
+            .get();
+        if (q.docs.isNotEmpty) {
+          offlineSenatorialDistrict = q.docs.first.data()['senatorialDistrict']?.toString() ?? q.docs.first.data()['senatorial_district']?.toString();
+        } else {
+          final docSnap = await FirebaseFirestore.instance.collection('lgas').doc('${state}_$lga').get();
+          if (docSnap.exists) {
+            offlineSenatorialDistrict = docSnap.data()?['senatorialDistrict']?.toString() ?? docSnap.data()?['senatorial_district']?.toString();
+          }
+        }
+      } catch (e) {
+        debugPrint("Error fetching offline senatorial district: $e");
+      }
+
       final newReport = {
         'submittedBy': user?.uid,
         'submittedByName': observerName,
@@ -146,8 +263,11 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
         'ward': ward,
         'pollingUnit': pu,
         'partyVotes': partyVotes,
+        'results': partyVotes,
         'evidenceUrl': evidenceUrl ?? '',
         'status': isFinal ? 'final' : 'draft',
+        if (offlineSenatorialDistrict != null) 'senatorialDistrict': offlineSenatorialDistrict,
+        if (offlineAssemblyConstituency != null) 'stateAssemblyConstituency': offlineAssemblyConstituency,
         ...stats..remove('electionId')..remove('state')..remove('lga')..remove('ward')..remove('pollingUnit')..remove('isFinal'),
       };
 
@@ -161,16 +281,22 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen> with 
       final isNewDoc = !docSnap.exists;
       final Map<String, dynamic> docPayload = {
         'electionId': electionId,
+        'electionType': electionType,
+        if (primaryElectionType != null) 'primaryElectionType': primaryElectionType,
+        if (primaryParty != null) 'primaryParty': primaryParty,
         'state': state,
         'lga': lga,
         'ward': ward,
         'pollingUnit': pu,
         'partyVotes': partyVotes,
+        'results': partyVotes,
         if (evidenceUrl != null) 'evidenceUrl': evidenceUrl,
         'submittedBy': user?.uid,
         'submittedByName': observerName,
         'updatedAt': FieldValue.serverTimestamp(),
         if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
+        if (offlineSenatorialDistrict != null) 'senatorialDistrict': offlineSenatorialDistrict,
+        if (offlineAssemblyConstituency != null) 'stateAssemblyConstituency': offlineAssemblyConstituency,
         ...stats..remove('electionId')..remove('state')..remove('lga')..remove('ward')..remove('pollingUnit')..remove('isFinal'),
         'submissions': submissionsList,
       };
@@ -3615,15 +3741,40 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   bool _isOffline = false;
   Timer? _networkCheckTimer;
 
+  String? _electionType;
+  String? _primaryElectionType;
+  String? _primaryParty;
+  String? _userSenatorialDistrict;
+
+  StreamSubscription<DocumentSnapshot>? _electionSubscription;
+  StreamSubscription<DocumentSnapshot>? _resultsSubscription;
+  String? _currentWebDocId;
+
   @override
   void initState() {
     super.initState();
     _loadData();
     _startNetworkTimer();
+    _listenForElectionChanges();
+  }
+
+  void _listenForElectionChanges() {
+    _electionSubscription = FirebaseFirestore.instance
+        .collection('elections')
+        .doc(widget.electionId)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.exists && mounted) {
+        // Just reload the data to sync parties array.
+        _loadData();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _electionSubscription?.cancel();
+    _resultsSubscription?.cancel();
     _networkCheckTimer?.cancel();
     for (var c in _partyControllers.values) {
       c.dispose();
@@ -3662,7 +3813,40 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   }
 
   String _sanitizeId(String id) {
-    return id.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+    return id.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
+  }
+
+  Future<void> _fetchUserSenatorialDistrict(String state, String lga) async {
+    try {
+      final q = await FirebaseFirestore.instance
+          .collection('lgas')
+          .where('state', isEqualTo: state)
+          .where('name', isEqualTo: lga)
+          .get();
+      if (q.docs.isNotEmpty) {
+        final data = q.docs.first.data();
+        final district = data['senatorialDistrict']?.toString() ?? data['senatorial_district']?.toString();
+        if (district != null && mounted) {
+          setState(() {
+            _userSenatorialDistrict = district;
+          });
+          return;
+        }
+      }
+      final docId = '${state}_$lga';
+      final docSnap = await FirebaseFirestore.instance.collection('lgas').doc(docId).get();
+      if (docSnap.exists) {
+        final data = docSnap.data();
+        final district = data?['senatorialDistrict']?.toString() ?? data?['senatorial_district']?.toString();
+        if (district != null && mounted) {
+          setState(() {
+            _userSenatorialDistrict = district;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching user senatorial district: $e");
+    }
   }
 
   void _updateControllers() {
@@ -3688,11 +3872,30 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       final lga = _userProfile?['assignedLga'] ?? '';
       final ward = _userProfile?['assignedWard'] ?? '';
       final pu = _userProfile?['assignedPollingUnit'] ?? '';
+
+      if (state.isNotEmpty && lga.isNotEmpty) {
+        _fetchUserSenatorialDistrict(state, lga);
+      }
       
       final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
       final webDocId = '${widget.electionId}_$puKey';
       final mobileDocId = '${widget.electionId}_${user?.uid}';
       final submissionId = '${widget.electionId}_${puKey}_${user?.uid}';
+
+      if (_resultsSubscription == null || _currentWebDocId != webDocId) {
+        _resultsSubscription?.cancel();
+        _currentWebDocId = webDocId;
+        _resultsSubscription = FirebaseFirestore.instance
+            .collection('election_results')
+            .doc(webDocId)
+            .snapshots()
+            .skip(1)
+            .listen((snapshot) {
+          if (mounted) {
+            _loadData();
+          }
+        });
+      }
 
       // Load Parties and Election
       List<Map<String, dynamic>> partiesData = [];
@@ -3721,12 +3924,73 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       }
 
       DocumentSnapshot? electionDoc;
+      List<String> allowedParties = [];
+      int? expectedYear;
+      String? expectedType;
+      String? electionType;
+      String? primaryElectionType;
+      String? primaryParty;
+      List<Map<String, dynamic>> aspirants = [];
+      
       try {
         electionDoc = await FirebaseFirestore.instance.collection('elections').doc(widget.electionId).get();
       } catch (e) {
         debugPrint('EC8A: Offline election fallback');
-        // We can optionally load from local DB here if needed, but we mainly need year/type
       }
+
+      if (electionDoc?.exists == true && electionDoc?.data() != null) {
+        final data = electionDoc!.data() as Map<String, dynamic>;
+        electionType = data['type']?.toString();
+        primaryElectionType = data['primaryElectionType']?.toString();
+        primaryParty = data['primaryParty']?.toString();
+        if (data['aspirants'] != null && data['aspirants'] is List) {
+          aspirants = (data['aspirants'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+        if (data['startDate'] != null) {
+          expectedYear = (data['startDate'] as Timestamp).toDate().year;
+          expectedType = data['type']?.toString().toUpperCase();
+        }
+        if (data['parties'] != null && data['parties'] is List) {
+          allowedParties = (data['parties'] as List).map((e) => e.toString().toUpperCase()).toList();
+        }
+      } else {
+        try {
+          final dbInstance = context.read<db.AppDatabase>();
+          final localElections = await dbInstance.getAllLocalElections();
+          final matchIndex = localElections.indexWhere((e) => e.id == widget.electionId);
+          if (matchIndex != -1) {
+            final le = localElections[matchIndex];
+            electionType = le.type;
+            expectedType = le.type?.toUpperCase();
+            if (le.startDate != null) {
+              expectedYear = le.startDate!.year;
+            }
+            if (le.metadataJson != null) {
+              final meta = jsonDecode(le.metadataJson!);
+              primaryElectionType = meta['primaryElectionType']?.toString();
+              primaryParty = meta['primaryParty']?.toString();
+              if (meta['aspirants'] != null && meta['aspirants'] is List) {
+                aspirants = (meta['aspirants'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+              }
+              if (meta['parties'] != null && meta['parties'] is List) {
+                allowedParties = (meta['parties'] as List).map((e) => e.toString().toUpperCase()).toList();
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      electionType ??= 'GENERAL';
+
+      if (electionType == 'PARTY_PRIMARIES') {
+        partiesData = aspirants.map((a) => {
+          'id': a['name']?.toString() ?? '',
+          'abbreviation': a['name']?.toString() ?? '',
+          'name': a['name']?.toString() ?? '',
+          'logoUrl': a['imageUrl']?.toString(),
+        }).toList();
+      }
+
       Map<String, dynamic>? observerSubmission;
       Map<String, dynamic>? observerStats;
       
@@ -3842,6 +4106,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
       if (mounted) {
         setState(() {
+          _electionType = electionType;
+          _primaryElectionType = primaryElectionType;
+          _primaryParty = primaryParty;
           _parties = partiesData;
           _puSubmissions = localSubmissions;
           _puResultStatus = localStatus;
@@ -3859,13 +4126,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             _puResultStatus = observerSubmission!['status'] == 'final' ? 'Verified' : 'Draft';
           }
 
-          if (electionDoc?.exists == true && electionDoc?.data() != null) {
-            final data = electionDoc!.data() as Map<String, dynamic>;
-            if (data['startDate'] != null) {
-              _expectedYear = (data['startDate'] as Timestamp).toDate().year;
-              _expectedType = data['type']?.toString().toUpperCase();
-            }
+          if (electionType != 'PARTY_PRIMARIES' && allowedParties.isNotEmpty) {
+            _parties = _parties.where((p) => allowedParties.contains(p['abbreviation'].toString().toUpperCase())).toList();
           }
+          _expectedYear = expectedYear;
+          _expectedType = expectedType;
           
           // Initialize controllers
           for (var data in _parties) {
@@ -3917,6 +4182,89 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     return errors;
   }
 
+  Future<File> _addWatermark(File imageFile) async {
+    try {
+      final Uint8List bytes = await imageFile.readAsBytes();
+      final ui.Codec codec = await ui.instantiateImageCodec(bytes);
+      final ui.FrameInfo frameInfo = await codec.getNextFrame();
+      final ui.Image image = frameInfo.image;
+
+      final ui.PictureRecorder recorder = ui.PictureRecorder();
+      final ui.Canvas canvas = ui.Canvas(recorder);
+
+      // Draw original image
+      canvas.drawImage(image, Offset.zero, Paint());
+
+      // Top Left Watermark (Unobtrusive)
+      final double fontSize = image.width * 0.04;
+      final ui.TextStyle textStyle = ui.TextStyle(
+        color: const Color.fromRGBO(255, 255, 255, 0.9),
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+        shadows: const [
+          ui.Shadow(
+            color: Color.fromRGBO(0, 0, 0, 0.9),
+            offset: Offset(2, 2),
+            blurRadius: 8,
+          ),
+        ],
+      );
+
+      final ui.ParagraphBuilder topBuilder = ui.ParagraphBuilder(
+        ui.ParagraphStyle(
+          textAlign: TextAlign.left,
+          textDirection: ui.TextDirection.ltr,
+        ),
+      )
+        ..pushStyle(textStyle)
+        ..addText('VOTEGUARD OFFICIAL SCANNED RECORD');
+        
+      final ui.Paragraph topParagraph = topBuilder.build()
+        ..layout(ui.ParagraphConstraints(width: image.width.toDouble() - 40));
+
+      canvas.drawParagraph(topParagraph, const Offset(20, 20));
+
+      // Bottom right info watermark
+      final double smallFontSize = image.width * 0.03;
+      final ui.TextStyle smallTextStyle = ui.TextStyle(
+        color: const Color.fromRGBO(255, 255, 255, 0.9),
+        fontSize: smallFontSize,
+        fontWeight: FontWeight.bold,
+        shadows: const [
+          ui.Shadow(
+            color: Color.fromRGBO(0, 0, 0, 0.9),
+            offset: Offset(2, 2),
+            blurRadius: 6,
+          ),
+        ],
+      );
+      final ui.ParagraphBuilder smallBuilder = ui.ParagraphBuilder(
+        ui.ParagraphStyle(
+          textAlign: TextAlign.right,
+          textDirection: ui.TextDirection.ltr,
+        ),
+      )
+        ..pushStyle(smallTextStyle)
+        ..addText('Uploaded via VoteGuard System');
+      final ui.Paragraph smallParagraph = smallBuilder.build()
+        ..layout(ui.ParagraphConstraints(width: image.width.toDouble() - 20));
+
+      canvas.drawParagraph(smallParagraph, Offset(0, image.height.toDouble() - smallParagraph.height - 20));
+
+      final ui.Picture picture = recorder.endRecording();
+      final ui.Image watermarkedImage = await picture.toImage(image.width, image.height);
+      final ByteData? byteData = await watermarkedImage.toByteData(format: ui.ImageByteFormat.png);
+      
+      if (byteData != null) {
+        final watermarkedBytes = byteData.buffer.asUint8List();
+        await imageFile.writeAsBytes(watermarkedBytes);
+      }
+    } catch (e) {
+      debugPrint("Error applying watermark: $e");
+    }
+    return imageFile;
+  }
+
   Future<void> _handleOCR(ImageSource source) async {
     final picker = ImagePicker();
     final img = await picker.pickImage(source: source, imageQuality: 80);
@@ -3933,8 +4281,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       }
     }
 
+    // Apply Watermark Before Saving to State
+    File evidenceFile = File(img.path);
+    evidenceFile = await _addWatermark(evidenceFile);
+
     setState(() {
-      _evidenceFile = File(img.path);
+      _evidenceFile = evidenceFile;
     });
     
     // Ask for pre-scan validation before automatically running the OCR
@@ -4283,6 +4635,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   }
 
   void _attemptSubmit(bool isFinal) {
+    final isPrimaries = _electionType == 'PARTY_PRIMARIES';
+    if (isPrimaries) {
+      _submit(isFinal);
+      return;
+    }
+
     if (_evidenceFile != null || _evidenceUrl != null) {
       showDialog(
         context: context,
@@ -4352,7 +4710,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   }
 
   Future<void> _submit(bool isFinal) async {
-    if (isFinal && _validationErrors.isNotEmpty) {
+    final isPrimaries = _electionType == 'PARTY_PRIMARIES';
+    if (isFinal && !isPrimaries && _validationErrors.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_validationErrors.first), backgroundColor: Colors.red));
       return;
     }
@@ -4364,7 +4723,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       
       if (_evidenceFile != null) {
         final ref = FirebaseStorage.instance.ref().child('results/${widget.electionId}/${user?.uid}.jpg');
-        await ref.putFile(_evidenceFile!).timeout(const Duration(seconds: 15));
+        await ref.putFile(_evidenceFile!, SettableMetadata(contentType: 'image/png')).timeout(const Duration(seconds: 15));
         evidenceUrl = await ref.getDownloadURL();
       }
 
@@ -4386,6 +4745,66 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
       final observerName = FirebaseAuth.instance.currentUser?.displayName ?? _userProfile?['fullName'] ?? _userProfile?['name'] ?? _userProfile?['displayName'] ?? 'Observer';
 
+      // Let's resolve the Senatorial District offline
+      String? resolvedSenatorialDistrict = _userSenatorialDistrict;
+      if (resolvedSenatorialDistrict == null && state.isNotEmpty && lga.isNotEmpty) {
+        try {
+          final q = await FirebaseFirestore.instance
+              .collection('lgas')
+              .where('state', isEqualTo: state)
+              .where('name', isEqualTo: lga)
+              .get();
+          if (q.docs.isNotEmpty) {
+            resolvedSenatorialDistrict = q.docs.first.data()['senatorialDistrict']?.toString() ?? 
+                                        q.docs.first.data()['senatorial_district']?.toString();
+          } else {
+            final docSnap = await FirebaseFirestore.instance.collection('lgas').doc('${state}_$lga').get();
+            if (docSnap.exists) {
+              resolvedSenatorialDistrict = docSnap.data()?['senatorialDistrict']?.toString() ?? 
+                                          docSnap.data()?['senatorial_district']?.toString();
+            }
+          }
+        } catch (e) {
+          debugPrint("Error fetching offline senatorial district in submit: $e");
+        }
+      }
+
+      // Let's resolve the Assembly Constituency
+      String? resolvedAssemblyConstituency;
+      if (isPrimaries && _primaryElectionType == 'STATE_HOUSE_OF_ASSEMBLY' && state.isNotEmpty && lga.isNotEmpty && ward.isNotEmpty) {
+        try {
+          final q = await FirebaseFirestore.instance
+              .collection('wards')
+              .where('state', isEqualTo: state)
+              .where('lga', isEqualTo: lga)
+              .where('name', isEqualTo: ward)
+              .get();
+          if (q.docs.isNotEmpty) {
+            resolvedAssemblyConstituency = q.docs.first.data()['stateAssemblyConstituency']?.toString() ?? 
+                                           q.docs.first.data()['assemblyConstituency']?.toString() ?? 
+                                           q.docs.first.data()['constituency']?.toString() ?? 
+                                           q.docs.first.data()['state_assembly_constituency']?.toString() ??
+                                           q.docs.first.data()['assembly_constituency']?.toString();
+          } else {
+            final docId = '${state}_${lga}_$ward'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_').toLowerCase();
+            final docSnap = await FirebaseFirestore.instance.collection('wards').doc(docId).get();
+            if (docSnap.exists) {
+              final data = docSnap.data();
+              resolvedAssemblyConstituency = data?['stateAssemblyConstituency']?.toString() ?? 
+                                             data?['assemblyConstituency']?.toString() ?? 
+                                             data?['constituency']?.toString() ?? 
+                                             data?['state_assembly_constituency']?.toString() ??
+                                             data?['assembly_constituency']?.toString();
+            }
+          }
+        } catch (e) {
+          debugPrint("Error fetching assembly constituency in submit: $e");
+        }
+        if (resolvedAssemblyConstituency == null || resolvedAssemblyConstituency.isEmpty) {
+          resolvedAssemblyConstituency = lga;
+        }
+      }
+
       final newReport = {
         'submittedBy': user?.uid,
         'submittedByName': observerName,
@@ -4396,8 +4815,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         'ward': ward,
         'pollingUnit': pu,
         'partyVotes': _partyVotes,
+        'results': _partyVotes,
         'evidenceUrl': evidenceUrl ?? _evidenceUrl ?? '',
         'status': isFinal ? 'final' : 'draft',
+        if (resolvedSenatorialDistrict != null) 'senatorialDistrict': resolvedSenatorialDistrict,
+        if (resolvedAssemblyConstituency != null) 'stateAssemblyConstituency': resolvedAssemblyConstituency,
         ..._stats,
         'totalValidVotes': _totalValidVotes,
         'totalUsedBallots': _totalUsedBallots,
@@ -4413,16 +4835,22 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       final isNewDoc = !docSnap.exists;
       final Map<String, dynamic> docPayload = {
         'electionId': widget.electionId,
+        'electionType': _electionType ?? 'GENERAL',
+        if (_primaryElectionType != null) 'primaryElectionType': _primaryElectionType,
+        if (_primaryParty != null) 'primaryParty': _primaryParty,
         'state': state,
         'lga': lga,
         'ward': ward,
         'pollingUnit': pu,
         'partyVotes': _partyVotes,
+        'results': _partyVotes,
         if (evidenceUrl != null || _evidenceUrl != null) 'evidenceUrl': evidenceUrl ?? _evidenceUrl,
         'submittedBy': user?.uid,
         'submittedByName': observerName,
         'updatedAt': FieldValue.serverTimestamp(),
         if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
+        if (resolvedSenatorialDistrict != null) 'senatorialDistrict': resolvedSenatorialDistrict,
+        if (resolvedAssemblyConstituency != null) 'stateAssemblyConstituency': resolvedAssemblyConstituency,
         ..._stats,
         'totalValidVotes': _totalValidVotes,
         'totalUsedBallots': _totalUsedBallots,
@@ -4483,6 +4911,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             'totalValidVotes': _totalValidVotes,
             'totalUsedBallots': _totalUsedBallots,
             'isFinal': isFinal,
+            if (resolvedSenatorialDistrict != null) 'senatorialDistrict': resolvedSenatorialDistrict,
+            if (resolvedAssemblyConstituency != null) 'stateAssemblyConstituency': resolvedAssemblyConstituency,
           })),
           imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
           isSynced: const drift.Value(true),
@@ -4586,20 +5016,24 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator(color: Color(0xFF065F46)));
 
+    final isPrimaries = _electionType == 'PARTY_PRIMARIES';
+
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
         _buildHeader(),
-        if (_validationErrors.isNotEmpty) ...[
+        if (_validationErrors.isNotEmpty && !isPrimaries) ...[
           const SizedBox(height: 16),
           _buildValidationBanner(),
         ],
         const SizedBox(height: 32),
         _buildResultsGridCard(),
-        const SizedBox(height: 24),
-        _buildEvidenceSidebarCard(),
-        const SizedBox(height: 24),
-        _buildStatsSidebarCard(),
+        if (!isPrimaries) ...[
+          const SizedBox(height: 24),
+          _buildEvidenceSidebarCard(),
+          const SizedBox(height: 24),
+          _buildStatsSidebarCard(),
+        ],
         const SizedBox(height: 32),
         _buildPollingUnitSubmissionsSection(),
         const SizedBox(height: 32),
@@ -4971,13 +5405,14 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   }
 
   Widget _buildPrecisionHeader() {
+    final isPrimaries = _electionType == 'PARTY_PRIMARIES';
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          SizedBox(width: 48, child: Text('PARTY LOGO', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
+          SizedBox(width: isPrimaries ? 96 : 48, child: Text(isPrimaries ? 'ASPIRANTS' : 'PARTY LOGO', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
           const SizedBox(width: 24),
-          Expanded(child: Text('PARTY NAME', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
+          Expanded(child: Text(isPrimaries ? 'ASPIRANT NAME' : 'PARTY NAME', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
           SizedBox(width: 80, child: Text('TOTAL VOTES', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5), textAlign: TextAlign.center)),
         ],
       ),
@@ -4998,12 +5433,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     final abb = party['abbreviation'] ?? '';
     final name = party['name'] ?? '';
     final logoUrl = party['logoUrl'];
+    final isPrimaries = _electionType == 'PARTY_PRIMARIES';
+    final logoSize = isPrimaries ? 96.0 : 48.0;
+    final fontSize = isPrimaries ? 24.0 : 16.0;
     
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Row(
         children: [
-          _buildSmartLogo(logoUrl, abb, 48, fontSize: 16),
+          _buildSmartLogo(logoUrl, abb, logoSize, fontSize: fontSize),
           const SizedBox(width: 24),
           Expanded(
             child: Column(
@@ -5017,8 +5455,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                   spacing: 4,
                   children: [
                     Text(abb, style: GoogleFonts.outfit(fontSize: 10, color: const Color(0xFF0F172A), fontWeight: FontWeight.w900)),
-                    Container(width: 3, height: 3, decoration: const BoxDecoration(color: Color(0xFFCBD5E1), shape: BoxShape.circle)),
-                    Text('OFFICIAL PARTY', style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.bold, color: const Color(0xFF94A3B8))),
+                    if (!isPrimaries) ...[
+                      Container(width: 3, height: 3, decoration: const BoxDecoration(color: Color(0xFFCBD5E1), shape: BoxShape.circle)),
+                      Text('OFFICIAL PARTY', style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.bold, color: const Color(0xFF94A3B8))),
+                    ],
                   ],
                 ),
               ],
@@ -5067,13 +5507,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     final abb = party['abbreviation'] ?? '';
     final name = party['name'] ?? '';
     final logoUrl = party['logoUrl'];
+    final isPrimaries = _electionType == 'PARTY_PRIMARIES';
+    final logoSize = isPrimaries ? 48.0 : 24.0;
     
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xFFF1F5F9))),
       child: Row(
         children: [
-          _buildSmartLogo(logoUrl, abb, 24, fontSize: 10),
+          _buildSmartLogo(logoUrl, abb, logoSize, fontSize: isPrimaries ? 14 : 10),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -5467,34 +5909,36 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                height: 72,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF064E3B), Color(0xFF065F46)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
+              if (!_isFinal) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF064E3B), Color(0xFF065F46)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(color: const Color(0xFF059669).withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10)),
+                    ],
                   ),
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: [
-                    BoxShadow(color: const Color(0xFF059669).withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10)),
-                  ],
-                ),
-                child: ElevatedButton.icon(
-                  onPressed: (_isFinal || _submitting) ? null : () => _attemptSubmit(true),
-                  icon: _submitting 
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Icon(LucideIcons.check, size: 16, color: Colors.white),
-                  label: Text(_submitting ? 'SUBMITTING...' : 'FINAL SUBMISSION', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: Colors.white)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                  child: ElevatedButton.icon(
+                    onPressed: _submitting ? null : () => _attemptSubmit(true),
+                    icon: _submitting 
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(LucideIcons.check, size: 16, color: Colors.white),
+                    label: Text(_submitting ? 'SUBMITTING...' : 'FINAL SUBMISSION', style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      shadowColor: Colors.transparent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
                   ),
                 ),
-              ),
+              ],
               if (_isFinal) ...[
                 const SizedBox(height: 16),
                 SizedBox(
@@ -5672,9 +6116,22 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   }
 
   Widget _buildFallbackLogo(String abb, double size, double fontSize) {
+    String initials = '?';
+    if (abb.isNotEmpty) {
+      final parts = abb.trim().split(RegExp(r'\s+'));
+      if (parts.length > 1) {
+        final first = parts[0].isNotEmpty ? parts[0][0] : '';
+        final second = parts[1].isNotEmpty ? parts[1][0] : '';
+        initials = (first + second).toUpperCase();
+      } else {
+        initials = parts[0].length >= 2
+            ? parts[0].substring(0, 2).toUpperCase()
+            : parts[0].toUpperCase();
+      }
+    }
     return Center(
       child: Text(
-        abb.isNotEmpty ? abb[0] : '?',
+        initials,
         style: GoogleFonts.outfit(fontSize: fontSize, fontWeight: FontWeight.bold, color: const Color(0xFF0F172A)),
       ),
     );

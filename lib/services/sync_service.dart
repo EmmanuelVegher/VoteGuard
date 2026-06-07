@@ -58,11 +58,16 @@ class SyncService {
         final stateList = data['state'] ?? data['states'] ?? data['targetStates'] ?? data['regions'] ?? data['region'] ?? data['targetJurisdictions'];
         final lgaList = data['lga'] ?? data['lgas'] ?? data['targetLgas'];
         final wardList = data['ward'] ?? data['wards'] ?? data['targetWards'];
+        final senatorialDistList = data['senatorialDistricts'] ?? data['senatorialDistrict'] ?? [];
 
         final metadata = {
           'state': stateList,
           'lga': lgaList,
           'ward': wardList,
+          'senatorialDistricts': senatorialDistList,
+          'primaryParty': data['primaryParty'],
+          'primaryElectionType': data['primaryElectionType'],
+          'aspirants': data['aspirants'],
         };
         await _db.upsertElection(ElectionsCompanion(
           id: Value(doc.id),

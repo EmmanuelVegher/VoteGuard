@@ -76,7 +76,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF020617), // Deep space blue/black
+      backgroundColor: Colors.white,
       body: Stack(
         children: [
           Center(

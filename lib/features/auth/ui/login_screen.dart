@@ -52,7 +52,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: [
                     // Logo and Title
                     Image.asset(
-                      'assets/images/voteguard_logo.png',
+                      'assets/images/voteguard_grey.png',
                       height: 80,
                     ),
                     const SizedBox(height: 12),
@@ -155,6 +155,9 @@ class _LoginScreenState extends State<LoginScreen> {
                                   onChanged: (v) {
                                     setState(() => _rememberMe = v ?? false);
                                   },
+                                  activeColor: const Color(0xFF0F172A),
+                                  checkColor: Colors.white,
+                                  side: const BorderSide(color: Color(0xFF94A3B8), width: 1.5),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                                 ),
                               ),
@@ -356,34 +359,39 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 12),
                     
                     // Public Results Hub
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF1F5F9).withOpacity(0.8),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(8),
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.pushNamed(context, '/public-results');
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9).withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(LucideIcons.activity, color: Color(0xFF991B1B), size: 20),
                             ),
-                            child: const Icon(LucideIcons.activity, color: Color(0xFF991B1B), size: 20),
-                          ),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('PUBLIC RESULTS HUB', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
-                                Text('LIVE RESULTS & SITUATION ROOM', style: TextStyle(fontSize: 8, color: Color(0xFF64748B))),
-                              ],
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('PUBLIC RESULTS HUB', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
+                                  Text('LIVE RESULTS & SITUATION ROOM', style: TextStyle(fontSize: 8, color: Color(0xFF64748B))),
+                                ],
+                              ),
                             ),
-                          ),
-                          const Icon(LucideIcons.arrowRight, size: 16, color: Color(0xFF64748B)),
-                        ],
+                            const Icon(LucideIcons.arrowRight, size: 16, color: Color(0xFF64748B)),
+                          ],
+                        ),
                       ),
                     ),
                     

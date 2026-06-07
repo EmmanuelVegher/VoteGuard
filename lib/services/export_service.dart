@@ -159,7 +159,7 @@ class ExportService {
         child: pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
-            pw.Text(label, style: const pw.TextStyle(fontSize: 8, color: PdfColors.blue700, fontWeight: pw.FontWeight.bold)),
+            pw.Text(label, style: pw.TextStyle(fontSize: 8, color: PdfColors.blue700, fontWeight: pw.FontWeight.bold)),
             pw.SizedBox(height: 4),
             pw.Text(value, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: primaryBlue)),
           ],
