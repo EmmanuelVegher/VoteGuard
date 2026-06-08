@@ -8,8 +8,6 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:voteguard/services/geo_service.dart';
-import 'package:voteguard/models/geo_models.dart';
 import 'package:voteguard/models/election_model.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:provider/provider.dart';
@@ -24,7 +22,6 @@ class PublicResultsScreen extends StatefulWidget {
 }
 
 class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTickerProviderStateMixin {
-  final GeoService _geoService = GeoService();
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   // Pulse animation for status dot
@@ -157,33 +154,60 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     if (!mounted) return;
     setState(() => _isLoadingElections = true);
     try {
-      // Fetch Elections
-      final electionsSnapshot = await FirebaseFirestore.instance.collection('elections').get();
-      final fetchedElections = electionsSnapshot.docs
-          .map((d) => Election.fromFirestore(d.data(), d.id))
-          .toList();
+      // Fetch Elections from backend API
+      final response = await http.get(
+        Uri.parse('http://127.0.0.1:3001/api/public/elections'),
+      ).timeout(const Duration(seconds: 8));
 
-      // Fetch States
-      final statesData = await _geoService.getStates();
-      final stateNames = statesData.map((e) => e.name).toList();
+      List<Election> fetchedElections = [];
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        if (body['success'] == true && body['data'] != null) {
+          final List<dynamic> list = body['data'];
+          fetchedElections = list.map((e) => Election.fromFirestore(Map<String, dynamic>.from(e), e['id']?.toString() ?? '')).toList();
+        }
+      }
+
+      // If API returned empty, check local Drift SQLite fallback
+      if (fetchedElections.isEmpty) {
+        final dbInstance = context.read<db.AppDatabase>();
+        final localElections = await dbInstance.getAllLocalElections();
+        fetchedElections = localElections.map<Election>((le) {
+          Map<String, dynamic> metadata = {};
+          if (le.metadataJson != null) {
+            try { metadata = jsonDecode(le.metadataJson!); } catch (_) {}
+          }
+          return Election(
+            id: le.id,
+            name: le.name,
+            type: le.type,
+            startDate: le.startDate,
+            endDate: le.endDate,
+            status: le.status,
+            states: (metadata['state'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+          );
+        }).toList();
+      }
 
       if (mounted) {
         setState(() {
           _elections = fetchedElections;
-          _states = stateNames;
           _isLoadingElections = false;
           
-          // Auto-select "2026 House of Representatives" or similar active election if matching
-          final houseRep = _elections.where((e) => e.name.toLowerCase().contains('house of representatives')).toList();
-          if (houseRep.isNotEmpty) {
-            _selectedElection = houseRep.first;
-          } else if (_elections.isNotEmpty) {
-            _selectedElection = _elections.first;
+          if (_selectedElection == null && _elections.isNotEmpty) {
+            // Auto-select active election
+            final activeList = _elections.where((e) => e.status == 'ACTIVE').toList();
+            if (activeList.isNotEmpty) {
+              _selectedElection = activeList.first;
+            } else {
+              _selectedElection = _elections.first;
+            }
           }
         });
       }
 
-      _setupFirestoreRealtimeSubscription();
+      // Fetch initial live results
+      _fetchLiveResults();
     } catch (e) {
       debugPrint('PublicResults: Fetching metadata failed, checking local Drift DB: $e');
       
@@ -208,8 +232,6 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
               states: (metadata['state'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
             );
           }).toList();
-
-          _states = ['Ogun', 'Abia', 'Lagos', 'Anambra', 'Rivers', 'Kano', 'Kaduna', 'FCT'];
           _isLoadingElections = false;
 
           if (_elections.isNotEmpty) {
@@ -218,79 +240,11 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
         });
       }
 
-      _setupFirestoreRealtimeSubscription();
+      _fetchLiveResults();
     }
   }
 
-  void _setupFirestoreRealtimeSubscription() {
-    _resultsSubscription?.cancel();
-    
-    // Direct listen to election_results collection for real-time live updates
-    _resultsSubscription = FirebaseFirestore.instance
-        .collection('election_results')
-        .snapshots()
-        .listen((snapshot) {
-      if (snapshot.docs.isNotEmpty) {
-        _aggregateFirestoreResults(snapshot.docs);
-      }
-    }, onError: (err) {
-      debugPrint('PublicResults: Firestore subscription error: $err');
-    });
-  }
 
-  void _aggregateFirestoreResults(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    List<Map<String, dynamic>> allMapped = [];
-    
-    for (var doc in docs) {
-      final data = doc.data();
-      
-      // Filter by electionId
-      final electionId = data['electionId'] ?? '';
-      if (_selectedElection != null && electionId != _selectedElection!.id) {
-        continue;
-      }
-      
-      // Sum party votes
-      final partyVotesMap = Map<String, dynamic>.from(data['partyVotes'] ?? data['results'] ?? {});
-      
-      // Leading party calculation for this PU
-      String localLeader = 'N/A';
-      double maxLocalVotes = -1;
-      partyVotesMap.forEach((party, votesVal) {
-        final votesNum = (votesVal as num).toDouble();
-        if (votesNum > maxLocalVotes) {
-          maxLocalVotes = votesNum;
-          localLeader = party;
-        }
-      });
-
-      final docVotes = data['totalValidVotes'] ?? data['total_votes'] ?? 0;
-      final status = (data['status'] ?? 'verified').toString().toUpperCase();
-
-      allMapped.add({
-        'id': doc.id,
-        'pollingUnitId': data['pollingUnitId'] ?? 'PU-${data['pollingUnit'] ?? ''}',
-        'pollingUnitName': data['pollingUnit'] ?? 'Polling Unit',
-        'state': (data['state'] ?? '').toString().toUpperCase(),
-        'lga': (data['lga'] ?? '').toString().toUpperCase(),
-        'ward': (data['ward'] ?? '').toString().toUpperCase(),
-        'results': partyVotesMap,
-        'timestamp': data['updatedAt'] != null 
-            ? DateFormat('HH:mm').format((data['updatedAt'] as Timestamp).toDate())
-            : DateFormat('HH:mm').format(DateTime.now()),
-        'status': status,
-        'evidenceUrl': data['evidenceUrl'] ?? '',
-        'totalValidVotes': (docVotes as num).toInt(),
-        'leadingParty': localLeader,
-      });
-    }
-
-    setState(() {
-      _allResults = allMapped;
-    });
-
-    _updateFilteredResults();
-  }
 
   void _updateFilteredResults() {
     final Set<String> statesSet = {};
@@ -453,12 +407,76 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     if (!mounted) return;
     setState(() => _isLoadingResults = true);
     
+    if (_selectedElection == null) {
+      setState(() => _isLoadingResults = false);
+      return;
+    }
+
     try {
-      // Direct pull from Firestore
-      final snapshot = await FirebaseFirestore.instance.collection('election_results').get();
-      _aggregateFirestoreResults(snapshot.docs);
+      final response = await http.get(
+        Uri.parse('http://127.0.0.1:3001/api/public/live-results?electionId=${_selectedElection!.id}'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        if (body['success'] == true && body['data'] != null) {
+          final resultsData = body['data']['results'] as List<dynamic>? ?? [];
+          
+          final List<Map<String, dynamic>> allMapped = [];
+          for (var item in resultsData) {
+            final data = Map<String, dynamic>.from(item);
+            final resultsMap = Map<String, dynamic>.from(data['results'] ?? data['partyVotes'] ?? {});
+            
+            // Calculate leading party
+            String localLeader = 'N/A';
+            double maxLocalVotes = -1;
+            resultsMap.forEach((party, votesVal) {
+              final votesNum = (votesVal as num).toDouble();
+              if (votesNum > maxLocalVotes) {
+                maxLocalVotes = votesNum;
+                localLeader = party;
+              }
+            });
+
+            final docVotes = data['totalValidVotes'] ?? data['total_votes'] ?? 0;
+            final status = (data['status'] ?? 'verified').toString().toUpperCase();
+
+            allMapped.add({
+              'id': data['id']?.toString() ?? '',
+              'pollingUnitId': data['pollingUnitId']?.toString() ?? 'PU-${data['pollingUnit'] ?? ''}',
+              'pollingUnitName': data['pollingUnitName']?.toString() ?? data['pollingUnit']?.toString() ?? 'Polling Unit',
+              'state': (data['state'] ?? '').toString().toUpperCase(),
+              'lga': (data['lga'] ?? '').toString().toUpperCase(),
+              'ward': (data['ward'] ?? '').toString().toUpperCase(),
+              'results': resultsMap,
+              'timestamp': data['timestamp']?.toString() ?? DateFormat('HH:mm').format(DateTime.now()),
+              'status': status,
+              'evidenceUrl': data['evidenceUrl']?.toString() ?? '',
+              'totalValidVotes': (docVotes as num).toInt(),
+              'leadingParty': localLeader,
+            });
+          }
+
+          setState(() {
+            _allResults = allMapped;
+          });
+          _updateFilteredResults();
+        } else {
+          debugPrint('PublicResults: Live results API success false');
+          setState(() => _isLoadingResults = false);
+        }
+      } else {
+        debugPrint('PublicResults: Live results API failed with status ${response.statusCode}');
+        setState(() => _isLoadingResults = false);
+      }
     } catch (e) {
-      debugPrint('PublicResults: Force fetch error: $e');
+      debugPrint('PublicResults: Fetching live results failed, checking local Drift DB: $e');
+      
+      final resultsStr = await _secureStorage.read(key: 'cached_results_direct');
+      if (resultsStr != null) {
+        final payload = jsonDecode(resultsStr);
+        _applyResultsPayload(payload);
+      }
       setState(() => _isLoadingResults = false);
     }
   }
