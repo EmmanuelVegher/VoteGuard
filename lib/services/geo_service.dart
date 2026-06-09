@@ -80,19 +80,88 @@ class GeoService {
       String searchLga = lga;
       if (lga == "Municipal Area Council") searchLga = "municipal";
 
-      // Define strategies to try
-      final strategies = [
-        // Strategy 1: As per guide (Original State, Mapped LGA, Lower Ward)
-        {'s': state, 'l': searchLga, 'w': ward.toLowerCase()},
-        // Strategy 2: All Uppercase (Very common for Nigerian PU data)
-        {'s': state.toUpperCase(), 'l': searchLga.toUpperCase(), 'w': ward.toUpperCase()},
-        // Strategy 3: Mapped LGA Lowercased (Common discrepancy)
-        {'s': state, 'l': searchLga.toLowerCase(), 'w': ward.toLowerCase()},
-        // Strategy 4: Ward as displayed
-        {'s': state, 'l': searchLga, 'w': ward},
-      ];
+      final originalWard = ward;
+      final singleSpacedWard = ward.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final doubleSpacedWard = ward.replaceAll(RegExp(r'\s+'), '  ').trim();
 
+      final wardVariations = [
+        originalWard,
+        originalWard.toLowerCase(),
+        originalWard.toUpperCase(),
+        singleSpacedWard,
+        singleSpacedWard.toLowerCase(),
+        singleSpacedWard.toUpperCase(),
+        doubleSpacedWard,
+        doubleSpacedWard.toLowerCase(),
+        doubleSpacedWard.toUpperCase(),
+      ].toSet().toList();
+
+      final originalLga = searchLga;
+      final singleSpacedLga = searchLga.replaceAll(RegExp(r'\s+'), ' ').trim();
+      final doubleSpacedLga = searchLga.replaceAll(RegExp(r'\s+'), '  ').trim();
+
+      final lgaVariations = [
+        originalLga,
+        originalLga.toLowerCase(),
+        originalLga.toUpperCase(),
+        singleSpacedLga,
+        singleSpacedLga.toLowerCase(),
+        singleSpacedLga.toUpperCase(),
+        doubleSpacedLga,
+        doubleSpacedLga.toLowerCase(),
+        doubleSpacedLga.toUpperCase(),
+      ].toSet().toList();
+
+      final stateVariations = [
+        state,
+        state.toLowerCase(),
+        state.toUpperCase(),
+      ].toSet().toList();
+
+      // Prioritize the strategies to try the most likely combinations first.
+      List<Map<String, String>> strategies = [];
+      
+      // Phase 1: Try original spacing variations first
+      for (var w in [originalWard, originalWard.toLowerCase(), originalWard.toUpperCase()]) {
+        for (var l in [originalLga, originalLga.toLowerCase(), originalLga.toUpperCase()]) {
+          for (var s in stateVariations) {
+            strategies.add({'s': s, 'l': l, 'w': w});
+          }
+        }
+      }
+
+      // Phase 2: Try single-spaced variations
+      for (var w in [singleSpacedWard, singleSpacedWard.toLowerCase(), singleSpacedWard.toUpperCase()]) {
+        for (var l in [singleSpacedLga, singleSpacedLga.toLowerCase(), singleSpacedLga.toUpperCase()]) {
+          for (var s in stateVariations) {
+            strategies.add({'s': s, 'l': l, 'w': w});
+          }
+        }
+      }
+
+      // Phase 3: Try double-spaced variations
+      for (var w in [doubleSpacedWard, doubleSpacedWard.toLowerCase(), doubleSpacedWard.toUpperCase()]) {
+        for (var l in [doubleSpacedLga, doubleSpacedLga.toLowerCase(), doubleSpacedLga.toUpperCase()]) {
+          for (var s in stateVariations) {
+            strategies.add({'s': s, 'l': l, 'w': w});
+          }
+        }
+      }
+
+      // De-duplicate strategies list
+      final seen = <String>{};
+      final uniqueStrategies = <Map<String, String>>[];
       for (var strategy in strategies) {
+        final key = "${strategy['s']}_${strategy['l']}_${strategy['w']}";
+        if (!seen.contains(key)) {
+          seen.add(key);
+          uniqueStrategies.add(strategy);
+        }
+      }
+
+      debugPrint("GeoService: Generated ${uniqueStrategies.length} unique search strategies for polling units.");
+
+      for (var strategy in uniqueStrategies) {
         debugPrint("GeoService: Trying Strategy: $strategy");
         var snapshot = await _firestore
             .collection('polling_units')

@@ -4438,11 +4438,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
         String _normalizeType(String? raw) {
           if (raw == null) return '';
-          final t = raw.toUpperCase();
-          if (t.contains('CHAIRMAN') || t.contains('COUNCIL') || t.contains('MUNICIPAL')) return 'LOCAL GOVERNMENT';
+          final t = raw.toUpperCase().replaceAll('_', ' ').trim();
+          if (t.contains('COUNCILLOR') || t.contains('COUNCILLORSHIP')) return 'COUNCILLOR';
+          if (t.contains('CHAIRMAN') || t.contains('CHAIRMANSHIP') || t.contains('COUNCIL') || t.contains('MUNICIPAL')) return 'LOCAL GOVERNMENT';
           if (t.contains('GOVERNOR') || t.contains('GUBERNATORIAL')) return 'GUBERNATORIAL';
           if (t.contains('SENATE') || t.contains('SENATORIAL')) return 'SENATORIAL';
-          if (t.contains('REPS') || t.contains('HOUSE OF REPS')) return 'HOUSE OF REPS';
+          if (t.contains('REPS') || t.contains('REPRESENTATIVES')) return 'HOUSE OF REPRESENTATIVES';
+          if (t.contains('STATE HOUSE OF ASSEMBLY') || t.contains('STATE ASSEMBLY') || t.contains('STATE CONSTITUENCY')) return 'STATE HOUSE OF ASSEMBLY';
           return t;
         }
 
@@ -5406,13 +5408,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
   Widget _buildPrecisionHeader() {
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
+    final logoSize = isPrimaries ? 64.0 : 48.0;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          SizedBox(width: isPrimaries ? 96 : 48, child: Text(isPrimaries ? 'ASPIRANTS' : 'PARTY LOGO', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
-          const SizedBox(width: 24),
+          SizedBox(width: logoSize, child: Text(isPrimaries ? 'ASPIRANTS' : 'PARTY LOGO', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
+          const SizedBox(width: 16),
           Expanded(child: Text(isPrimaries ? 'ASPIRANT NAME' : 'PARTY NAME', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5))),
+          const SizedBox(width: 12),
           SizedBox(width: 80, child: Text('TOTAL VOTES', style: GoogleFonts.outfit(fontSize: 8, fontWeight: FontWeight.w900, color: const Color(0xFF94A3B8), letterSpacing: 0.5), textAlign: TextAlign.center)),
         ],
       ),
@@ -5434,39 +5438,39 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     final name = party['name'] ?? '';
     final logoUrl = party['logoUrl'];
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
-    final logoSize = isPrimaries ? 96.0 : 48.0;
-    final fontSize = isPrimaries ? 24.0 : 16.0;
+    final logoSize = isPrimaries ? 64.0 : 48.0;
+    final fontSize = isPrimaries ? 20.0 : 16.0;
     
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Row(
         children: [
           _buildSmartLogo(logoUrl, abb, logoSize, fontSize: fontSize),
-          const SizedBox(width: 24),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(name, style: GoogleFonts.outfit(fontSize: 13, fontWeight: FontWeight.bold, color: const Color(0xFF1E293B))),
-                const SizedBox(height: 4),
-                Wrap(
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 4,
-                  children: [
-                    Text(abb, style: GoogleFonts.outfit(fontSize: 10, color: const Color(0xFF0F172A), fontWeight: FontWeight.w900)),
-                    if (!isPrimaries) ...[
+                Text(name, style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.bold, color: const Color(0xFF1E293B))),
+                if (!isPrimaries) ...[
+                  const SizedBox(height: 4),
+                  Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 4,
+                    children: [
+                      Text(abb, style: GoogleFonts.outfit(fontSize: 10, color: const Color(0xFF0F172A), fontWeight: FontWeight.w900)),
                       Container(width: 3, height: 3, decoration: const BoxDecoration(color: Color(0xFFCBD5E1), shape: BoxShape.circle)),
                       Text('OFFICIAL PARTY', style: GoogleFonts.outfit(fontSize: 9, fontWeight: FontWeight.bold, color: const Color(0xFF94A3B8))),
                     ],
-                  ],
-                ),
+                  ),
+                ],
               ],
             ),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           SizedBox(
-            width: 100,
+            width: 80,
             child: TextField(
               enabled: !_isFinal,
               keyboardType: TextInputType.number,
@@ -5645,9 +5649,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           if (_evidenceFile == null && _evidenceUrl == null && !_isFinal)
             Row(
               children: [
-                Expanded(child: _buildActionButton('CAPTURE SHEET', LucideIcons.camera, () => _showResultsSourcePicker())),
+                Expanded(child: _buildActionButton('TAKE SNAPSHOT', LucideIcons.camera, () => _handleOCR(ImageSource.camera))),
                 const SizedBox(width: 12),
-                Expanded(child: _buildActionButton('GALLERY', LucideIcons.image, () => _handleOCR(ImageSource.gallery))),
+                Expanded(child: _buildActionButton('PICK FROM GALLERY', LucideIcons.image, () => _handleOCR(ImageSource.gallery))),
               ],
             )
           else

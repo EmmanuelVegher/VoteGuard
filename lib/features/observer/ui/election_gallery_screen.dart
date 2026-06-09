@@ -548,19 +548,25 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen> with Sing
   }
 
   Widget _buildGeoDropdown(String hint, List<String> items, String? value, ValueChanged<String?> onChanged) {
-    debugPrint("Dropdown: $hint has ${items.length} items. Current value: $value");
+    // Deduplicate items to prevent duplicate DropdownMenuItem values crash
+    final uniqueItems = items.toSet().toList();
+    
+    // Ensure the current value is strictly present in the deduplicated items list
+    final String? safeValue = (value != null && uniqueItems.contains(value)) ? value : null;
+    
+    debugPrint("Dropdown: $hint has ${uniqueItems.length} unique items. Current value: $value, Safe value: $safeValue");
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white10)),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
-          value: value,
+          value: safeValue,
           hint: Text(hint, style: const TextStyle(color: Colors.white54, fontSize: 12)),
           isExpanded: true,
           dropdownColor: const Color(0xFF064E3B),
           icon: const Icon(LucideIcons.chevronDown, color: Colors.white70, size: 16),
           style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-          items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+          items: uniqueItems.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
           onChanged: onChanged,
         ),
       ),

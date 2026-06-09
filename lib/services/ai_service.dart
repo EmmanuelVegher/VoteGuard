@@ -80,7 +80,7 @@ class AIService with ChangeNotifier {
       '   - spoiledBallots (Total Spoiled Ballots) '
       '   - rejectedBallots (Total Rejected Ballots) '
       '   - electionYear (The year of the election written on the form) '
-      '   - electionType (Detect type using keywords: "Chairmanship/Chairman" -> LOCAL GOVERNMENT, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "Reps" -> HOUSE OF REPS) '
+      '   - electionType (Detect type using keywords: "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman" -> LOCAL GOVERNMENT, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "Reps" -> HOUSE OF REPS) '
       'Return ONLY a valid JSON object. If a value is missing, use 0.';
 
   Future<AIResult> processEC8A(File imageFile, [List<String>? partyAbbreviations]) async {
@@ -177,7 +177,7 @@ class AIService with ChangeNotifier {
       '   - spoiledBallots (Total Spoiled Ballots) '
       '   - rejectedBallots (Total Rejected Ballots) '
       '   - electionYear (The year of the election written on the form) '
-      '   - electionType (Detect type using keywords: "Chairmanship/Chairman" -> LOCAL GOVERNMENT, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "Reps" -> HOUSE OF REPS) '
+      '   - electionType (Detect type using keywords: "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman" -> LOCAL GOVERNMENT, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "Reps" -> HOUSE OF REPS) '
       'Return ONLY a valid JSON object. All extracted party votes MUST be grouped inside a nested "partyVotes" map (e.g. {"partyVotes": {"APC": 86, "PDP": 2, ...}, "votersInRegister": 1615, ...}). '
       'Use the exact party abbreviations as the keys inside the "partyVotes" map. If a value is missing or not detected, use 0.';
 
@@ -305,7 +305,8 @@ class AIService with ChangeNotifier {
   }
 
   String _detectTypeOffline(String text) {
-    if (text.contains('CHAIRMAN') || text.contains('COUNCIL')) return 'LOCAL GOVERNMENT';
+    if (text.contains('COUNCILLOR') || text.contains('COUNCILLORSHIP')) return 'COUNCILLOR';
+    if (text.contains('CHAIRMAN') || text.contains('CHAIRMANSHIP') || text.contains('COUNCIL')) return 'LOCAL GOVERNMENT';
     if (text.contains('GOVERNOR') || text.contains('GUBERNATORIAL')) return 'GUBERNATORIAL';
     if (text.contains('SENATE') || text.contains('SENATORIAL')) return 'SENATORIAL';
     if (text.contains('REPS') || text.contains('HOUSE OF REPS')) return 'HOUSE OF REPS';
