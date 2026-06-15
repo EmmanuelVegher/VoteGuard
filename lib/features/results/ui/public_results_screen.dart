@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -53,6 +54,13 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     return null;
   }
 
+  String get _apiBaseUrl {
+    if (kReleaseMode) {
+      return 'https://voteguard-backend--naijaobserve.us-east4.hosted.app';
+    }
+    return 'http://127.0.0.1:3001';
+  }
+
   // Dropdown options
   List<Election> _elections = [];
   List<String> _regions = [];
@@ -78,38 +86,16 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
   bool _slideshowEnabled = false;
 
   // Telemetry & Results State
-  int _activeCount = 1;
-  int _resultsSubmitted = 1;
-  int _totalVotes = 193;
+  int _activeCount = 0;
+  int _resultsSubmitted = 0;
+  int _totalVotes = 0;
   int _verifiedResults = 0;
-  Map<String, double> _partyVotes = {
-    'APC': 117.0,
-    'PDP': 76.0,
-  };
-  List<Map<String, dynamic>> _detailedResults = [
-    {
-      'id': 'house-2026-ogun-ikenne-ilisan-pu1',
-      'pollingUnitId': 'PU-12345',
-      'pollingUnitName': 'OPPOSIE ILISAN TOWN HALL UNDER THE TREE, ALONG OLOFIN ROAD, ILISAN',
-      'state': 'OGUN',
-      'lga': 'IKENNE',
-      'ward': 'ILISAN I',
-      'results': {
-        'APC': 117,
-        'PDP': 76,
-        'AA': 0,
-      },
-      'timestamp': '23:01',
-      'status': 'FINAL',
-      'evidenceUrl': 'mock_observer_result.png',
-      'irevImageUrl': 'mock_irev_result.png',
-      'verified': true,
-    }
-  ];
+  Map<String, double> _partyVotes = {};
+  List<Map<String, dynamic>> _detailedResults = [];
   
   bool _isLoadingResults = false;
   bool _isLoadingElections = true;
-  String _lastUpdated = '08:27:00';
+  String _lastUpdated = '--:--:--';
   StreamSubscription<QuerySnapshot>? _resultsSubscription;
 
   @override
@@ -141,9 +127,11 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
 
   // --- LOCAL CACHING LAYER ---
   bool _shouldShowElection(Election e) {
-    // Return true for all elections so they are always visible and selectable
-    // in the public results dashboard dropdown.
-    return true;
+    if (e.startDate == null || e.endDate == null) return false;
+    final now = DateTime.now();
+    final isWithinDate = now.isAfter(e.startDate!) && now.isBefore(e.endDate!);
+    final isLive = e.status.toLowerCase() == 'live';
+    return isWithinDate && isLive;
   }
 
   Future<void> _loadCachedData() async {
@@ -207,7 +195,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     debugPrint('PublicResults: _fetchElectionsAndGeoData started');
     setState(() => _isLoadingElections = true);
     try {
-      final apiUrl = 'http://127.0.0.1:3001/api/public/elections';
+      final apiUrl = '$_apiBaseUrl/api/public/elections';
       debugPrint('PublicResults: Fetching elections from backend API: $apiUrl');
       
       // 1. Fetch Elections from backend API
@@ -389,6 +377,26 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
 
 
   void _updateFilteredResults() {
+    if (_selectedElection == null) {
+      if (mounted) {
+        setState(() {
+          _regions = [];
+          _states = [];
+          _lgas = [];
+          _wards = [];
+          _parties = ['APC', 'PDP', 'LP', 'NNPP', 'APGA', 'SDP', 'ADC'];
+          _leaders = ['APC', 'PDP', 'LP'];
+          _resultsSubmitted = 0;
+          _totalVotes = 0;
+          _verifiedResults = 0;
+          _partyVotes = {};
+          _detailedResults = [];
+          _isLoadingResults = false;
+        });
+      }
+      return;
+    }
+
     final Set<String> regionsSet = {};
     final Set<String> statesSet = {};
     final Set<String> lgasSet = {};
@@ -504,51 +512,6 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     // Sort detailsList by timestamp desc
     filteredList.sort((a, b) => b['timestamp'].toString().compareTo(a['timestamp'].toString()));
 
-    // Fallback default values if Firestore returns no entries matching filters
-    if (totalSubmitted == 0 && _selectedElection?.name.toLowerCase().contains('house of') == true) {
-      final mockPU = {
-        'id': 'house-2026-ogun-ikenne-ilisan-pu1',
-        'pollingUnitId': 'PU-12345',
-        'pollingUnitName': 'OPPOSIE ILISAN TOWN HALL UNDER THE TREE, ALONG OLOFIN ROAD, ILISAN',
-        'state': 'OGUN',
-        'lga': 'IKENNE',
-        'ward': 'ILISAN I',
-        'results': {'APC': 117, 'PDP': 76, 'AA': 0},
-        'timestamp': '23:01',
-        'status': 'FINAL',
-        'evidenceUrl': 'mock_observer_result.png',
-        'irevImageUrl': 'mock_irev_result.png',
-        'verified': true,
-        'leadingParty': 'APC',
-        'totalValidVotes': 193,
-      };
-
-      final mockResults = mockPU['results'] as Map<String, int>;
-      final mockRegion = _getRegionForState('OGUN');
-
-      // Check if mock PU matches selections
-      final mockMatchesRegion = _selectedRegion == null || mockRegion == _selectedRegion;
-      final mockMatchesState = _selectedState == null || 'OGUN' == _selectedState!.toUpperCase();
-      final mockMatchesLga = _selectedLga == null || 'IKENNE' == _selectedLga!.toUpperCase();
-      final mockMatchesWard = _selectedWard == null || 'ILISAN I' == _selectedWard!.toUpperCase();
-      final mockMatchesParty = _selectedParty == null || _selectedParty == 'All Parties' || mockResults.containsKey(_selectedParty);
-      final mockMatchesLeader = _selectedLeader == null || _selectedLeader == 'All Leaders' || 'APC' == _selectedLeader!.toUpperCase();
-
-      if (mockMatchesRegion && mockMatchesState && mockMatchesLga && mockMatchesWard && mockMatchesParty && mockMatchesLeader) {
-        totalSubmitted = 1;
-        verifiedCount = 0; // matching status 'FINAL' not 'VERIFIED'
-        filteredList = [mockPU];
-
-        if (_selectedParty != null && _selectedParty != 'All Parties') {
-          votesCounted = mockResults[_selectedParty] ?? 0;
-          aggregatedPartyVotes = { _selectedParty!: _toDouble(mockResults[_selectedParty] ?? 0) };
-        } else {
-          votesCounted = 193;
-          aggregatedPartyVotes = {'APC': 117.0, 'PDP': 76.0};
-        }
-      }
-    }
-
     if (mounted) {
       setState(() {
         _regions = sortedRegions;
@@ -604,7 +567,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
 
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:3001/api/public/live-results?electionId=${_selectedElection!.id}'),
+        Uri.parse('$_apiBaseUrl/api/public/live-results?electionId=${_selectedElection!.id}'),
       ).timeout(const Duration(seconds: 4));
 
       if (response.statusCode == 200) {
@@ -860,8 +823,8 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     try {
       final clientId = await _getClientId();
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:3001/api/public/stats?clientId=$clientId'),
-      ).timeout(const Duration(seconds: 3));
+        Uri.parse('$_apiBaseUrl/api/public/stats?clientId=$clientId'),
+      ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
@@ -1050,7 +1013,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
                     ),
                   ),
                   Text(
-                    'PUBLIC MONITORING PORTAL',
+                    'PUBLIC OBSERVATION PORTAL',
                     style: GoogleFonts.inter(
                       color: const Color(0xFF64748B),
                       fontWeight: FontWeight.bold,
@@ -1200,9 +1163,9 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
                 Expanded(
                   child: _buildPulseControlCard(
                     label: 'STATUS',
-                    value: 'LIVE',
+                    value: _selectedElection != null ? 'LIVE' : 'NO LIVE ELECTION',
                     icon: LucideIcons.refreshCw,
-                    iconColor: const Color(0xFF8B1A1A),
+                    iconColor: _selectedElection != null ? const Color(0xFF8B1A1A) : const Color(0xFF64748B),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -2599,7 +2562,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
     if (url.startsWith('http://') || url.startsWith('https://')) {
       return url;
     }
-    return 'http://127.0.0.1:3001/api/uploads/media/$url';
+    return '$_apiBaseUrl/api/uploads/media/$url';
   }
 
   double _toDouble(dynamic val) {

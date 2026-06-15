@@ -26,7 +26,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     );
   }
 
-  Future<void> _onAuthStatusChanged(AuthStatusChanged event, Emitter<AuthState> emit) async {
+  Future<void> _onAuthStatusChanged(
+      AuthStatusChanged event, Emitter<AuthState> emit) async {
     if (event.user != null) {
       final user = event.user;
       if (user != null) {
@@ -46,16 +47,18 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
   }
 
-  Future<void> _onLoginRequested(LoginRequested event, Emitter<AuthState> emit) async {
+  Future<void> _onLoginRequested(
+      LoginRequested event, Emitter<AuthState> emit) async {
     emit(const AuthState.authenticating());
     try {
-      await _authService.signIn(event.email, event.password);
+      await _authService.signInByIdentifier(event.email, event.password);
     } catch (e) {
       emit(AuthState.failure(e.toString()));
     }
   }
 
-  Future<void> _onLogoutRequested(LogoutRequested event, Emitter<AuthState> emit) async {
+  Future<void> _onLogoutRequested(
+      LogoutRequested event, Emitter<AuthState> emit) async {
     final currentUserId = _authService.currentUser?.uid;
     if (currentUserId != null) {
       try {

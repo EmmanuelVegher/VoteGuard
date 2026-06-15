@@ -117,7 +117,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                   ),
                   const SizedBox(height: 24),
                   const Text(
-                    'ELECTION MONITORING SYSTEM',
+                    'ELECTION OBSERVATION SYSTEM',
                     style: TextStyle(
                       color: Color(0xFF64748B),
                       fontSize: 10,

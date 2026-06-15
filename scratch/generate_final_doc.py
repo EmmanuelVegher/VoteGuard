@@ -12,7 +12,7 @@ def create_final_budget_doc():
     # Intro
     p = doc.add_paragraph()
     p.add_run('Project: ').bold = True
-    p.add_run('VoteGuard / JDPC Election Monitoring System\n')
+    p.add_run('VoteGuard / JDPC Election Observation System\n')
     p.add_run('Status: ').bold = True
     p.add_run('Finalized Allocation for Immediate Approval')
 
@@ -33,7 +33,7 @@ def create_final_budget_doc():
         ("High Availability & Bandwidth (10TB Surge Support)", "$1,500.00"),
         ("Authentication & Communications (Email/WhatsApp/SMS)", "$1,000.00"),
         ("Situation Room & GIS Interactive Maps", "$950.00"),
-        ("Technical Support & 24/7 Monitoring (Election Week)", "$2,000.00"),
+        ("Technical Support & 24/7 Observation (Election Week)", "$2,000.00"),
         ("Stress Testing & Load Balancing (Pre-Election)", "$1,000.00")
     ]
 

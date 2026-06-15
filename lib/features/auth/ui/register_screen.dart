@@ -354,7 +354,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  const Text('JOIN THE MONITORING NETWORK', style: TextStyle(color: Color(0xFF64748B), fontSize: 9, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
+                  const Text('JOIN THE OBSERVATION NETWORK', style: TextStyle(color: Color(0xFF64748B), fontSize: 9, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 32),
 
                   Container(
@@ -446,7 +446,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                     style: TextStyle(fontSize: 10, color: Color(0xFF64748B), fontWeight: FontWeight.bold),
                                     children: [
                                       TextSpan(text: 'Terms of Service', style: TextStyle(color: Color(0xFF991B1B), decoration: TextDecoration.underline)),
-                                      TextSpan(text: ' AND MONITORING PROTOCOLS'),
+                                      TextSpan(text: ' AND OBSERVATION PROTOCOLS'),
                                     ],
                                   ),
                                 ),
@@ -494,7 +494,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   
                   const SizedBox(height: 24),
                   const Text(
-                    'PROPRIETARY SYSTEM OF IDPC GENERAL ELECTIONS MONITORING.',
+                    'PROPRIETARY SYSTEM OF VOTEGUARD.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Color(0xFF64748B), fontSize: 7, fontWeight: FontWeight.bold),
                   ),

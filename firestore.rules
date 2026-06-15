@@ -103,6 +103,19 @@ service cloud.firestore {
       }
     }
 
+    // ─── PASSWORD RESET OTPs ──────────────────────────────────────────────────
+    match /password_reset_otps/{otpId} {
+      allow read, write: if false;
+    }
+
+    // ─── PUSH NOTIFICATIONS ───────────────────────────────────────────────────
+    match /push_notifications/{docId} {
+      // All authenticated users can read push notifications (filtered by role in app)
+      allow read: if isAuthenticated();
+      // Only admins can create or modify push notifications
+      allow write: if isAdmin();
+    }
+
     // ─── ACTIVITY LOGS ────────────────────────────────────────────────────────
     match /activity_logs/{logId} {
       allow read: if isAdmin();

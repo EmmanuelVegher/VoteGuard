@@ -2,6 +2,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:voteguard/services/cloud_functions_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -15,7 +16,9 @@ class NotificationService {
   NotificationService._internal();
 
   final FirebaseMessaging _fcm = FirebaseMessaging.instance;
-  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
+  final CloudFunctionsService _cloudFunctions = CloudFunctionsService();
 
   bool _initialized = false;
 
@@ -35,7 +38,8 @@ class NotificationService {
     // 3. Setup Local Notifications (particularly for Android foreground presentation)
     const AndroidInitializationSettings androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
+    const DarwinInitializationSettings iosSettings =
+        DarwinInitializationSettings(
       requestAlertPermission: false,
       requestBadgePermission: false,
       requestSoundPermission: false,
@@ -58,7 +62,8 @@ class NotificationService {
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'voteguard_alerts', // id
       'VoteGuard Alert Notifications', // title
-      description: 'Critical updates and election incident alerts.', // description
+      description:
+          'Critical updates and election incident alerts.', // description
       importance: Importance.max,
     );
 
@@ -89,7 +94,8 @@ class NotificationService {
       provisional: false,
       sound: true,
     );
-    debugPrint('User notification permission status: ${settings.authorizationStatus}');
+    debugPrint(
+        'User notification permission status: ${settings.authorizationStatus}');
   }
 
   Future<String?> getFcmToken() async {
@@ -107,10 +113,18 @@ class NotificationService {
       debugPrint("Syncing FCM Token to Firestore: $token");
       await FirebaseFirestore.instance.collection('users').doc(userId).set({
         'fcmToken': token,
-        'pushToken': token, // Support both names for maximum compatibility with web/backend
+        'pushToken':
+            token, // Support both names for maximum compatibility with web/backend
         'tokenUpdatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }
+  }
+
+  Future<void> sendPasswordResetOtp(String phoneNumber) async {
+    await _cloudFunctions.callFunction(
+      'sendPasswordResetOtp',
+      {'phoneNumber': _normalizePhone(phoneNumber)},
+    );
   }
 
   Future<void> removeTokenInFirestore(String userId) async {
@@ -137,7 +151,8 @@ class NotificationService {
           android: AndroidNotificationDetails(
             'voteguard_alerts',
             'VoteGuard Alert Notifications',
-            channelDescription: 'Critical updates and election incident alerts.',
+            channelDescription:
+                'Critical updates and election incident alerts.',
             importance: Importance.max,
             priority: Priority.high,
             icon: '@mipmap/ic_launcher',
@@ -155,5 +170,19 @@ class NotificationService {
         payload: message.data.toString(),
       );
     }
+  }
+
+  String _normalizePhone(String phoneNumber) {
+    final digits = phoneNumber.replaceAll(RegExp(r'\D'), '');
+
+    if (digits.startsWith('234')) {
+      return digits;
+    }
+
+    if (digits.startsWith('0')) {
+      return '234${digits.substring(1)}';
+    }
+
+    return digits;
   }
 }

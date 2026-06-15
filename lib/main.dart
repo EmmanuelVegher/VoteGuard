@@ -8,10 +8,8 @@ import 'package:voteguard/firebase_options.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
 import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
 import 'package:voteguard/features/auth/ui/login_screen.dart';
-import 'package:voteguard/features/dashboard/ui/dashboard_screen.dart';
+import 'package:voteguard/features/auth/ui/password_reset_screen.dart';
 import 'package:voteguard/features/observer/ui/observer_dashboard_screen.dart';
-import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
-import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/ai_service.dart';
 import 'package:voteguard/data/local/app_database.dart';
@@ -21,7 +19,7 @@ import 'package:voteguard/features/results/ui/public_results_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
@@ -30,7 +28,7 @@ void main() async {
   await NotificationService().init();
 
   final aiService = AIService();
-  
+
   // Dynamic API Key Sync from Firestore
   FirebaseFirestore.instance
       .collection('settings')
@@ -42,9 +40,10 @@ void main() async {
         final valueStr = doc.data()?['value'] as String?;
         if (valueStr != null) {
           final valueJson = jsonDecode(valueStr);
-          
+
           // 1. Sync API Key
-          final key = valueJson['ai']?['gemini_api_key'] ?? valueJson['gemini_api_key'];
+          final key =
+              valueJson['ai']?['gemini_api_key'] ?? valueJson['gemini_api_key'];
           if (key != null && key.toString().isNotEmpty) {
             aiService.setApiKey(key.toString());
           }
@@ -61,7 +60,7 @@ void main() async {
       }
     }
   });
-  
+
   runApp(
     MultiRepositoryProvider(
       providers: [
@@ -94,14 +93,20 @@ class VoteGuardApp extends StatelessWidget {
         if (settings.name == '/login') {
           return MaterialPageRoute(builder: (context) => const LoginScreen());
         }
+        if (settings.name == '/password-reset') {
+          return MaterialPageRoute(
+              builder: (context) => const PasswordResetScreen());
+        }
         if (settings.name == '/observer/dashboard') {
           final electionId = settings.arguments as String;
           return MaterialPageRoute(
-            builder: (context) => ObserverDashboardScreen(electionId: electionId),
+            builder: (context) =>
+                ObserverDashboardScreen(electionId: electionId),
           );
         }
         if (settings.name == '/public-results') {
-          return MaterialPageRoute(builder: (context) => const PublicResultsScreen());
+          return MaterialPageRoute(
+              builder: (context) => const PublicResultsScreen());
         }
         return null;
       },
