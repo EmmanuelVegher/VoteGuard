@@ -16,7 +16,7 @@ def create_budget_doc():
     p.add_run('Target: ').bold = True
     p.add_run('State and National Elections (2026-2027)')
 
-    doc.add_heading('1. AI OCR Cost Analysis (Gemini 1.5 Flash)', level=1)
+    doc.add_heading('1. Smart Optical T Scanner Cost Analysis (Gemini 1.5 Flash)', level=1)
     doc.add_paragraph('By using Gemini 1.5 Flash, we eliminate the high costs of legacy OCR providers. Our system processes images as tokens, making it the most cost-effective solution for mass data entry.')
 
     # OCR Table
@@ -68,7 +68,7 @@ def create_budget_doc():
     doc.add_paragraph('Infrastructure cost for 1,000,000 observers reporting 200,000 polling unit results.')
 
     breakdown = [
-        ("Gemini AI OCR (API)", "$60.00"),
+        ("Smart Optical T Scanner (API)", "$60.00"),
         ("Firebase Firestore (Database)", "$850.00"),
         ("Firebase Cloud Storage (Images)", "$120.00"),
         ("Authentication (Hybrid Model)", "$1,500.00"),

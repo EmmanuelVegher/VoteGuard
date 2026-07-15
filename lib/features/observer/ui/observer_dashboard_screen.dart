@@ -6495,12 +6495,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         result = aiResult.data;
         _lastUsedModel = aiResult.modelName;
       } catch (geminiError) {
-        debugPrint("Gemini failed, falling back to ML Kit: $geminiError");
+        debugPrint("Smart Optical T Scanner (online) failed, falling back to Smart Optical T Scanner (offline): $geminiError");
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                  'Gemini AI failed (falling back to offline mode): $geminiError'),
+                  'Smart Optical T Scanner (online) failed (falling back to Smart Optical T Scanner (offline): $geminiError'),
               backgroundColor: Colors.orange,
               duration: const Duration(seconds: 5),
             ),
@@ -6542,7 +6542,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                 ],
               ),
               content: Text(
-                'Data Extraction Aborted.\n\nThe AI detected the year $detectedYear on this result sheet, but you are assigned to observe the $_expectedYear election.\n\nPlease upload the correct EC8A image for the actual election.',
+                'Data Extraction Aborted.\n\nThe System detected the year $detectedYear on this result sheet, but you are assigned to observe the $_expectedYear election.\n\nPlease upload the correct EC8A image for the actual election.',
                 style: GoogleFonts.outfit(
                     fontSize: 14,
                     color: Colors.black,
@@ -6618,7 +6618,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                 ],
               ),
               content: Text(
-                'Data Extraction Aborted.\n\nThe AI detected this is a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nPlease upload the correct EC8A image for the actual election type.',
+                'Data Extraction Aborted.\n\nThe System detected this is a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nPlease upload the correct EC8A image for the actual election type.',
                 style: GoogleFonts.outfit(
                     fontSize: 14,
                     color: Colors.black,

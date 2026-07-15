@@ -1035,7 +1035,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
           Text(
               _isEditingAssignment
                   ? 'Update your Polling Location'
-                  : 'Choose an Election to\nStart Monitoring',
+                  : 'Choose an Election to\nStart Observing',
               style: GoogleFonts.outfit(
                   color: Colors.white,
                   fontSize: 24,
@@ -1752,7 +1752,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                   ],
                 ),
                 content: Text(
-                  'This election has not started yet. You will be able to access the monitoring forms and report details starting on ${formatElectionDate(election.startDate)}.',
+                  'This election has not started yet. You will be able to access the observation forms and report details starting on ${formatElectionDate(election.startDate)}.',
                   style: GoogleFonts.outfit(
                       color: const Color(0xFF64748B), fontSize: 14),
                 ),

@@ -27,7 +27,7 @@ def create_final_budget_doc():
     hdr_cells[1].text = 'Allocated Cost (USD)'
 
     pres_breakdown = [
-        ("AI OCR Engine (Gemini 1.5 Flash - 200k Units)", "$250.00"),
+        ("Smart Optical T Scanner (Gemini 1.5 Flash - 200k Units)", "$250.00"),
         ("Cloud Infrastructure (Firebase DB/Storage/Functions)", "$1,200.00"),
         ("Security & DDoS Protection (Cloudflare Business Tier)", "$600.00"),
         ("High Availability & Bandwidth (10TB Surge Support)", "$1,500.00"),
@@ -59,11 +59,11 @@ def create_final_budget_doc():
     hdr_cells_s[1].text = 'Allocated Cost (USD)'
 
     state_breakdown = [
-        ("AI OCR Processing (State PU Results)", "$100.00"),
+        ("Smart Optical T Scanner Processing (State PU Results)", "$100.00"),
         ("Cloud Hosting & Database (Regional)", "$450.00"),
         ("Digital Maps & Localized GIS Dashboard", "$350.00"),
         ("Observer Authentication & Data Security", "$300.00"),
-        ("Performance Monitoring & Error Tracking", "$300.00"),
+        ("Performance Observation & Error Tracking", "$300.00"),
         ("Technical Support (Election Day)", "$500.00"),
         ("Contingency & Surge Buffer", "$300.00")
     ]

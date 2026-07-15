@@ -104,7 +104,7 @@ class AIService with ChangeNotifier {
       }
     }
 
-    if (_model == null) throw Exception('AI Service not initialized with API Key. Please update your settings.');
+    if (_model == null) throw Exception('Smart Optical T Scanner (online) Service not initialized with API Key. Please update your settings.');
     
     try {
       final data = await _generateWithModel(_model!, imageFile, activeParties);

@@ -52,11 +52,11 @@ void main() async {
           final modelId = valueJson['ai']?['ocrModel'];
           if (modelId != null && modelId.toString().isNotEmpty) {
             aiService.setPrimaryModel(modelId.toString());
-            debugPrint('AI Service: Config Updated (Model: $modelId)');
+            debugPrint('System Config: Config Updated (Model: $modelId)');
           }
         }
       } catch (e) {
-        debugPrint('AI Service: Error parsing dynamic config: $e');
+        debugPrint('System Config: Error parsing dynamic config: $e');
       }
     }
   });

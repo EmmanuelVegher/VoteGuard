@@ -1145,7 +1145,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
           ],
         ),
         Text(
-          'REAL-TIME ANALYTICAL MONITORING AND JURISDICTIONAL VERIFICATION PROTOCOLS.',
+          'REAL-TIME ANALYTICAL OBSERVATION AND JURISDICTIONAL VERIFICATION PROTOCOLS.',
           style: GoogleFonts.inter(
             color: const Color(0xFF64748B),
             fontSize: 7.5,
@@ -2131,7 +2131,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
           ),
           const Divider(color: Color(0xFFF1F5F9), height: 16),
 
-          // Bottom Action Row: Evidence & AI action
+          // Bottom Action Row: Evidence & Smart Optical T Scanner action
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -2149,7 +2149,7 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
                 ),
               ),
 
-              // AI Action Button / Match Badge
+              // Smart Optical T Scanner Action Button / Match Badge
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(

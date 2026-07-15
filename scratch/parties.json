@@ -1,0 +1,655 @@
+{
+  "documents": [
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/A",
+      "fields": {
+        "color": {
+          "stringValue": "bg-green-500"
+        },
+        "id": {
+          "integerValue": "9"
+        },
+        "abbreviation": {
+          "stringValue": "A"
+        },
+        "name": {
+          "stringValue": "Accord Party"
+        },
+        "logoUrl": {
+          "stringValue": "https://www.channelstv.com/wp-content/uploads/2015/03/Accord-Party-logo.jpg"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:14:58.111Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-05-14T04:09:01.910Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-05-14T04:09:01.963333Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/AA",
+      "fields": {
+        "id": {
+          "integerValue": "10"
+        },
+        "abbreviation": {
+          "stringValue": "AA"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:16:03.295Z"
+        },
+        "name": {
+          "stringValue": "Action Alliance (AA)"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSYIFgEXV3OYefc-oqVStdFdkgXJ58wk4_PKA&s"
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:16:03.295Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/AAC",
+      "fields": {
+        "color": {
+          "stringValue": "bg-slate-500"
+        },
+        "abbreviation": {
+          "stringValue": "AAC"
+        },
+        "id": {
+          "integerValue": "13"
+        },
+        "name": {
+          "stringValue": "African Action Congress (AAC)"
+        },
+        "logoUrl": {
+          "stringValue": "https://aacparty.com/images/hero-img.jpeg"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:18:35.350Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:18:35.350Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/ADC",
+      "fields": {
+        "name": {
+          "stringValue": "African Democratic Congress (ADC)"
+        },
+        "logoUrl": {
+          "stringValue": "https://upload.wikimedia.org/wikipedia/en/2/24/African_Democratic_Congress_logo.png"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:20:12.024Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:20:12.024Z"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "id": {
+          "integerValue": "14"
+        },
+        "abbreviation": {
+          "stringValue": "ADC"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/ADP",
+      "fields": {
+        "id": {
+          "integerValue": "11"
+        },
+        "abbreviation": {
+          "stringValue": "ADP"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:17:06.420Z"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRhI1R5-XSrDLaaltJ8Q9G9zwTgT8HOamZFCA&s"
+        },
+        "name": {
+          "stringValue": "Action Democratic Party (ADP)"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:17:06.420Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/APC",
+      "fields": {
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:21:14.150Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:21:14.150Z"
+        },
+        "name": {
+          "stringValue": "All Progressives Congress (APC)"
+        },
+        "logoUrl": {
+          "stringValue": "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/All_Progressives_Congress_logo.png/250px-All_Progressives_Congress_logo.png"
+        },
+        "abbreviation": {
+          "stringValue": "APC"
+        },
+        "id": {
+          "integerValue": "15"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/APGA",
+      "fields": {
+        "id": {
+          "integerValue": "16"
+        },
+        "abbreviation": {
+          "stringValue": "APGA"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:21:51.666Z"
+        },
+        "name": {
+          "stringValue": "All Progressives Grand Alliance (APGA)"
+        },
+        "logoUrl": {
+          "stringValue": "https://upload.wikimedia.org/wikipedia/en/b/b3/APGA_Nigeria_Logo.png"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:21:51.666Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/APM",
+      "fields": {
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "abbreviation": {
+          "stringValue": "APM"
+        },
+        "id": {
+          "integerValue": "17"
+        },
+        "name": {
+          "stringValue": "Allied Peoples Movement (APM)"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQXmM4HYyeZsPOQcwl6cR7aCPqGTGzQP2913A&s"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:22:42.874Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:22:42.874Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/APP",
+      "fields": {
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:18:56.084Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:17:43.457Z"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT7d9spu71RFuzhb7r4mpSUfhEYs8oc9xp39g&s"
+        },
+        "name": {
+          "stringValue": "Action Peoples Party (APP)"
+        },
+        "id": {
+          "integerValue": "12"
+        },
+        "abbreviation": {
+          "stringValue": "APP"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/BP",
+      "fields": {
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:23:16.784Z"
+        },
+        "name": {
+          "stringValue": "Boot Party (BP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT3OC-ySOdvyQKrrenUUjlovvC6O0TPeN5hFg&s"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:23:16.784Z"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "abbreviation": {
+          "stringValue": "BP"
+        },
+        "id": {
+          "integerValue": "18"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/DLA",
+      "fields": {
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "id": {
+          "integerValue": "28"
+        },
+        "abbreviation": {
+          "stringValue": "DLA"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcScxj6w1hMNSScyvVFFPxEiopS6BTl4dYEdNA&s"
+        },
+        "name": {
+          "stringValue": "Democratic Leadership Alliance (DLA)"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:36:09.779Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:36:09.779Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/LP",
+      "fields": {
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:24:13.651Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:24:13.651Z"
+        },
+        "name": {
+          "stringValue": "Labour Party (LP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://upload.wikimedia.org/wikipedia/en/5/5f/Labour_Party_%28Nigeria%29_logo.png"
+        },
+        "id": {
+          "integerValue": "19"
+        },
+        "abbreviation": {
+          "stringValue": "LP"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/NDC",
+      "fields": {
+        "id": {
+          "integerValue": "29"
+        },
+        "abbreviation": {
+          "stringValue": "NDC"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-05-18T11:50:36.870Z"
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:36:50.639Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "name": {
+          "stringValue": "Nigeria Democratic Congress (NDC)"
+        },
+        "logoUrl": {
+          "stringValue": "https://generic-uat.s3.amazonaws.com/ndcnigeria/static/img/ADA-logo.webp"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-05-18T11:50:36.916945Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/NNPP",
+      "fields": {
+        "abbreviation": {
+          "stringValue": "NNPP"
+        },
+        "id": {
+          "integerValue": "21"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:25:43.951Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:25:43.951Z"
+        },
+        "name": {
+          "stringValue": "New Nigeria Peoples Party (NNPP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://www.inecnigeria.org/wp-content/uploads/2024/06/nnpp-1-768x543.jpg"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/PDP",
+      "fields": {
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:26:43.555Z"
+        },
+        "logoUrl": {
+          "stringValue": "https://www.inecnigeria.org/wp-content/uploads/2018/10/PDP.jpg"
+        },
+        "name": {
+          "stringValue": "Peoples Democratic Party (PDP)"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:26:43.555Z"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "id": {
+          "integerValue": "22"
+        },
+        "abbreviation": {
+          "stringValue": "PDP"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/PRP",
+      "fields": {
+        "abbreviation": {
+          "stringValue": "PRP"
+        },
+        "id": {
+          "integerValue": "23"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:32:19.650Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:32:19.650Z"
+        },
+        "name": {
+          "stringValue": "Peoples Redemption Party (PRP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://www.inecnigeria.org/wp-content/uploads/2018/10/PRP.png"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/SDP",
+      "fields": {
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:33:10.290Z"
+        },
+        "name": {
+          "stringValue": "Social Democratic Party (SDP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://pbs.twimg.com/profile_images/980340231818924033/EH5BPDxo.jpg"
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:33:10.290Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "id": {
+          "integerValue": "24"
+        },
+        "abbreviation": {
+          "stringValue": "SDP"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/YP",
+      "fields": {
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:34:41.841Z"
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:34:41.841Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "name": {
+          "stringValue": "Youth Party (YP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRD8vN3opk7vqzFDOqniiCma7QPXIJdx6MQIg&s"
+        },
+        "id": {
+          "integerValue": "26"
+        },
+        "abbreviation": {
+          "stringValue": "YP"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/YPP",
+      "fields": {
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:34:06.160Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "name": {
+          "stringValue": "Young Progressives Party (YPP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://ypp.ng/wp-content/uploads/2025/02/about-right-logo-1.png"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:34:06.160Z"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "id": {
+          "integerValue": "25"
+        },
+        "abbreviation": {
+          "stringValue": "YPP"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/ZLP",
+      "fields": {
+        "name": {
+          "stringValue": "Zenith Labour Party (ZLP)"
+        },
+        "logoUrl": {
+          "stringValue": "https://zlp.ng/wp-content/uploads/2024/10/zlp-logo-new.png"
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:35:28.667Z"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:35:28.667Z"
+        },
+        "color": {
+          "stringValue": "bg-red-500"
+        },
+        "id": {
+          "integerValue": "27"
+        },
+        "abbreviation": {
+          "stringValue": "ZLP"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    },
+    {
+      "name": "projects/naijaobserve/databases/(default)/documents/parties/nrm",
+      "fields": {
+        "id": {
+          "integerValue": "20"
+        },
+        "abbreviation": {
+          "stringValue": "nrm"
+        },
+        "color": {
+          "stringValue": "bg-slate-500"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-04-24T04:25:02.032Z"
+        },
+        "logoUrl": {
+          "stringValue": "https://www.nrm.org.ng/images/logo2.fw.png"
+        },
+        "name": {
+          "stringValue": "National Rescue Movement (NRM)"
+        },
+        "isActive": {
+          "booleanValue": true
+        },
+        "createdAt": {
+          "timestampValue": "2026-04-24T04:25:02.032Z"
+        }
+      },
+      "createTime": "2026-04-28T07:38:51.488709Z",
+      "updateTime": "2026-04-30T04:13:39.805169Z"
+    }
+  ]
+}

@@ -142,7 +142,7 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
             _buildImagePreview(),
           const SizedBox(height: 24),
           Text(
-            'Ensure the EC8A sheet is clear and well-lit for AI processing.',
+            'Ensure the EC8A sheet is clear and well-lit for Smart Optical T Scanner processing.',
             textAlign: TextAlign.center,
             style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
           ),
@@ -167,7 +167,7 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
                 CircularProgressIndicator(color: AppColors.accent),
                 SizedBox(height: 24),
                 Text(
-                  'Gemini AI is analyzing the EC8A sheet...',
+                  'Smart Optical T Scanner (online) is analyzing the EC8A sheet...',
                   style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.w600),
                 ),
               ],
