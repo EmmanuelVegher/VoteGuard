@@ -1,10 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
-import 'package:voteguard/features/auth/ui/login_screen.dart';
-import 'package:voteguard/features/dashboard/ui/dashboard_screen.dart';
-import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
-import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
+import 'package:voteguard/core/routes/dashboard_redirect.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -43,17 +38,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   void _checkAuthAndNavigate() {
     if (!mounted) return;
     
-    final authState = context.read<AuthBloc>().state;
-    Widget nextScreen = const LoginScreen();
-
-    if (authState.status == AuthStatus.authenticated) {
-      final role = authState.role?.toUpperCase();
-      if (role == 'SUPER_ADMIN' || role == 'ADMIN') {
-        nextScreen = const SituationRoomScreen();
-      } else {
-        nextScreen = const ElectionGalleryScreen();
-      }
-    }
+    final nextScreen = DashboardRedirect.getTargetScreen(context);
 
     Navigator.pushReplacement(
       context,
@@ -122,6 +107,16 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                       color: Color(0xFF64748B),
                       fontSize: 10,
                       letterSpacing: 2.0,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'VERSION 1.0',
+                    style: TextStyle(
+                      color: Color(0xFF94A3B8),
+                      fontSize: 9,
+                      letterSpacing: 1.5,
                       fontWeight: FontWeight.bold,
                     ),
                   ),

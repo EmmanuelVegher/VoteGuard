@@ -16,6 +16,8 @@ import 'package:voteguard/data/local/app_database.dart';
 import 'package:voteguard/services/notification_service.dart';
 import 'package:voteguard/features/splash/ui/splash_screen.dart';
 import 'package:voteguard/features/results/ui/public_results_screen.dart';
+import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
+import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -97,17 +99,61 @@ class VoteGuardApp extends StatelessWidget {
           return MaterialPageRoute(
               builder: (context) => const PasswordResetScreen());
         }
-        if (settings.name == '/observer/dashboard') {
-          final electionId = settings.arguments as String;
-          return MaterialPageRoute(
-            builder: (context) =>
-                ObserverDashboardScreen(electionId: electionId),
-          );
-        }
         if (settings.name == '/public-results') {
           return MaterialPageRoute(
               builder: (context) => const PublicResultsScreen());
         }
+
+        // Guard /observer route group
+        const List<String> observerAllowedRoles = [
+          'observer',
+          'admin',
+          'super_admin',
+          'diocesan_director',
+          'diocesan_project_manager',
+          'diocesan_coordinator',
+          'provincial_director',
+          'provincial_project_manager',
+          'provincial_secretary',
+          'OBSERVER',
+          'ADMIN',
+          'SUPER_ADMIN',
+          'DIOCESAN_DIRECTOR',
+          'DIOCESAN_PROJECT_MANAGER',
+          'DIOCESAN_COORDINATOR',
+          'PROVINCIAL_DIRECTOR',
+          'PROVINCIAL_PROJECT_MANAGER',
+          'PROVINCIAL_SECRETARY'
+        ];
+
+        if (settings.name != null && settings.name!.startsWith('/observer')) {
+          final authState = context.read<AuthBloc>().state;
+          final role = authState.role;
+
+          if (authState.status != AuthStatus.authenticated ||
+              role == null ||
+              !observerAllowedRoles.contains(role)) {
+            return MaterialPageRoute(builder: (context) => const LoginScreen());
+          }
+
+          if (settings.name == '/observer/gallery') {
+            return MaterialPageRoute(
+                builder: (context) => const ElectionGalleryScreen());
+          }
+          if (settings.name == '/observer/dashboard') {
+            final electionId = settings.arguments as String;
+            return MaterialPageRoute(
+              builder: (context) =>
+                  ObserverDashboardScreen(electionId: electionId),
+            );
+          }
+        }
+
+        if (settings.name == '/dashboard') {
+          return MaterialPageRoute(
+              builder: (context) => const SituationRoomScreen());
+        }
+
         return null;
       },
       home: const SplashScreen(),

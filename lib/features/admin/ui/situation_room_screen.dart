@@ -3,6 +3,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
 
 class SituationRoomScreen extends StatefulWidget {
   const SituationRoomScreen({super.key});
@@ -16,7 +18,7 @@ class _SituationRoomScreenState extends State<SituationRoomScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF020617),
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(context),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24.0),
         child: Column(
@@ -42,7 +44,8 @@ class _SituationRoomScreenState extends State<SituationRoomScreen> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
+    final role = context.watch<AuthBloc>().state.role;
     return AppBar(
       backgroundColor: const Color(0xFF020617),
       elevation: 0,
@@ -69,14 +72,27 @@ class _SituationRoomScreenState extends State<SituationRoomScreen> {
                   color: Colors.white,
                 ),
               ),
-              Text(
-                'NATIONAL COMMAND CENTER • LIVE',
-                style: GoogleFonts.outfit(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 10,
-                  color: AppColors.accent,
-                  letterSpacing: 1,
-                ),
+              Row(
+                children: [
+                  Text(
+                    'NATIONAL COMMAND CENTER • ',
+                    style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10,
+                      color: AppColors.accent,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  Text(
+                    (role ?? 'ADMIN').toUpperCase(),
+                    style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10,
+                      color: const Color(0xFF10B981),
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

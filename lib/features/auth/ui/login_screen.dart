@@ -9,6 +9,7 @@ import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:voteguard/services/sync_service.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:voteguard/services/auth_service.dart';
+import 'package:voteguard/core/routes/dashboard_redirect.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -232,7 +233,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   context,
                                   MaterialPageRoute(
                                       builder: (context) =>
-                                          const ElectionGalleryScreen()),
+                                          DashboardRedirect.getTargetScreen(context)),
                                   (route) => false,
                                 );
                               }

@@ -992,6 +992,11 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   }
 
   Widget _buildCommandCenterHeader(Map<String, dynamic>? profile) {
+    final rawRole = profile?['role']?.toString() ?? '';
+    final role = rawRole.toLowerCase();
+    final isDiocesan = ['diocesan_director', 'diocesan_project_manager', 'diocesan_coordinator'].contains(role);
+    final isProvincial = ['provincial_director', 'provincial_project_manager', 'provincial_secretary'].contains(role);
+
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.all(16),
@@ -1023,12 +1028,43 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
               ),
               const SizedBox(width: 12),
               Expanded(
-                  child: Text('OBSERVER COMMAND CENTER',
-                      style: GoogleFonts.outfit(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 2))),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('OBSERVER COMMAND CENTER',
+                        style: GoogleFonts.outfit(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 2)),
+                    const SizedBox(height: 2),
+                    Text('ROLE: ${(profile?['role']?.toString() ?? 'OBSERVER').toUpperCase()}',
+                        style: GoogleFonts.outfit(
+                            color: const Color(0xFF6EE7B7),
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.5)),
+                    if (isDiocesan && profile?['assignedDiocese'] != null) ...[
+                      const SizedBox(height: 2),
+                      Text('DIOCESE: ${profile!['assignedDiocese'].toString().toUpperCase()}',
+                          style: GoogleFonts.outfit(
+                              color: Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.2)),
+                    ],
+                    if (isProvincial && profile?['assignedProvince'] != null) ...[
+                      const SizedBox(height: 2),
+                      Text('PROVINCE: ${profile!['assignedProvince'].toString().toUpperCase()}',
+                          style: GoogleFonts.outfit(
+                              color: Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.2)),
+                    ],
+                  ],
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 20),
@@ -1074,26 +1110,20 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                         ],
                       ),
                     ),
-                    if (!_isEditingAssignment)
-                      TextButton(
-                          onPressed: () {
+                    TextButton(
+                        onPressed: () {
+                          if (_isEditingAssignment) {
+                            setState(() => _isEditingAssignment = false);
+                          } else {
                             setState(() => _isEditingAssignment = true);
                             if (_states.isEmpty) _loadStates();
-                          },
-                          child: Text('CHANGE UNIT',
-                              style: GoogleFonts.outfit(
-                                  color: const Color(0xFF6EE7B7),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold)))
-                    else
-                      TextButton(
-                          onPressed: () =>
-                              setState(() => _isEditingAssignment = false),
-                          child: Text('CANCEL',
-                              style: GoogleFonts.outfit(
-                                  color: Colors.white70,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold))),
+                          }
+                        },
+                        child: Text(_isEditingAssignment ? 'CANCEL' : 'CHANGE UNIT',
+                            style: GoogleFonts.outfit(
+                                color: _isEditingAssignment ? Colors.white70 : const Color(0xFF6EE7B7),
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold))),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -1114,6 +1144,12 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                           'WARD', profile?['assignedWard'] ?? 'N/A'),
                       _buildAssignmentItem('POLLING UNIT',
                           profile?['assignedPollingUnit'] ?? 'N/A'),
+                      if (isDiocesan)
+                        _buildAssignmentItem('DIOCESE',
+                            profile?['assignedDiocese'] ?? 'N/A'),
+                      if (isProvincial)
+                        _buildAssignmentItem('PROVINCE',
+                            profile?['assignedProvince'] ?? 'N/A'),
                     ],
                   ),
                 ] else ...[
@@ -1191,7 +1227,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                     ),
                   ),
                 ],
-                //const SizedBox(height: 8),
+                const SizedBox(height: 16),
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),

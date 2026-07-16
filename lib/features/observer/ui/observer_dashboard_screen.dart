@@ -17,6 +17,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:voteguard/models/election_model.dart';
 import 'package:voteguard/services/ai_service.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
@@ -1731,12 +1732,39 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                     color: const Color(0xFF0F172A))),
-            Text('OBSERVER DASHBOARD',
-                style: GoogleFonts.outfit(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w900,
-                    color: const Color(0xFF10B981),
-                    letterSpacing: 1)),
+            // Role display commented out per request:
+            // Text.rich(
+            //   TextSpan(
+            //     children: [
+            //       TextSpan(
+            //         text: 'OBSERVER DASHBOARD • ',
+            //         style: GoogleFonts.outfit(
+            //             fontSize: 10,
+            //             fontWeight: FontWeight.w900,
+            //             color: const Color(0xFF10B981),
+            //             letterSpacing: 1),
+            //       ),
+            //       TextSpan(
+            //         text: '${(context.watch<AuthBloc>().state.role ?? "OBSERVER").toUpperCase()}',
+            //         style: GoogleFonts.outfit(
+            //             fontSize: 10,
+            //             fontWeight: FontWeight.w900,
+            //             color: const Color(0xFF991B1B),
+            //             letterSpacing: 1),
+            //       ),
+            //     ],
+            //   ),
+            //   maxLines: 1,
+            //   overflow: TextOverflow.ellipsis,
+            // ),
+            Text(
+              'OBSERVER DASHBOARD',
+              style: GoogleFonts.outfit(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                  color: const Color(0xFF10B981),
+                  letterSpacing: 1),
+            ),
           ],
         ),
         actions: [
@@ -9074,268 +9102,435 @@ class _ChatWidgetState extends State<_ChatWidget> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   Map<String, dynamic>? _replyingToMessage;
+  bool _isUploadingMedia = false;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.8,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                    color: const Color(0xFFE2E8F0),
-                    borderRadius: BorderRadius.circular(2))),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: const BoxDecoration(
-                      color: Color(0xFFF1F5F9), shape: BoxShape.circle),
-                  child: const Icon(LucideIcons.users,
-                      size: 20, color: Color(0xFF0F172A)),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('GROUP CHAT',
-                          style: GoogleFonts.outfit(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w900,
-                              color: const Color(0xFF0F172A))),
-                      Text(widget.groupId.replaceAll('_', ' ').toUpperCase(),
-                          style: GoogleFonts.outfit(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: const Color(0xFF64748B))),
-                    ],
-                  ),
-                ),
-                IconButton(
-                    icon: const Icon(LucideIcons.x, size: 20),
-                    onPressed: () => Navigator.pop(context)),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('chat_messages')
-                  .where('groupId', isEqualTo: widget.groupId)
-                  .orderBy('createdAt', descending: true)
-                  .limit(100)
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError)
-                  return Center(child: Text('Error: ${snapshot.error}'));
-                if (!snapshot.hasData)
-                  return const Center(child: CircularProgressIndicator());
-
-                final docs = snapshot.data!.docs;
-                return ListView.builder(
-                  reverse: true,
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(24),
-                  itemCount: docs.length,
-                  itemBuilder: (context, i) {
-                    final d = docs[i].data() as Map<String, dynamic>;
-                    final isMe = d['senderId'] == widget.userId;
-                    final sender = d['sender'] as Map<String, dynamic>? ?? {};
-                    final isDeleted = d['isDeleted'] == true;
-                    final isEdited = d['isEdited'] == true;
-                    final docId = docs[i].id;
-
-                    if (isDeleted) {
-                      return Align(
-                        alignment:
-                            isMe ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 16),
-                          constraints: BoxConstraints(
-                              maxWidth:
-                                  MediaQuery.of(context).size.width * 0.75),
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 12, horizontal: 16),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1F5F9),
-                            border: Border.all(color: const Color(0xFFE2E8F0)),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Text(
-                            "This message has been deleted",
-                            style: GoogleFonts.outfit(
-                              color: const Color(0xFF94A3B8),
-                              fontStyle: FontStyle.italic,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-
-                    return Align(
-                      alignment:
-                          isMe ? Alignment.centerRight : Alignment.centerLeft,
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.8,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+        ),
+        child: SafeArea(
+          top: false,
+          bottom: true,
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFE2E8F0),
+                        borderRadius: BorderRadius.circular(2))),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: const BoxDecoration(
+                          color: Color(0xFFF1F5F9), shape: BoxShape.circle),
+                      child: const Icon(LucideIcons.users,
+                          size: 20, color: Color(0xFF0F172A)),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
                       child: Column(
-                        crossAxisAlignment: isMe
-                            ? CrossAxisAlignment.end
-                            : CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            margin: const EdgeInsets.only(bottom: 4),
-                            constraints: BoxConstraints(
-                                maxWidth:
-                                    MediaQuery.of(context).size.width * 0.75),
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: isMe
-                                  ? const Color(0xFF0F172A)
-                                  : const Color(0xFFF1F5F9),
-                              borderRadius: BorderRadius.only(
-                                topLeft: const Radius.circular(16),
-                                topRight: const Radius.circular(16),
-                                bottomLeft: Radius.circular(isMe ? 16 : 0),
-                                bottomRight: Radius.circular(isMe ? 0 : 16),
+                          Text('GROUP CHAT',
+                              style: GoogleFonts.outfit(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w900,
+                                  color: const Color(0xFF0F172A))),
+                          Text(widget.groupId.replaceAll('_', ' ').toUpperCase(),
+                              style: GoogleFonts.outfit(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: const Color(0xFF64748B))),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                        icon: const Icon(LucideIcons.x, size: 20),
+                        onPressed: () => Navigator.pop(context)),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('chat_messages')
+                      .where('groupId', isEqualTo: widget.groupId)
+                      .orderBy('createdAt', descending: true)
+                      .limit(100)
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError)
+                      return Center(child: Text('Error: ${snapshot.error}'));
+                    if (!snapshot.hasData)
+                      return const Center(child: CircularProgressIndicator());
+
+                    final docs = snapshot.data!.docs;
+                    return ListView.builder(
+                      reverse: true,
+                      controller: _scrollController,
+                      padding: const EdgeInsets.all(24),
+                      itemCount: docs.length,
+                      itemBuilder: (context, i) {
+                        final d = docs[i].data() as Map<String, dynamic>;
+                        final isMe = d['senderId'] == widget.userId;
+                        final sender = d['sender'] as Map<String, dynamic>? ?? {};
+                        final isDeleted = d['isDeleted'] == true;
+                        final isEdited = d['isEdited'] == true;
+                        final docId = docs[i].id;
+
+                        if (isDeleted) {
+                          return Align(
+                            alignment:
+                                isMe ? Alignment.centerRight : Alignment.centerLeft,
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 16),
+                              constraints: BoxConstraints(
+                                  maxWidth:
+                                      MediaQuery.of(context).size.width * 0.75),
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 12, horizontal: 16),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF1F5F9),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Text(
+                                "This message has been deleted",
+                                style: GoogleFonts.outfit(
+                                  color: const Color(0xFF94A3B8),
+                                  fontStyle: FontStyle.italic,
+                                  fontSize: 13,
+                                ),
                               ),
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (!isMe) ...[
-                                  Text(
-                                      sender['name'] ??
-                                          '${sender['firstName'] ?? ''} ${sender['lastName'] ?? ''}'
-                                              .trim(),
-                                      style: GoogleFonts.outfit(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w900,
-                                          color: const Color(0xFF64748B))),
-                                  const SizedBox(height: 4),
-                                ],
-                                if (d['replyTo'] != null) ...[
-                                  Container(
-                                    width: double.infinity,
-                                    margin: const EdgeInsets.only(bottom: 8),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: isMe
-                                          ? Colors.white.withOpacity(0.1)
-                                          : const Color(0xFFE2E8F0),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border(
-                                        left: BorderSide(
-                                          color: isMe
-                                              ? Colors.white54
-                                              : const Color(0xFF991B1B),
-                                          width: 3.0,
-                                        ),
-                                      ),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          d['replyTo']['senderName'] ?? '',
-                                          style: GoogleFonts.outfit(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                            color: isMe
-                                                ? Colors.white70
-                                                : const Color(0xFF991B1B),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          d['replyTo']['content'] ?? '',
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: GoogleFonts.outfit(
-                                            fontSize: 11,
-                                            color: isMe
-                                                ? Colors.white60
-                                                : const Color(0xFF475569),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
+                          );
+                        }
+
+                        return Align(
+                          alignment:
+                              isMe ? Alignment.centerRight : Alignment.centerLeft,
+                          child: Column(
+                            crossAxisAlignment: isMe
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                margin: const EdgeInsets.only(bottom: 4),
+                                constraints: BoxConstraints(
+                                    maxWidth:
+                                        MediaQuery.of(context).size.width * 0.75),
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: isMe
+                                      ? const Color(0xFF10B981)
+                                      : const Color(0xFFF1F5F9),
+                                  borderRadius: BorderRadius.only(
+                                    topLeft: const Radius.circular(16),
+                                    topRight: const Radius.circular(16),
+                                    bottomLeft: Radius.circular(isMe ? 16 : 0),
+                                    bottomRight: Radius.circular(isMe ? 0 : 16),
                                   ),
-                                ],
-                                if (d['type'] == 'image' &&
-                                    d['imageUrl'] != null &&
-                                    d['imageUrl'].toString().isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 8.0),
-                                    child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: CachedNetworkImage(
-                                        imageUrl: d['imageUrl'],
-                                        width: double.infinity,
-                                        fit: BoxFit.cover,
-                                        placeholder: (context, url) =>
-                                            Container(
-                                          height: 150,
-                                          color: isMe
-                                              ? Colors.white12
-                                              : Colors.black12,
-                                          child: const Center(
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2)),
-                                        ),
-                                        errorWidget: (context, url, error) =>
-                                            const Icon(Icons.error,
-                                                color: Colors.red),
-                                      ),
-                                    ),
-                                  ),
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Flexible(
-                                      child: Text(
-                                        d['content'] ?? '',
-                                        style: GoogleFonts.outfit(
+                                    if (!isMe) ...[
+                                      Text(
+                                          sender['name'] ??
+                                              '${sender['firstName'] ?? ''} ${sender['lastName'] ?? ''}'
+                                                  .trim(),
+                                          style: GoogleFonts.outfit(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w900,
+                                              color: const Color(0xFF64748B))),
+                                      const SizedBox(height: 4),
+                                    ],
+                                    if (d['replyTo'] != null) ...[
+                                      Container(
+                                        width: double.infinity,
+                                        margin: const EdgeInsets.only(bottom: 8),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 12, vertical: 8),
+                                        decoration: BoxDecoration(
                                           color: isMe
-                                              ? Colors.white
-                                              : const Color(0xFF0F172A),
-                                          fontSize: 13,
-                                          height: 1.4,
+                                              ? Colors.white.withOpacity(0.1)
+                                              : const Color(0xFFE2E8F0),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border(
+                                            left: BorderSide(
+                                              color: isMe
+                                                  ? Colors.white54
+                                                  : const Color(0xFF991B1B),
+                                              width: 3.0,
+                                            ),
+                                          ),
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              d['replyTo']['senderName'] ?? '',
+                                              style: GoogleFonts.outfit(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: isMe
+                                                    ? Colors.white70
+                                                    : const Color(0xFF991B1B),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              d['replyTo']['content'] ?? '',
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: GoogleFonts.outfit(
+                                                fontSize: 11,
+                                                color: isMe
+                                                    ? Colors.white60
+                                                    : const Color(0xFF475569),
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
-                                    ),
-                                    if (isMe) ...[
-                                      const SizedBox(width: 12),
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
+                                    ],
+                                    if (d['type'] == 'image' &&
+                                        d['imageUrl'] != null &&
+                                        d['imageUrl'].toString().isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 8.0),
+                                        child: GestureDetector(
+                                          onTap: () => _openFullScreenImage(d['imageUrl']),
+                                          child: ClipRRect(
+                                            borderRadius: BorderRadius.circular(8),
+                                            child: CachedNetworkImage(
+                                              imageUrl: d['imageUrl'],
+                                              width: double.infinity,
+                                              fit: BoxFit.cover,
+                                              placeholder: (context, url) =>
+                                                  Container(
+                                                height: 150,
+                                                color: isMe
+                                                    ? Colors.white12
+                                                    : Colors.black12,
+                                                child: const Center(
+                                                    child: CircularProgressIndicator(
+                                                        strokeWidth: 2)),
+                                              ),
+                                              errorWidget: (context, url, error) =>
+                                                  const Icon(Icons.error,
+                                                      color: Colors.red),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    if (d['type'] == 'video' &&
+                                        d['videoUrl'] != null &&
+                                        d['videoUrl'].toString().isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 8.0),
+                                        child: GestureDetector(
+                                          onTap: () => _openFullScreenVideo(d['videoUrl']),
+                                          child: ClipRRect(
+                                            borderRadius: BorderRadius.circular(12),
+                                            child: Container(
+                                              height: 140,
+                                              width: double.infinity,
+                                              color: Colors.black.withOpacity(0.1),
+                                              child: Stack(
+                                                alignment: Alignment.center,
+                                                children: [
+                                                  const Icon(LucideIcons.video, size: 48, color: Color(0xFF64748B)),
+                                                  Container(
+                                                    padding: const EdgeInsets.all(12),
+                                                    decoration: const BoxDecoration(
+                                                      color: Colors.black54,
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: const Icon(LucideIcons.play, color: Colors.white, size: 24),
+                                                  ),
+                                                  Positioned(
+                                                    bottom: 8,
+                                                    right: 8,
+                                                    child: Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black54,
+                                                        borderRadius: BorderRadius.circular(4),
+                                                      ),
+                                                      child: Text(
+                                                        'VIDEO',
+                                                        style: GoogleFonts.outfit(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    if (d['type'] == 'audio' &&
+                                        d['audioUrl'] != null &&
+                                        d['audioUrl'].toString().isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 8.0),
+                                        child: GestureDetector(
+                                          onTap: () => _openAudioPlayer(d['audioUrl']),
+                                          child: ClipRRect(
+                                            borderRadius: BorderRadius.circular(12),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                              decoration: BoxDecoration(
+                                                color: isMe ? Colors.white.withOpacity(0.15) : const Color(0xFFE2E8F0),
+                                                borderRadius: BorderRadius.circular(12),
+                                                border: Border.all(color: isMe ? Colors.white24 : Colors.black12),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  Container(
+                                                    padding: const EdgeInsets.all(8),
+                                                    decoration: BoxDecoration(
+                                                      color: isMe ? Colors.white24 : Colors.white,
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: Icon(LucideIcons.play, color: isMe ? Colors.white : const Color(0xFF10B981), size: 16),
+                                                  ),
+                                                  const SizedBox(width: 12),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        Text(
+                                                          'AUDIO RECORDING',
+                                                          style: GoogleFonts.outfit(
+                                                            fontSize: 10,
+                                                            fontWeight: FontWeight.w900,
+                                                            color: isMe ? Colors.white70 : const Color(0xFF475569),
+                                                            letterSpacing: 1,
+                                                          ),
+                                                        ),
+                                                        const SizedBox(height: 2),
+                                                        Text(
+                                                          'Tap to play audio',
+                                                          style: GoogleFonts.outfit(
+                                                            fontSize: 12,
+                                                            color: isMe ? Colors.white : const Color(0xFF0F172A),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  Icon(LucideIcons.music, color: isMe ? Colors.white70 : const Color(0xFF64748B), size: 20),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            d['content'] ?? '',
+                                            style: GoogleFonts.outfit(
+                                              color: isMe
+                                                  ? Colors.white
+                                                  : const Color(0xFF0F172A),
+                                              fontSize: 13,
+                                              height: 1.4,
+                                            ),
+                                          ),
+                                        ),
+                                        if (isMe) ...[
+                                          const SizedBox(width: 12),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              IconButton(
+                                                icon: const Icon(
+                                                    LucideIcons.cornerUpLeft,
+                                                    size: 13,
+                                                    color: Colors.white70),
+                                                padding: EdgeInsets.zero,
+                                                constraints: const BoxConstraints(),
+                                                onPressed: () {
+                                                  setState(() {
+                                                    _replyingToMessage = {
+                                                      'messageId': docId,
+                                                      'senderName': 'You',
+                                                      'content': d['content'] ??
+                                                          (d['type'] == 'image'
+                                                              ? '[Image]'
+                                                              : ''),
+                                                      'type': d['type'] ?? 'text',
+                                                    };
+                                                  });
+                                                },
+                                              ),
+                                              const SizedBox(width: 8),
+                                              if (d['type'] != 'image') ...[
+                                                IconButton(
+                                                  icon: const Icon(
+                                                      LucideIcons.pencil,
+                                                      size: 13,
+                                                      color: Colors.white70),
+                                                  padding: EdgeInsets.zero,
+                                                  constraints:
+                                                      const BoxConstraints(),
+                                                  onPressed: () {
+                                                    _showEditDialog(
+                                                        docId, d['content'] ?? '');
+                                                  },
+                                                ),
+                                                const SizedBox(width: 8),
+                                              ],
+                                              IconButton(
+                                                icon: const Icon(LucideIcons.trash2,
+                                                    size: 13,
+                                                    color: Color(0xFFFCA5A5)),
+                                                padding: EdgeInsets.zero,
+                                                constraints: const BoxConstraints(),
+                                                onPressed: () {
+                                                  _confirmDelete(docId);
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                        ] else ...[
+                                          const SizedBox(width: 12),
                                           IconButton(
                                             icon: const Icon(
                                                 LucideIcons.cornerUpLeft,
                                                 size: 13,
-                                                color: Colors.white70),
+                                                color: Color(0xFF64748B)),
                                             padding: EdgeInsets.zero,
                                             constraints: const BoxConstraints(),
                                             onPressed: () {
                                               setState(() {
                                                 _replyingToMessage = {
                                                   'messageId': docId,
-                                                  'senderName': 'You',
+                                                  'senderName': sender['name'] ??
+                                                      '${sender['firstName'] ?? ''} ${sender['lastName'] ?? ''}'
+                                                          .trim(),
                                                   'content': d['content'] ??
                                                       (d['type'] == 'image'
                                                           ? '[Image]'
@@ -9345,191 +9540,156 @@ class _ChatWidgetState extends State<_ChatWidget> {
                                               });
                                             },
                                           ),
-                                          const SizedBox(width: 8),
-                                          if (d['type'] != 'image') ...[
-                                            IconButton(
-                                              icon: const Icon(
-                                                  LucideIcons.pencil,
-                                                  size: 13,
-                                                  color: Colors.white70),
-                                              padding: EdgeInsets.zero,
-                                              constraints:
-                                                  const BoxConstraints(),
-                                              onPressed: () {
-                                                _showEditDialog(
-                                                    docId, d['content'] ?? '');
-                                              },
-                                            ),
-                                            const SizedBox(width: 8),
-                                          ],
-                                          IconButton(
-                                            icon: const Icon(LucideIcons.trash2,
-                                                size: 13,
-                                                color: Color(0xFFFCA5A5)),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(),
-                                            onPressed: () {
-                                              _confirmDelete(docId);
-                                            },
-                                          ),
                                         ],
-                                      ),
-                                    ] else ...[
-                                      const SizedBox(width: 12),
-                                      IconButton(
-                                        icon: const Icon(
-                                            LucideIcons.cornerUpLeft,
-                                            size: 13,
-                                            color: Color(0xFF64748B)),
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        onPressed: () {
-                                          setState(() {
-                                            _replyingToMessage = {
-                                              'messageId': docId,
-                                              'senderName': sender['name'] ??
-                                                  '${sender['firstName'] ?? ''} ${sender['lastName'] ?? ''}'
-                                                      .trim(),
-                                              'content': d['content'] ??
-                                                  (d['type'] == 'image'
-                                                      ? '[Image]'
-                                                      : ''),
-                                              'type': d['type'] ?? 'text',
-                                            };
-                                          });
-                                        },
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ],
                                 ),
-                              ],
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(
-                                left: 12.0, right: 12.0, bottom: 12.0),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _formatTimestamp(d['createdAt']),
-                                  style: GoogleFonts.outfit(
-                                      fontSize: 10,
-                                      color: const Color(0xFF64748B)),
-                                ),
-                                if (isEdited)
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 4.0),
-                                    child: Text(
-                                      "(edited)",
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                    left: 12.0, right: 12.0, bottom: 12.0),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      _formatTimestamp(d['createdAt']),
                                       style: GoogleFonts.outfit(
                                           fontSize: 10,
-                                          color: const Color(0xFF94A3B8),
-                                          fontWeight: FontWeight.bold),
+                                          color: const Color(0xFF64748B)),
                                     ),
-                                  ),
-                              ],
-                            ),
+                                    if (isEdited)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 4.0),
+                                        child: Text(
+                                          "(edited)",
+                                          style: GoogleFonts.outfit(
+                                              fontSize: 10,
+                                              color: const Color(0xFF94A3B8),
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
+                        );
+                      },
                     );
                   },
-                );
-              },
-            ),
-          ),
-          if (_replyingToMessage != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xFFF8FAFC),
-                border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+                ),
               ),
-              child: Row(
-                children: [
-                  const Icon(LucideIcons.cornerUpRight,
-                      size: 16, color: Color(0xFF991B1B)),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          "Replying to ${_replyingToMessage!['senderName']}",
-                          style: GoogleFonts.outfit(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: const Color(0xFF991B1B)),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _replyingToMessage!['content'] ?? '',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.outfit(
-                              fontSize: 12, color: const Color(0xFF475569)),
-                        ),
-                      ],
-                    ),
+              if (_replyingToMessage != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFF8FAFC),
+                    border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
                   ),
-                  IconButton(
-                    icon: const Icon(LucideIcons.x,
-                        size: 16, color: Color(0xFF64748B)),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: () {
-                      setState(() {
-                        _replyingToMessage = null;
-                      });
-                    },
-                  ),
-                ],
-              ),
-            ),
-          Container(
-            padding: EdgeInsets.fromLTRB(
-                24, 16, 24, MediaQuery.of(context).viewInsets.bottom + 24),
-            decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: Color(0xFFF1F5F9)))),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    style: GoogleFonts.outfit(
-                        fontSize: 14, color: const Color(0xFF0F172A)),
-                    decoration: InputDecoration(
-                      hintText: 'Type a message...',
-                      hintStyle: GoogleFonts.outfit(
-                          fontSize: 14, color: const Color(0xFF94A3B8)),
-                      filled: true,
-                      fillColor: const Color(0xFFF8FAFC),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
-                    ),
+                  child: Row(
+                    children: [
+                      const Icon(LucideIcons.cornerUpRight,
+                          size: 16, color: Color(0xFF991B1B)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              "Replying to ${_replyingToMessage!['senderName']}",
+                              style: GoogleFonts.outfit(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: const Color(0xFF991B1B)),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _replyingToMessage!['content'] ?? '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.outfit(
+                                  fontSize: 12, color: const Color(0xFF475569)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(LucideIcons.x,
+                            size: 16, color: Color(0xFF64748B)),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {
+                          setState(() {
+                            _replyingToMessage = null;
+                          });
+                        },
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 12),
-                GestureDetector(
-                  onTap: _sendMessage,
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: const BoxDecoration(
-                        color: Color(0xFF10B981), shape: BoxShape.circle),
-                    child: const Icon(LucideIcons.send,
-                        color: Colors.white, size: 20),
-                  ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                decoration: const BoxDecoration(
+                    color: Colors.white,
+                    border: Border(top: BorderSide(color: Color(0xFFF1F5F9)))),
+                child: Row(
+                  children: [
+                    if (_isUploadingMedia)
+                      const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF10B981),
+                        ),
+                      )
+                    else
+                      IconButton(
+                        icon: const Icon(LucideIcons.paperclip,
+                            color: Color(0xFF64748B), size: 22),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: _showAttachmentOptions,
+                      ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: _controller,
+                        style: GoogleFonts.outfit(
+                            fontSize: 14, color: const Color(0xFF0F172A)),
+                        decoration: InputDecoration(
+                          hintText: 'Type a message...',
+                          hintStyle: GoogleFonts.outfit(
+                              fontSize: 14, color: const Color(0xFF94A3B8)),
+                          filled: true,
+                          fillColor: const Color(0xFFF8FAFC),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide.none),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 12),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    GestureDetector(
+                      onTap: _sendMessage,
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: const BoxDecoration(
+                            color: Color(0xFF10B981), shape: BoxShape.circle),
+                        child: const Icon(LucideIcons.send,
+                            color: Colors.white, size: 20),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -9731,5 +9891,343 @@ class _ChatWidgetState extends State<_ChatWidget> {
       return "${date.hour}:$minutes";
     }
     return '';
+  }
+
+  Future<String?> _uploadFile(File file, String folder) async {
+    try {
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}_${file.path.split('/').last}';
+      final ref = FirebaseStorage.instance
+          .ref()
+          .child('chats/${widget.groupId}/$folder/$fileName');
+      await ref.putFile(file).timeout(const Duration(seconds: 30));
+      return await ref.getDownloadURL();
+    } catch (e) {
+      debugPrint('Error uploading file to storage: $e');
+      return null;
+    }
+  }
+
+  Future<void> _pickAndUploadImage() async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+      if (pickedFile == null) return;
+
+      setState(() => _isUploadingMedia = true);
+      final file = File(pickedFile.path);
+      final downloadUrl = await _uploadFile(file, 'images');
+
+      if (downloadUrl != null) {
+        await _sendMediaMessage(type: 'image', urlField: 'imageUrl', url: downloadUrl, content: '[Image]');
+      } else {
+        _showUploadError();
+      }
+    } catch (e) {
+      debugPrint('Pick image error: $e');
+      _showUploadError();
+    } finally {
+      if (mounted) {
+        setState(() => _isUploadingMedia = false);
+      }
+    }
+  }
+
+  Future<void> _pickAndUploadVideo() async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickVideo(source: ImageSource.gallery);
+      if (pickedFile == null) return;
+
+      setState(() => _isUploadingMedia = true);
+      final file = File(pickedFile.path);
+      final downloadUrl = await _uploadFile(file, 'videos');
+
+      if (downloadUrl != null) {
+        await _sendMediaMessage(type: 'video', urlField: 'videoUrl', url: downloadUrl, content: '[Video]');
+      } else {
+        _showUploadError();
+      }
+    } catch (e) {
+      debugPrint('Pick video error: $e');
+      _showUploadError();
+    } finally {
+      if (mounted) {
+        setState(() => _isUploadingMedia = false);
+      }
+    }
+  }
+
+  Future<void> _pickAndUploadAudio() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(type: FileType.audio);
+      if (result == null || result.files.single.path == null) return;
+
+      setState(() => _isUploadingMedia = true);
+      final file = File(result.files.single.path!);
+      final downloadUrl = await _uploadFile(file, 'audios');
+
+      if (downloadUrl != null) {
+        await _sendMediaMessage(type: 'audio', urlField: 'audioUrl', url: downloadUrl, content: '[Audio]');
+      } else {
+        _showUploadError();
+      }
+    } catch (e) {
+      debugPrint('Pick audio error: $e');
+      _showUploadError();
+    } finally {
+      if (mounted) {
+        setState(() => _isUploadingMedia = false);
+      }
+    }
+  }
+
+  Future<void> _sendMediaMessage({
+    required String type,
+    required String urlField,
+    required String url,
+    required String content,
+  }) async {
+    try {
+      final names = widget.userName.split(' ');
+      final firstName = names.isNotEmpty ? names[0] : 'Observer';
+      final lastName = names.length > 1 ? names.sublist(1).join(' ') : '';
+
+      await FirebaseFirestore.instance.collection('chat_messages').add({
+        'content': content,
+        'createdAt': FieldValue.serverTimestamp(),
+        'groupId': widget.groupId,
+        'isRead': false,
+        'senderId': widget.userId,
+        'type': type,
+        urlField: url,
+        'sender': {
+          'firstName': firstName,
+          'lastName': lastName,
+          'name': widget.userName,
+          'role': widget.role,
+          'senderId': widget.userId,
+        },
+      });
+
+      // Log activity
+      try {
+        await FirebaseFirestore.instance.collection('activityLogs').add({
+          'type': 'CHAT_MESSAGE',
+          'userId': widget.userId,
+          'userName': widget.userName,
+          'description': 'Sent $type to ${widget.groupId}',
+          'createdAt': FieldValue.serverTimestamp()
+        });
+      } catch (_) {}
+    } catch (e) {
+      debugPrint('Error sending media message: $e');
+    }
+  }
+
+  void _showUploadError() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Failed to upload file. Please try again.'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+  void _showAttachmentOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 24),
+            Text(
+              'SHARE MEDIA',
+              style: GoogleFonts.outfit(
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+                color: const Color(0xFF0F172A),
+                letterSpacing: 1.5,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildAttachmentOptionItem(
+                  icon: LucideIcons.image,
+                  label: 'Image',
+                  color: Colors.purple,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndUploadImage();
+                  },
+                ),
+                _buildAttachmentOptionItem(
+                  icon: LucideIcons.video,
+                  label: 'Video',
+                  color: Colors.red,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndUploadVideo();
+                  },
+                ),
+                _buildAttachmentOptionItem(
+                  icon: LucideIcons.music,
+                  label: 'Audio',
+                  color: Colors.blue,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndUploadAudio();
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAttachmentOptionItem({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: color, size: 28),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: GoogleFonts.outfit(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF475569),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openFullScreenImage(String imageUrl) {
+    showDialog(
+      context: context,
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Scaffold(
+          backgroundColor: Colors.black.withOpacity(0.9),
+          body: Stack(
+            children: [
+              Center(
+                child: InteractiveViewer(
+                  maxScale: 4.0,
+                  child: CachedNetworkImage(
+                    imageUrl: imageUrl,
+                    fit: BoxFit.contain,
+                    placeholder: (context, url) => const CircularProgressIndicator(color: Colors.white),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 16,
+                right: 16,
+                child: CircleAvatar(
+                  backgroundColor: Colors.black54,
+                  child: IconButton(
+                    icon: const Icon(LucideIcons.x, color: Colors.white),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openFullScreenVideo(String videoUrl) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black,
+      builder: (ctx) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(LucideIcons.x, color: Colors.white),
+            onPressed: () => Navigator.pop(ctx),
+          ),
+        ),
+        body: Center(
+          child: VideoPlayerWidget(url: videoUrl),
+        ),
+      ),
+    );
+  }
+
+  void _openAudioPlayer(String audioUrl) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF0F172A),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 20),
+            Text(
+              'AUDIO PLAYER',
+              style: GoogleFonts.outfit(
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+                letterSpacing: 1.5,
+              ),
+            ),
+            const SizedBox(height: 10),
+            AudioPlayerWidget(url: audioUrl),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
   }
 }
