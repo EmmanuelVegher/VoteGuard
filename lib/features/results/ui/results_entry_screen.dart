@@ -36,7 +36,12 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
   final _rejectedBallots = TextEditingController();
 
   Future<void> _pickImage(ImageSource source) async {
-    final pickedFile = await _picker.pickImage(source: source);
+    final pickedFile = await _picker.pickImage(
+      source: source,
+      maxWidth: 1600,
+      maxHeight: 1600,
+      imageQuality: 80,
+    );
     if (pickedFile != null) {
       setState(() {
         _ec8aImage = File(pickedFile.path);

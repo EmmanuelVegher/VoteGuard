@@ -26,6 +26,7 @@ import 'package:chewie/chewie.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:voteguard/services/auth_service.dart';
+import 'package:voteguard/services/neon_api_service.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:drift/drift.dart' as drift;
 
@@ -2906,97 +2907,91 @@ class _ChecklistTabState extends State<_ChecklistTab>
   }
 
   bool _isQuestionVisible(Map<String, dynamic> q) {
-    final textLower = (q['text'] ?? '').toString().toLowerCase();
+    final textLower = (q['text'] ?? '').toString().trim().toLowerCase();
 
-    bool _answerIsYes(String? answer) =>
+    bool _answerIsYes(dynamic answer) =>
         answer?.toString().trim().toLowerCase() == 'yes';
-    bool _answerIsNo(String? answer) =>
+    bool _answerIsNo(dynamic answer) =>
         answer?.toString().trim().toLowerCase() == 'no';
 
-    String? _questionIdByOrder(num order) {
-      final target = order;
-      final matches = _questions.whereType<Map>().where((q) {
-        final qOrder = q['order'];
-        if (qOrder is num) return qOrder == target;
-        if (qOrder is String) return num.tryParse(qOrder) == target;
-        return false;
-      }).toList();
-      if (matches.isNotEmpty) return matches.first['id']?.toString();
-
-      // Fallback: match by id string directly
-      final idMatches = _questions
-          .whereType<Map>()
-          .where((q) => q['id']?.toString() == target.toString())
-          .toList();
-      return idMatches.isNotEmpty ? idMatches.first['id']?.toString() : null;
+    // 1. Explicit ID-based dependency (if configured)
+    final dependsOnId = q['dependsOnQuestionId']?.toString();
+    if (dependsOnId != null && dependsOnId.isNotEmpty) {
+      final parentAns = _answers[dependsOnId]?.toString().trim().toLowerCase();
+      final dependsOnVal = q['dependsOnValue']?.toString().trim().toLowerCase();
+      if (dependsOnVal != null && dependsOnVal.isNotEmpty) {
+        return parentAns == dependsOnVal;
+      }
+      return parentAns != null && parentAns.isNotEmpty;
     }
 
-    final q27Id = _questionIdByOrder(27);
-    final q28Id = _questionIdByOrder(28);
-    final q31Id = _questionIdByOrder(31);
-    final q32Id = _questionIdByOrder(32);
-    final q33Id = _questionIdByOrder(33);
-    final q34Id = _questionIdByOrder(34);
-    final q35Id = _questionIdByOrder(35);
-    final q38Id = _questionIdByOrder(38);
-    final q39Id = _questionIdByOrder(39);
-    final q40Id = _questionIdByOrder(40);
-
-    if (q['id'] == q28Id && q27Id != null && !_answerIsYes(_answers[q27Id]))
-      return false;
-    if (q['id'] == q32Id && q31Id != null && !_answerIsYes(_answers[q31Id]))
-      return false;
-    if ((q['id'] == q34Id || q['id'] == q35Id) &&
-        q33Id != null &&
-        !_answerIsYes(_answers[q33Id])) return false;
-    if (q['id'] == q39Id && q38Id != null && !_answerIsYes(_answers[q38Id]))
-      return false;
-    if (q['id'] == q40Id && q38Id != null && !_answerIsNo(_answers[q38Id]))
-      return false;
-
-    // Skip Q39/Q40 from generic text-based checks - they have their own visibility rules based on Q38
-    final isQ39OrQ40 = q['id'] == q39Id || q['id'] == q40Id;
-
-    // electoral commission members presence conditional visibility
-    if (!isQ39OrQ40 &&
-        textLower.contains('how many') &&
-        textLower.contains('them')) {
+    // 2. INEC / Electoral Commission members count ("how many of them?")
+    if (textLower.contains('how many') && textLower.contains('them') && !textLower.contains('agent')) {
       Map<String, dynamic>? parent;
       for (var item in _questions) {
         if (item is Map && item['text'] != null) {
           final t = item['text'].toString().toLowerCase();
-          if (t.contains('electoral commission') && t.contains('present')) {
+          if ((t.contains('electoral commission') || t.contains('inec')) && t.contains('present')) {
             parent = Map<String, dynamic>.from(item);
             break;
           }
         }
       }
-      if (parent != null && !_answerIsYes(_answers[parent['id']])) return false;
+      if (parent != null) return _answerIsYes(_answers[parent['id']]);
     }
 
-    // polling agents presence conditional visibility
-    // Q39 and Q40 are exempt — they are controlled by Q38's specific rules above
-    if (!isQ39OrQ40 && textLower.contains('how many') && textLower.contains('part')) {
+    // 3. Party Agents count / representation
+    if (textLower.contains('how many parties are represented') ||
+        (textLower.contains('how many party agents') && !textLower.contains('sign'))) {
       Map<String, dynamic>? parent;
       for (var item in _questions) {
         if (item is Map && item['text'] != null) {
           final t = item['text'].toString().toLowerCase();
-          if (t.contains('agent') && t.contains('present')) {
+          if ((t.contains('party agents') || t.contains('polling agents') || t.contains('party agent')) && t.contains('present')) {
             parent = Map<String, dynamic>.from(item);
             break;
           }
         }
       }
-      if (parent != null && !_answerIsYes(_answers[parent['id']])) return false;
+      if (parent != null) return _answerIsYes(_answers[parent['id']]);
     }
 
-    // agents signed / refused to sign conditional visibility
-    // Q39 and Q40 are exempt — they are controlled exclusively by Q38's specific rules above
-    final isSignedOrRefusedChild = !isQ39OrQ40 &&
-        ((textLower.contains('if not') && textLower.contains('signed')) ||
-            textLower.contains('refuse to sign') ||
-            textLower.contains('refused to sign') ||
-            textLower.contains('why did they refuse'));
+    // 4. Security personnel count
+    if (textLower.contains('number of security personnel') || textLower.contains('how many security personnel')) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('security') && (t.contains('personnel') || t.contains('officer') || t.contains('agent')) && t.contains('present')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
+      if (parent != null) return _answerIsYes(_answers[parent['id']]);
+    }
+
+    // 5. Foreign & Domestic Observers count
+    if (textLower.contains('foreign observers') || textLower.contains('local/domestic observers') || textLower.contains('domestic observers')) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('observer') && (t.contains('groups') || t.contains('group') || t.contains('observers')) && t.contains('present')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
+      if (parent != null) return _answerIsYes(_answers[parent['id']]);
+    }
+
+    // 6. Party Agent Signatures ("how many agents signed?", "party agents refused to sign?")
+    final isSignedOrRefusedChild = (textLower.contains('if not') && textLower.contains('signed')) ||
+        textLower.contains('refuse to sign') ||
+        textLower.contains('refused to sign') ||
+        textLower.contains('how many agents signed') ||
+        textLower.contains('why did they refuse');
 
     if (isSignedOrRefusedChild) {
       Map<String, dynamic>? parent;
@@ -3009,91 +3004,65 @@ class _ChecklistTabState extends State<_ChecklistTab>
           }
         }
       }
-      if (parent != null &&
-          _answers[parent['id']]?.toString().toLowerCase() == 'no')
-        return false;
+      if (parent != null) return _answerIsNo(_answers[parent['id']]);
+    }
+
+    // 7. Voting disruption follow-ups (Nature of disruption / Peaceful conduct)
+    if (textLower.contains('nature of disruption') || textLower.contains('disruption documented')) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('voting') && t.contains('disrupt')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
+      if (parent != null) return _answerIsYes(_answers[parent['id']]);
+    }
+
+    if (textLower.contains('peaceful conduct confirmed')) {
+      Map<String, dynamic>? parent;
+      for (var item in _questions) {
+        if (item is Map && item['text'] != null) {
+          final t = item['text'].toString().toLowerCase();
+          if (t.contains('voting') && t.contains('disrupt')) {
+            parent = Map<String, dynamic>.from(item);
+            break;
+          }
+        }
+      }
+      if (parent != null) return _answerIsNo(_answers[parent['id']]);
     }
 
     return true;
   }
 
   bool _isQuestionDependent(Map<String, dynamic> q) {
-    final textLower = (q['text'] ?? '').toString().toLowerCase();
+    final textLower = (q['text'] ?? '').toString().trim().toLowerCase();
 
-    String? _questionIdByOrder(num order) {
-      final target = order;
-      final matches = _questions.whereType<Map>().where((item) {
-        final qOrder = item['order'];
-        if (qOrder is num) return qOrder == target;
-        if (qOrder is String) return num.tryParse(qOrder) == target;
-        return false;
-      }).toList();
-      if (matches.isNotEmpty) return matches.first['id']?.toString();
-
-      final idMatches = _questions
-          .whereType<Map>()
-          .where((item) => item['id']?.toString() == target.toString())
-          .toList();
-      return idMatches.isNotEmpty ? idMatches.first['id']?.toString() : null;
-    }
-
-    final q28Id = _questionIdByOrder(28);
-    final q32Id = _questionIdByOrder(32);
-    final q34Id = _questionIdByOrder(34);
-    final q35Id = _questionIdByOrder(35);
-    final q39Id = _questionIdByOrder(39);
-    final q40Id = _questionIdByOrder(40);
-
-    if (q['id'] == q28Id ||
-        q['id'] == q32Id ||
-        q['id'] == q34Id ||
-        q['id'] == q35Id ||
-        q['id'] == q39Id ||
-        q['id'] == q40Id) {
+    if (q['dependsOnQuestionId'] != null && q['dependsOnQuestionId'].toString().isNotEmpty) {
       return true;
     }
 
-    final isQ39OrQ40 = q['id'] == q39Id || q['id'] == q40Id;
-
-    if (!isQ39OrQ40 &&
-        textLower.contains('how many') &&
-        textLower.contains('them')) {
-      for (var item in _questions) {
-        if (item is Map && item['text'] != null) {
-          final t = item['text'].toString().toLowerCase();
-          if (t.contains('electoral commission') && t.contains('present')) {
-            return true;
-          }
-        }
-      }
-    }
-
-    if (!isQ39OrQ40 && textLower.contains('how many') && textLower.contains('part')) {
-      for (var item in _questions) {
-        if (item is Map && item['text'] != null) {
-          final t = item['text'].toString().toLowerCase();
-          if (t.contains('agent') && t.contains('present')) {
-            return true;
-          }
-        }
-      }
-    }
-
-    final isSignedOrRefusedChild = !isQ39OrQ40 &&
-        ((textLower.contains('if not') && textLower.contains('signed')) ||
-            textLower.contains('refuse to sign') ||
-            textLower.contains('refused to sign') ||
-            textLower.contains('why did they refuse'));
-
-    if (isSignedOrRefusedChild) {
-      for (var item in _questions) {
-        if (item is Map && item['text'] != null) {
-          final t = item['text'].toString().toLowerCase();
-          if (t.contains('agent') && t.contains('sign')) {
-            return true;
-          }
-        }
-      }
+    if ((textLower.contains('how many') && textLower.contains('them') && !textLower.contains('agent')) ||
+        textLower.contains('how many parties are represented') ||
+        (textLower.contains('how many party agents') && !textLower.contains('sign')) ||
+        textLower.contains('number of security personnel') ||
+        textLower.contains('how many security personnel') ||
+        textLower.contains('foreign observers') ||
+        textLower.contains('local/domestic observers') ||
+        textLower.contains('domestic observers') ||
+        (textLower.contains('if not') && textLower.contains('signed')) ||
+        textLower.contains('refuse to sign') ||
+        textLower.contains('refused to sign') ||
+        textLower.contains('how many agents signed') ||
+        textLower.contains('why did they refuse') ||
+        textLower.contains('nature of disruption') ||
+        textLower.contains('disruption documented') ||
+        textLower.contains('peaceful conduct confirmed')) {
+      return true;
     }
 
     return false;
@@ -3143,9 +3112,25 @@ class _ChecklistTabState extends State<_ChecklistTab>
           .set(payload, SetOptions(merge: true))
           .timeout(const Duration(seconds: 10));
 
+      // Dual-Persistence: Save to NEON PostgreSQL Database
+      try {
+        NeonApiService.submitChecklist(
+          electionId: widget.electionId,
+          state: _userProfile?['assignedState'] ?? 'N/A',
+          lga: _userProfile?['assignedLga'] ?? 'N/A',
+          ward: _userProfile?['assignedWard'] ?? 'N/A',
+          pollingUnit: pu,
+          answers: _answers,
+          status: isFinal ? 'submitted' : 'draft',
+        );
+      } catch (neonErr) {
+        debugPrint(
+            'Graceful: Failed to dual-persist checklist to Neon PostgreSQL: $neonErr');
+      }
+
       final ipAddress = await _getPublicIP();
 
-      // Audit Log (swallow permission errors gracefully so it does not block the submission)
+      // Audit Log (Dual-Persisted to Neon PostgreSQL & Firestore)
       try {
         await FirebaseFirestore.instance.collection('audit_logs').add({
           'userId': user?.uid,
@@ -3169,6 +3154,18 @@ class _ChecklistTabState extends State<_ChecklistTab>
           },
           'createdAt': FieldValue.serverTimestamp(),
         }).timeout(const Duration(seconds: 5));
+
+        NeonApiService.logAudit(
+          action: isFinal ? 'CHECKLIST_SUBMIT' : 'CHECKLIST_SAVE_DRAFT',
+          resource: 'checklist',
+          userId: user?.uid,
+          details: {
+            'electionId': widget.electionId,
+            'pollingUnit': pu,
+            'state': _userProfile?['assignedState'] ?? 'N/A',
+            'lga': _userProfile?['assignedLga'] ?? 'N/A',
+          },
+        );
       } catch (auditError) {
         debugPrint(
             'Graceful: Failed to write checklist audit log to Firestore (rules constraint): $auditError');
@@ -3717,13 +3714,25 @@ class _ChecklistTabState extends State<_ChecklistTab>
                     Text(hasUrl ? 'REPLACE MEDIA' : 'ADD PHOTO/VIDEO',
                         style: GoogleFonts.outfit(
                             fontSize: 11,
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w600,
                             color: const Color(0xFF64748B))),
                   ],
                 ),
               ),
             ),
           ),
+        ],
+      );
+    }
+
+    if (type == 'yes_no_undecided' || type == 'choice') {
+      return Row(
+        children: [
+          _buildChoiceChip(id, 'Yes', 'yes', enabled),
+          const SizedBox(width: 12),
+          _buildChoiceChip(id, 'No', 'no', enabled),
+          const SizedBox(width: 12),
+          _buildChoiceChip(id, 'Undecided', 'undecided', enabled),
         ],
       );
     }
@@ -3736,7 +3745,12 @@ class _ChecklistTabState extends State<_ChecklistTab>
     if (isTimeField) {
       if (!_controllers.containsKey(id)) {
         _controllers[id] =
-            TextEditingController(text: _answers[id]?.toString());
+            TextEditingController(text: _formatTime12Hour(_answers[id]));
+      } else if (_answers[id] != null && _answers[id].toString().isNotEmpty) {
+        final formatted = _formatTime12Hour(_answers[id]);
+        if (_controllers[id]!.text != formatted) {
+          _controllers[id]!.text = formatted;
+        }
       }
 
       return InkWell(
@@ -3792,17 +3806,21 @@ class _ChecklistTabState extends State<_ChecklistTab>
                     );
 
                     if (selectedTime != null && mounted) {
-                      final dateTime = DateTime(
-                        selectedDate.year,
-                        selectedDate.month,
-                        selectedDate.day,
-                        selectedTime.hour,
-                        selectedTime.minute,
-                      );
-                      final formattedDateTime = dateTime.toIso8601String();
+                      final period = selectedTime.period == DayPeriod.am ? 'AM' : 'PM';
+                      final hour12 = selectedTime.hourOfPeriod == 0 ? 12 : selectedTime.hourOfPeriod;
+                      final formattedMinute = selectedTime.minute.toString().padLeft(2, '0');
+                      final formattedHour12 = hour12.toString().padLeft(2, '0');
+                      final y = selectedDate.year;
+                      final m = selectedDate.month.toString().padLeft(2, '0');
+                      final d = selectedDate.day.toString().padLeft(2, '0');
+
+                      final display12h = "$y-$m-$d $formattedHour12:$formattedMinute $period";
+                      final hour24 = selectedTime.hour.toString().padLeft(2, '0');
+                      final value24h = "$y-$m-${d}T$hour24:$formattedMinute:00";
+
                       setState(() {
-                        _answers[id] = formattedDateTime;
-                        _controllers[id]!.text = formattedDateTime;
+                        _answers[id] = value24h;
+                        _controllers[id]!.text = display12h;
                       });
                     }
                   }
@@ -3810,11 +3828,16 @@ class _ChecklistTabState extends State<_ChecklistTab>
                   TimeOfDay initialTime = TimeOfDay.now();
                   if (_controllers[id]!.text.isNotEmpty) {
                     try {
-                      final parts = _controllers[id]!.text.split(':');
+                      final textUpper = _controllers[id]!.text.toUpperCase();
+                      final isPM = textUpper.contains('PM');
+                      final isAM = textUpper.contains('AM');
+                      final cleanText = textUpper.replaceAll(RegExp(r'[A-Z]'), '').trim();
+                      final parts = cleanText.split(':');
                       if (parts.length >= 2) {
-                        final hour = int.parse(parts[0].trim());
-                        final minute = int.parse(
-                            parts[1].replaceAll(RegExp(r'[^0-9]'), '').trim());
+                        var hour = int.parse(parts[0].split(' ').last.trim());
+                        final minute = int.parse(parts[1].trim());
+                        if (isPM && hour < 12) hour += 12;
+                        if (isAM && hour == 12) hour = 0;
                         initialTime = TimeOfDay(hour: hour, minute: minute);
                       }
                     } catch (_) {}
@@ -3840,11 +3863,18 @@ class _ChecklistTabState extends State<_ChecklistTab>
                   );
 
                   if (selectedTime != null) {
-                    final formattedTime =
-                        '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
+                    final period = selectedTime.period == DayPeriod.am ? 'AM' : 'PM';
+                    final hour12 = selectedTime.hourOfPeriod == 0 ? 12 : selectedTime.hourOfPeriod;
+                    final formattedMinute = selectedTime.minute.toString().padLeft(2, '0');
+                    final formattedHour12 = hour12.toString().padLeft(2, '0');
+                    final display12h = '$formattedHour12:$formattedMinute $period';
+
+                    final hour24 = selectedTime.hour.toString().padLeft(2, '0');
+                    final value24h = '$hour24:$formattedMinute';
+
                     setState(() {
-                      _answers[id] = formattedTime;
-                      _controllers[id]!.text = formattedTime;
+                      _answers[id] = value24h;
+                      _controllers[id]!.text = display12h;
                     });
                   }
                 }
@@ -3944,6 +3974,47 @@ class _ChecklistTabState extends State<_ChecklistTab>
         ),
       ),
     );
+  }
+
+  String _formatTime12Hour(dynamic val) {
+    if (val == null) return '';
+    final str = val.toString().trim();
+    if (str.isEmpty) return '';
+
+    final upper = str.toUpperCase();
+    if (upper.contains('AM') || upper.contains('PM')) {
+      return str;
+    }
+
+    try {
+      final parsedDt = DateTime.tryParse(str);
+      if (parsedDt != null) {
+        final period = parsedDt.hour >= 12 ? 'PM' : 'AM';
+        final h = parsedDt.hour % 12 == 0 ? 12 : parsedDt.hour % 12;
+        final formattedHour = h.toString().padLeft(2, '0');
+        final formattedMinute = parsedDt.minute.toString().padLeft(2, '0');
+        final y = parsedDt.year;
+        final m = parsedDt.month.toString().padLeft(2, '0');
+        final d = parsedDt.day.toString().padLeft(2, '0');
+        return '$y-$m-$d $formattedHour:$formattedMinute $period';
+      }
+    } catch (_) {}
+
+    try {
+      final parts = str.split(':');
+      if (parts.length >= 2) {
+        var hour = int.parse(parts[0].trim());
+        final minute =
+            int.parse(parts[1].replaceAll(RegExp(r'[^0-9]'), '').trim());
+        final period = hour >= 12 ? 'PM' : 'AM';
+        final h = hour % 12 == 0 ? 12 : hour % 12;
+        final formattedHour = h.toString().padLeft(2, '0');
+        final formattedMinute = minute.toString().padLeft(2, '0');
+        return '$formattedHour:$formattedMinute $period';
+      }
+    } catch (_) {}
+
+    return str;
   }
 
   Widget _buildBottomActions() {
@@ -4136,7 +4207,12 @@ class _ChecklistTabState extends State<_ChecklistTab>
 
   Future<void> _handleChecklistMedia(String id, ImageSource source) async {
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: source, imageQuality: 70);
+    final img = await picker.pickImage(
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 70,
+    );
     if (img != null) {
       // Show loading
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -4362,7 +4438,12 @@ class _IncidentsTabState extends State<_IncidentsTab> {
     final picker = ImagePicker();
     XFile? file;
     if (type == 'photo') {
-      file = await picker.pickImage(source: source, imageQuality: 70);
+      file = await picker.pickImage(
+          source: source,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 70,
+      );
     } else if (type == 'video') {
       file = await picker.pickVideo(source: source);
     }
@@ -4522,6 +4603,11 @@ class _IncidentsTabState extends State<_IncidentsTab> {
         mediaItems.add({'url': url, 'type': type});
       }
 
+      final List<String> uploadedUrls = mediaItems
+          .map((e) => e['url'])
+          .whereType<String>()
+          .toList();
+
       final payload = {
         'electionId': widget.electionId,
         'observerId': user?.uid,
@@ -4529,9 +4615,7 @@ class _IncidentsTabState extends State<_IncidentsTab> {
         'incidentType': _selectedType,
         'description': _descriptionController.text,
         'mediaItems': mediaItems,
-        'mediaUrls': mediaItems
-            .map((e) => e['url'])
-            .toList(), // for backward compatibility
+        'mediaUrls': uploadedUrls, // for backward compatibility
         'state': _userProfile?['assignedState'],
         'lga': _userProfile?['assignedLga'],
         'ward': _userProfile?['assignedWard'],
@@ -4550,9 +4634,26 @@ class _IncidentsTabState extends State<_IncidentsTab> {
           .add(payload)
           .timeout(const Duration(seconds: 10));
 
+      // Dual-Persistence: Save to NEON PostgreSQL Database
+      try {
+        NeonApiService.submitIncident(
+          electionId: widget.electionId,
+          state: _userProfile?['assignedState'] ?? 'N/A',
+          lga: _userProfile?['assignedLga'] ?? 'N/A',
+          ward: _userProfile?['assignedWard'] ?? 'N/A',
+          pollingUnit: _userProfile?['assignedPollingUnit'] ?? 'N/A',
+          incidentType: _selectedType ?? 'other',
+          description: _descriptionController.text.trim(),
+          mediaUrls: uploadedUrls,
+        );
+      } catch (neonErr) {
+        debugPrint(
+            'Graceful: Failed to dual-persist incident report to Neon PostgreSQL: $neonErr');
+      }
+
       final ipAddress = await _getPublicIP();
 
-      // Audit Log for Incident Submission
+      // Audit Log for Incident Submission (Dual-Persisted)
       try {
         await FirebaseFirestore.instance.collection('audit_logs').add({
           'userId': user?.uid,
@@ -4576,6 +4677,17 @@ class _IncidentsTabState extends State<_IncidentsTab> {
           },
           'createdAt': FieldValue.serverTimestamp(),
         }).timeout(const Duration(seconds: 5));
+
+        NeonApiService.logAudit(
+          action: 'INCIDENT_SUBMIT',
+          resource: 'incident',
+          userId: user?.uid,
+          details: {
+            'electionId': widget.electionId,
+            'incidentType': _selectedType ?? 'other',
+            'pollingUnit': _userProfile?['assignedPollingUnit'] ?? 'N/A',
+          },
+        );
       } catch (auditError) {
         debugPrint('Graceful: Failed to write incident audit log: $auditError');
       }
@@ -6386,7 +6498,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
   Future<void> _handleOCR(ImageSource source) async {
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: source, imageQuality: 80);
+    final img = await picker.pickImage(
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 80,
+    );
     if (img == null) return;
 
     if (_lastScanTime != null) {
@@ -9910,7 +10027,12 @@ class _ChatWidgetState extends State<_ChatWidget> {
   Future<void> _pickAndUploadImage() async {
     try {
       final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+      final pickedFile = await picker.pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 70,
+      );
       if (pickedFile == null) return;
 
       setState(() => _isUploadingMedia = true);

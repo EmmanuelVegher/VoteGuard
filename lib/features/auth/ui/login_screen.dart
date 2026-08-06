@@ -4,7 +4,6 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
 import 'package:voteguard/features/auth/ui/password_reset_screen.dart';
-import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:voteguard/services/sync_service.dart';
 import 'package:local_auth/local_auth.dart';
@@ -285,6 +284,40 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ),
                                 );
                               }
+                              if (state.status == AuthStatus.requires2FA) {
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  _showCodeInputDialog(
+                                    context: context,
+                                    title: '2FA Verification',
+                                    label: 'Enter the 6-digit code from Google Authenticator or sent to your registered email/phone.',
+                                    onSubmitted: (code) {
+                                      context.read<AuthBloc>().add(LoginRequested(
+                                        email: state.pendingEmail!,
+                                        password: state.pendingPassword!,
+                                        twoFactorCode: code,
+                                        rememberMe: _rememberMe,
+                                      ));
+                                    },
+                                  );
+                                });
+                              }
+                              if (state.status == AuthStatus.requiresDeviceApproval) {
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  _showCodeInputDialog(
+                                    context: context,
+                                    title: 'Approve New Device',
+                                    label: state.errorMessage ?? 'Enter the 6-digit code sent to your email to approve this device.',
+                                    onSubmitted: (code) {
+                                      context.read<AuthBloc>().add(LoginRequested(
+                                        email: state.pendingEmail!,
+                                        password: state.pendingPassword!,
+                                        deviceApprovalCode: code,
+                                        rememberMe: _rememberMe,
+                                      ));
+                                    },
+                                  );
+                                });
+                              }
                             },
                             builder: (context, state) {
                               final isLoading =
@@ -299,6 +332,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                               email: _emailController.text,
                                               password:
                                                   _passwordController.text,
+                                              rememberMe: _rememberMe,
                                             ));
                                       },
                                 style: ElevatedButton.styleFrom(
@@ -457,60 +491,60 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
 
                     const SizedBox(height: 24),
-                    const Text(
-                      'PUBLIC OBSERVATION DASHBOARD',
-                      style: TextStyle(
-                          color: Color(0xFF475569),
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 12),
+                    // const Text(
+                    //   'PUBLIC OBSERVATION DASHBOARD',
+                    //   style: TextStyle(
+                    //       color: Color(0xFF475569),
+                    //       fontSize: 9,
+                    //       fontWeight: FontWeight.bold),
+                    // ),
+                    // const SizedBox(height: 12),
 
-                    // Public Results Hub
-                    GestureDetector(
-                      onTap: () {
-                        Navigator.pushNamed(context, '/public-results');
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF1F5F9).withOpacity(0.8),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: const Icon(LucideIcons.activity,
-                                  color: Color(0xFF991B1B), size: 20),
-                            ),
-                            const SizedBox(width: 12),
-                            const Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('PUBLIC RESULTS DASHBOARD',
-                                      style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                          color: Color(0xFF1E293B))),
-                                  Text('LIVE RESULTS & SITUATION ROOM',
-                                      style: TextStyle(
-                                          fontSize: 8,
-                                          color: Color(0xFF64748B))),
-                                ],
-                              ),
-                            ),
-                            const Icon(LucideIcons.arrowRight,
-                                size: 16, color: Color(0xFF64748B)),
-                          ],
-                        ),
-                      ),
-                    ),
+                    // // Public Results Hub
+                    // GestureDetector(
+                    //   onTap: () {
+                    //     Navigator.pushNamed(context, '/public-results');
+                    //   },
+                    //   child: Container(
+                    //     padding: const EdgeInsets.all(16),
+                    //     decoration: BoxDecoration(
+                    //       color: const Color(0xFFF1F5F9).withOpacity(0.8),
+                    //       borderRadius: BorderRadius.circular(16),
+                    //     ),
+                    //     child: Row(
+                    //       children: [
+                    //         Container(
+                    //           padding: const EdgeInsets.all(8),
+                    //           decoration: BoxDecoration(
+                    //             color: Colors.white,
+                    //             borderRadius: BorderRadius.circular(8),
+                    //           ),
+                    //           child: const Icon(LucideIcons.activity,
+                    //               color: Color(0xFF991B1B), size: 20),
+                    //         ),
+                    //         const SizedBox(width: 12),
+                    //         const Expanded(
+                    //           child: Column(
+                    //             crossAxisAlignment: CrossAxisAlignment.start,
+                    //             children: [
+                    //               Text('PUBLIC RESULTS DASHBOARD',
+                    //                   style: TextStyle(
+                    //                       fontSize: 10,
+                    //                       fontWeight: FontWeight.bold,
+                    //                       color: Color(0xFF1E293B))),
+                    //               Text('LIVE RESULTS & SITUATION ROOM',
+                    //                   style: TextStyle(
+                    //                       fontSize: 8,
+                    //                       color: Color(0xFF64748B))),
+                    //             ],
+                    //           ),
+                    //         ),
+                    //         const Icon(LucideIcons.arrowRight,
+                    //             size: 16, color: Color(0xFF64748B)),
+                    //       ],
+                    //     ),
+                    //   ),
+                    // ),
 
                     const SizedBox(height: 32),
                     Text(
@@ -541,6 +575,103 @@ class _LoginScreenState extends State<LoginScreen> {
           fontSize: 10,
           fontWeight: FontWeight.bold,
         ),
+      ),
+    );
+  }
+
+  void _showCodeInputDialog({
+    required BuildContext context,
+    required String title,
+    required String label,
+    required Function(String) onSubmitted,
+  }) {
+    final codeController = TextEditingController();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Row(
+          children: [
+            const Icon(LucideIcons.shieldAlert, color: Color(0xFF991B1B)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                title,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.outfit(
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFF0F172A),
+                  fontSize: 18,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: GoogleFonts.outfit(
+                color: const Color(0xFF64748B),
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: codeController,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                hintText: '000 000',
+                counterText: '',
+                fillColor: const Color(0xFFF8FAFC),
+                filled: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'CANCEL',
+              style: GoogleFonts.outfit(
+                color: const Color(0xFF64748B),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final code = codeController.text.trim();
+              if (code.length >= 4) {
+                Navigator.pop(ctx);
+                onSubmitted(code);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF991B1B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            ),
+            child: Text(
+              'SUBMIT',
+              style: GoogleFonts.outfit(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

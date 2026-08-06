@@ -115,6 +115,9 @@ class VoteGuardApp extends StatelessWidget {
           'provincial_director',
           'provincial_project_manager',
           'provincial_secretary',
+          'bishop',
+          'arch-bishop',
+          'arch_bishop',
           'OBSERVER',
           'ADMIN',
           'SUPER_ADMIN',
@@ -123,7 +126,10 @@ class VoteGuardApp extends StatelessWidget {
           'DIOCESAN_COORDINATOR',
           'PROVINCIAL_DIRECTOR',
           'PROVINCIAL_PROJECT_MANAGER',
-          'PROVINCIAL_SECRETARY'
+          'PROVINCIAL_SECRETARY',
+          'BISHOP',
+          'ARCH-BISHOP',
+          'ARCH_BISHOP'
         ];
 
         if (settings.name != null && settings.name!.startsWith('/observer')) {

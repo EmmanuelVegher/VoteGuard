@@ -25,7 +25,10 @@ class DashboardRedirect extends StatelessWidget {
       'DIOCESAN_COORDINATOR',
       'PROVINCIAL_DIRECTOR',
       'PROVINCIAL_PROJECT_MANAGER',
-      'PROVINCIAL_SECRETARY'
+      'PROVINCIAL_SECRETARY',
+      'BISHOP',
+      'ARCH-BISHOP',
+      'ARCH_BISHOP'
     ];
     
     if (role != null && observerRoles.contains(role)) {

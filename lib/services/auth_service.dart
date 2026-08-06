@@ -3,6 +3,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:voteguard/services/cloud_functions_service.dart';
 import 'package:voteguard/services/notification_service.dart';
 
+import 'package:voteguard/services/neon_api_service.dart';
+
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
@@ -10,17 +12,75 @@ class AuthService {
 
   static const String _keyEmail = 'auth_email';
   static const String _keyPassword = 'auth_password';
+  static const String _keyDeviceTrustToken = 'vg_device_trust_token';
+
+  // Retrieve stored device trust token
+  Future<String?> getDeviceTrustToken() async {
+    return await _secureStorage.read(key: _keyDeviceTrustToken);
+  }
 
   // Stream of auth state changes
   Stream<User?> get user => _auth.authStateChanges();
 
   // Sign in with email and password
-  Future<UserCredential?> signIn(String email, String password) async {
+  Future<Map<String, dynamic>> signIn(
+    String email,
+    String password, {
+    String? twoFactorCode,
+    String? deviceApprovalCode,
+    bool trustDevice = true,
+  }) async {
     try {
-      return await _auth.signInWithEmailAndPassword(
-        email: email,
+      // Perform Express login first
+      final response = await NeonApiService.login(
+        identifier: email,
         password: password,
+        twoFactorCode: twoFactorCode,
+        deviceApprovalCode: deviceApprovalCode,
+        trustDevice: trustDevice,
       );
+
+      if (response['success'] == true) {
+        if (response['requiresDeviceApproval'] == true) {
+          return {
+            'requiresDeviceApproval': true,
+            'message': response['message'] ?? 'Authorization code sent to your registered email.',
+          };
+        }
+
+        if (response['requires2FA'] == true) {
+          return {
+            'requires2FA': true,
+            'message': response['message'],
+          };
+        }
+
+        // Custom token login to Firebase to enable Firestore access
+        final customToken = response['firebaseCustomToken'] as String?;
+        if (customToken == null || customToken.isEmpty) {
+          // Fallback to standard Firebase login if custom token is not returned
+          print('No Firebase Custom Token returned. Falling back to email/password Firebase Auth...');
+          await _auth.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          return {'success': true};
+        }
+
+        await _auth.signInWithCustomToken(customToken);
+        return {'success': true};
+      } else {
+        // Fallback to standard Firebase login if the Express backend is down/unreachable
+        if (response['error'] == 'Network connection failed. Please check internet connection.') {
+          print('Express backend unreachable. Falling back to direct Firebase Auth...');
+          await _auth.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          return {'success': true};
+        }
+        throw Exception(response['error'] ?? response['message'] ?? 'Login failed');
+      }
     } catch (e) {
       rethrow;
     }
@@ -37,14 +97,23 @@ class AuthService {
   }
 
   // Sign in using email or normalized phone identifier.
-  Future<UserCredential?> signInByIdentifier(
+  Future<Map<String, dynamic>> signInByIdentifier(
     String identifier,
-    String password,
-  ) async {
+    String password, {
+    String? twoFactorCode,
+    String? deviceApprovalCode,
+    bool trustDevice = true,
+  }) async {
     final trimmedIdentifier = identifier.trim();
 
     if (_looksLikeEmail(trimmedIdentifier)) {
-      return signIn(trimmedIdentifier.toLowerCase(), password);
+      return signIn(
+        trimmedIdentifier.toLowerCase(),
+        password,
+        twoFactorCode: twoFactorCode,
+        deviceApprovalCode: deviceApprovalCode,
+        trustDevice: trustDevice,
+      );
     }
 
     final result = await resolveLoginIdentifier(trimmedIdentifier);
@@ -57,7 +126,13 @@ class AuthService {
       );
     }
 
-    return signIn(email, password);
+    return signIn(
+      email,
+      password,
+      twoFactorCode: twoFactorCode,
+      deviceApprovalCode: deviceApprovalCode,
+      trustDevice: trustDevice,
+    );
   }
 
   // Send Firebase password reset email

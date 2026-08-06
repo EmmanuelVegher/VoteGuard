@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:drift/drift.dart';
 import 'package:voteguard/data/local/app_database.dart';
-import 'package:voteguard/models/election_model.dart' as model;
+import 'package:voteguard/services/neon_api_service.dart';
 
 class SyncService {
   final AppDatabase _db;
@@ -14,6 +14,33 @@ class SyncService {
     await syncElections();
     await syncParties();
     await syncChecklists();
+    await syncUnsyncedToNeon();
+  }
+
+  /// Syncs pending unsynced offline records directly to Neon PostgreSQL database
+  Future<void> syncUnsyncedToNeon() async {
+    try {
+      final unsyncedResults = await _db.getUnsyncedResults();
+      for (final result in unsyncedResults) {
+        final partyVotes = jsonDecode(result.partyVotesJson) as Map<String, dynamic>;
+        for (final entry in partyVotes.entries) {
+          final res = await NeonApiService.submitResult(
+            electionId: 'active_election',
+            state: 'N/A',
+            lga: 'N/A',
+            ward: 'N/A',
+            pollingUnit: result.pollingUnitId,
+            party: entry.key,
+            votes: (entry.value as num).toInt(),
+          );
+          if (res['success'] == true) {
+            await _db.markResultSynced(result.id);
+          }
+        }
+      }
+    } catch (e) {
+      print('SyncService: Error syncing unsynced records to Neon: $e');
+    }
   }
 
   Future<void> syncChecklists() async {

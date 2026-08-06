@@ -51,9 +51,22 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       LoginRequested event, Emitter<AuthState> emit) async {
     emit(const AuthState.authenticating());
     try {
-      await _authService.signInByIdentifier(event.email, event.password);
+      final result = await _authService.signInByIdentifier(
+        event.email,
+        event.password,
+        twoFactorCode: event.twoFactorCode,
+        deviceApprovalCode: event.deviceApprovalCode,
+        trustDevice: event.rememberMe,
+      );
+
+      if (result['requiresDeviceApproval'] == true) {
+        emit(AuthState.requiresDeviceApproval(event.email, event.password,
+            message: result['message']));
+      } else if (result['requires2FA'] == true) {
+        emit(AuthState.requires2FA(event.email, event.password));
+      }
     } catch (e) {
-      emit(AuthState.failure(e.toString()));
+      emit(AuthState.failure(e.toString().replaceAll('Exception: ', '')));
     }
   }
 

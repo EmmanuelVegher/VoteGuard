@@ -127,11 +127,8 @@ class _PublicResultsScreenState extends State<PublicResultsScreen> with SingleTi
 
   // --- LOCAL CACHING LAYER ---
   bool _shouldShowElection(Election e) {
-    if (e.startDate == null || e.endDate == null) return false;
-    final now = DateTime.now();
-    final isWithinDate = now.isAfter(e.startDate!) && now.isBefore(e.endDate!);
-    final isLive = e.status.toLowerCase() == 'live';
-    return isWithinDate && isLive;
+    final status = e.status.toLowerCase();
+    return status == 'active' || status == 'live' || status == 'completed';
   }
 
   Future<void> _loadCachedData() async {

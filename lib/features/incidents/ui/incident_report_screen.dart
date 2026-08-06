@@ -64,7 +64,12 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
   Future<void> _addAttachment() async {
     final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: ImageSource.camera);
+    final pickedFile = await picker.pickImage(
+      source: ImageSource.camera,
+      maxWidth: 1600,
+      maxHeight: 1600,
+      imageQuality: 70,
+    );
     if (pickedFile != null) {
       setState(() {
         _attachments.add(File(pickedFile.path));

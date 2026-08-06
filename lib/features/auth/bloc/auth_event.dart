@@ -18,10 +18,19 @@ class AuthStatusChanged extends AuthEvent {
 class LoginRequested extends AuthEvent {
   final String email;
   final String password;
-  const LoginRequested({required this.email, required this.password});
+  final String? twoFactorCode;
+  final String? deviceApprovalCode;
+  final bool rememberMe;
+  const LoginRequested({
+    required this.email,
+    required this.password,
+    this.twoFactorCode,
+    this.deviceApprovalCode,
+    this.rememberMe = false,
+  });
 
   @override
-  List<Object?> get props => [email, password];
+  List<Object?> get props => [email, password, twoFactorCode, deviceApprovalCode, rememberMe];
 }
 
 class LogoutRequested extends AuthEvent {}

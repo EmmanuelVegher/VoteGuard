@@ -994,8 +994,8 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   Widget _buildCommandCenterHeader(Map<String, dynamic>? profile) {
     final rawRole = profile?['role']?.toString() ?? '';
     final role = rawRole.toLowerCase();
-    final isDiocesan = ['diocesan_director', 'diocesan_project_manager', 'diocesan_coordinator'].contains(role);
-    final isProvincial = ['provincial_director', 'provincial_project_manager', 'provincial_secretary'].contains(role);
+    final isDiocesan = ['diocesan_director', 'diocesan_project_manager', 'diocesan_coordinator', 'bishop'].contains(role);
+    final isProvincial = ['provincial_director', 'provincial_project_manager', 'provincial_secretary', 'arch_bishop', 'arch-bishop', 'archbishop'].contains(role);
 
     return Container(
       width: double.infinity,
