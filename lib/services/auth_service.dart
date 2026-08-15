@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:voteguard/services/cloud_functions_service.dart';
@@ -24,16 +25,94 @@ class AuthService {
 
   // Sign in with email and password
   Future<Map<String, dynamic>> signIn(
-    String email,
+    String identifier,
     String password, {
+    List<String>? emailCandidates,
     String? twoFactorCode,
     String? deviceApprovalCode,
     bool trustDevice = true,
   }) async {
+    String? firebaseAuthError;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 1: Attempt Firebase Auth direct sign-in first (Firebase-First)
+    // ─────────────────────────────────────────────────────────────────────────
+    final candidates = emailCandidates ??
+        (identifier.contains('@') ? [identifier.trim().toLowerCase()] : []);
+
+    for (final email in candidates) {
+      try {
+        final userCredential = await _auth.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+
+        final firebaseUser = userCredential.user;
+        if (firebaseUser != null) {
+          final idToken = await firebaseUser.getIdToken();
+          if (idToken != null && idToken.isNotEmpty) {
+            // Exchange Firebase ID Token with Express backend for JWT + profile
+            final apiRes = await NeonApiService.firebaseLogin(
+              idToken: idToken,
+              rememberDevice: trustDevice,
+            );
+
+            if (apiRes['requiresDeviceApproval'] == true) {
+              return {
+                'requiresDeviceApproval': true,
+                'message': apiRes['message'] ??
+                    'Authorization code sent to your registered email.',
+              };
+            }
+
+            if (apiRes['requires2FA'] == true) {
+              return {
+                'requires2FA': true,
+                'message': apiRes['message'],
+              };
+            }
+
+            // If account status is blocked/deactivated on backend, throw error
+            if (apiRes['accountStatus'] != null &&
+                apiRes['accountStatus'] != 'ACTIVE' &&
+                apiRes['error'] != null) {
+              await _auth.signOut();
+              throw Exception(apiRes['error']);
+            }
+
+            return {'success': true};
+          }
+        }
+      } catch (e) {
+        if (e.toString().contains('deactivated') ||
+            e.toString().contains('pending') ||
+            e.toString().contains('disabled')) {
+          rethrow;
+        }
+        debugPrint('Firebase Auth sign-in attempt failed for $email: $e');
+        if (e is FirebaseAuthException) {
+          if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+            firebaseAuthError = 'Invalid email/phone number or password.';
+          } else if (e.code == 'user-disabled') {
+            firebaseAuthError =
+                'Your account has been disabled. Please contact your administrator.';
+          } else if (e.code == 'too-many-requests') {
+            firebaseAuthError =
+                'Too many failed login attempts. Please try again later.';
+          } else {
+            firebaseAuthError = e.message;
+          }
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 2: Fallback to Postgres Express login (/api/auth/login)
+    // For legacy users in Postgres that haven't been created in Firebase Auth yet
+    // ─────────────────────────────────────────────────────────────────────────
     try {
-      // Perform Express login first
       final response = await NeonApiService.login(
-        identifier: email,
+        identifier: identifier,
         password: password,
         twoFactorCode: twoFactorCode,
         deviceApprovalCode: deviceApprovalCode,
@@ -44,7 +123,8 @@ class AuthService {
         if (response['requiresDeviceApproval'] == true) {
           return {
             'requiresDeviceApproval': true,
-            'message': response['message'] ?? 'Authorization code sent to your registered email.',
+            'message': response['message'] ??
+                'Authorization code sent to your registered email.',
           };
         }
 
@@ -57,33 +137,35 @@ class AuthService {
 
         // Custom token login to Firebase to enable Firestore access
         final customToken = response['firebaseCustomToken'] as String?;
-        if (customToken == null || customToken.isEmpty) {
-          // Fallback to standard Firebase login if custom token is not returned
-          print('No Firebase Custom Token returned. Falling back to email/password Firebase Auth...');
-          await _auth.signInWithEmailAndPassword(
-            email: email,
-            password: password,
-          );
-          return {'success': true};
+        if (customToken != null && customToken.isNotEmpty) {
+          await _auth.signInWithCustomToken(customToken);
         }
 
-        await _auth.signInWithCustomToken(customToken);
         return {'success': true};
-      } else {
-        // Fallback to standard Firebase login if the Express backend is down/unreachable
-        if (response['error'] == 'Network connection failed. Please check internet connection.') {
-          print('Express backend unreachable. Falling back to direct Firebase Auth...');
-          await _auth.signInWithEmailAndPassword(
-            email: email,
-            password: password,
-          );
-          return {'success': true};
+      }
+
+      // If Postgres login returned account status error (e.g. Pending / Inactive), raise it
+      if (response['accountStatus'] != null || response['error'] != null) {
+        final err = response['error'] ?? response['message'];
+        if (err != null &&
+            err !=
+                'Network connection failed. Please check internet connection.') {
+          throw Exception(err);
         }
-        throw Exception(response['error'] ?? response['message'] ?? 'Login failed');
       }
     } catch (e) {
-      rethrow;
+      if (e.toString().contains('account') ||
+          e.toString().contains('disabled') ||
+          e.toString().contains('pending') ||
+          e.toString().contains('deactivated')) {
+        rethrow;
+      }
+      debugPrint('Postgres fallback login error: $e');
     }
+
+    // If both failed, throw error
+    throw Exception(
+        firebaseAuthError ?? 'Invalid email/phone number or password.');
   }
 
   // Resolve a login identifier to a Firestore user document through Cloud Functions.
@@ -105,30 +187,38 @@ class AuthService {
     bool trustDevice = true,
   }) async {
     final trimmedIdentifier = identifier.trim();
+    List<String> candidates = [];
 
     if (_looksLikeEmail(trimmedIdentifier)) {
-      return signIn(
-        trimmedIdentifier.toLowerCase(),
-        password,
-        twoFactorCode: twoFactorCode,
-        deviceApprovalCode: deviceApprovalCode,
-        trustDevice: trustDevice,
-      );
-    }
-
-    final result = await resolveLoginIdentifier(trimmedIdentifier);
-    final email = result['email'] as String?;
-
-    if (email == null || email.isEmpty) {
-      throw FirebaseAuthException(
-        code: 'invalid-credential',
-        message: 'This user does not have an email address for Firebase login.',
-      );
+      candidates.add(trimmedIdentifier.toLowerCase());
+    } else {
+      final digits = trimmedIdentifier.replaceAll(RegExp(r'\D'), '');
+      if (digits.isNotEmpty) {
+        candidates.add('$digits@voteguard.com');
+        if (digits.startsWith('0') && digits.length == 11) {
+          candidates.add('234${digits.substring(1)}@voteguard.com');
+        } else if (digits.startsWith('234') && digits.length == 13) {
+          candidates.add('0${digits.substring(3)}@voteguard.com');
+        }
+      }
+      // Also attempt Cloud Function resolution as fallback for custom emails
+      try {
+        final result = await resolveLoginIdentifier(trimmedIdentifier);
+        final resolvedEmail = result['email'] as String?;
+        if (resolvedEmail != null &&
+            resolvedEmail.isNotEmpty &&
+            !candidates.contains(resolvedEmail.toLowerCase())) {
+          candidates.insert(0, resolvedEmail.toLowerCase());
+        }
+      } catch (e) {
+        debugPrint('Cloud Function resolveLoginIdentifier notice: $e');
+      }
     }
 
     return signIn(
-      email,
+      trimmedIdentifier,
       password,
+      emailCandidates: candidates,
       twoFactorCode: twoFactorCode,
       deviceApprovalCode: deviceApprovalCode,
       trustDevice: trustDevice,

@@ -66,6 +66,9 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   List<String> _lgas = [];
   List<String> _wards = [];
   List<String> _pus = [];
+  bool _isLoadingLgas = false;
+  bool _isLoadingWards = false;
+  bool _isLoadingPUs = false;
   bool _isSaving = false;
 
   @override
@@ -1173,41 +1176,81 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                   else
                     _buildGeoDropdown('Select State', _states, _selectedState,
                         (v) async {
+                      if (v == null) return;
                       setState(() {
                         _selectedState = v;
                         _selectedLga = null;
                         _selectedWard = null;
                         _selectedPU = null;
+                        _lgas = [];
+                        _wards = [];
+                        _pus = [];
+                        _isLoadingLgas = true;
                       });
-                      final lgas = await _geoService.getLGAs(v!);
-                      setState(() => _lgas = lgas.map((e) => e.name).toList());
+                      try {
+                        final lgas = await _geoService.getLGAs(v);
+                        if (mounted && _selectedState == v) {
+                          setState(() {
+                            _lgas = lgas.map((e) => e.name).toList();
+                            _isLoadingLgas = false;
+                          });
+                        }
+                      } catch (e) {
+                        if (mounted) setState(() => _isLoadingLgas = false);
+                      }
                     }),
                   const SizedBox(height: 12),
                   _buildGeoDropdown('Select LGA', _lgas, _selectedLga,
                       (v) async {
+                    if (v == null) return;
                     setState(() {
                       _selectedLga = v;
                       _selectedWard = null;
                       _selectedPU = null;
+                      _wards = [];
+                      _pus = [];
+                      _isLoadingWards = true;
                     });
-                    final wards =
-                        await _geoService.getWards(_selectedState!, v!);
-                    setState(() => _wards = wards.map((e) => e.name).toList());
-                  }),
+                    try {
+                      final wards =
+                          await _geoService.getWards(_selectedState!, v);
+                      if (mounted && _selectedLga == v) {
+                        setState(() {
+                          _wards = wards.map((e) => e.name).toList();
+                          _isLoadingWards = false;
+                        });
+                      }
+                    } catch (e) {
+                      if (mounted) setState(() => _isLoadingWards = false);
+                    }
+                  }, isLoading: _isLoadingLgas),
                   const SizedBox(height: 12),
                   _buildGeoDropdown('Select Ward', _wards, _selectedWard,
                       (v) async {
+                    if (v == null) return;
                     setState(() {
                       _selectedWard = v;
                       _selectedPU = null;
+                      _pus = [];
+                      _isLoadingPUs = true;
                     });
-                    final pus = await _geoService.getPollingUnits(
-                        _selectedState!, _selectedLga!, v!);
-                    setState(() => _pus = pus.map((e) => e.name).toList());
-                  }),
+                    try {
+                      final pus = await _geoService.getPollingUnits(
+                          _selectedState!, _selectedLga!, v);
+                      if (mounted && _selectedWard == v) {
+                        setState(() {
+                          _pus = pus.map((e) => e.name).toList();
+                          _isLoadingPUs = false;
+                        });
+                      }
+                    } catch (e) {
+                      if (mounted) setState(() => _isLoadingPUs = false);
+                    }
+                  }, isLoading: _isLoadingWards),
                   const SizedBox(height: 12),
                   _buildGeoDropdown('Select Polling Unit', _pus, _selectedPU,
-                      (v) => setState(() => _selectedPU = v)),
+                      (v) => setState(() => _selectedPU = v),
+                      isLoading: _isLoadingPUs),
                   const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
@@ -1255,7 +1298,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   }
 
   Widget _buildGeoDropdown(String hint, List<String> items, String? value,
-      ValueChanged<String?> onChanged) {
+      ValueChanged<String?> onChanged, {bool isLoading = false}) {
     // Deduplicate items to prevent duplicate DropdownMenuItem values crash
     final uniqueItems = items.toSet().toList();
 
@@ -1263,8 +1306,6 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     final String? safeValue =
         (value != null && uniqueItems.contains(value)) ? value : null;
 
-    debugPrint(
-        "Dropdown: $hint has ${uniqueItems.length} unique items. Current value: $value, Safe value: $safeValue");
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
@@ -1274,18 +1315,47 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           value: safeValue,
-          hint: Text(hint,
-              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          hint: Row(
+            children: [
+              if (isLoading) ...[
+                const SizedBox(
+                  height: 12,
+                  width: 12,
+                  child: CircularProgressIndicator(
+                    color: Colors.white70,
+                    strokeWidth: 1.5,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text('Loading ${hint.replaceAll("Select ", "")}...',
+                    style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold)),
+              ] else
+                Text(hint,
+                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            ],
+          ),
           isExpanded: true,
           dropdownColor: const Color(0xFF064E3B),
-          icon: const Icon(LucideIcons.chevronDown,
-              color: Colors.white70, size: 16),
+          icon: isLoading
+              ? const SizedBox(
+                  height: 14,
+                  width: 14,
+                  child: CircularProgressIndicator(
+                    color: Colors.white70,
+                    strokeWidth: 2,
+                  ),
+                )
+              : const Icon(LucideIcons.chevronDown,
+                  color: Colors.white70, size: 16),
           style: const TextStyle(
               color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
           items: uniqueItems
               .map((s) => DropdownMenuItem(value: s, child: Text(s)))
               .toList(),
-          onChanged: onChanged,
+          onChanged: isLoading ? null : onChanged,
         ),
       ),
     );

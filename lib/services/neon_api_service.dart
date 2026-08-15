@@ -87,6 +87,47 @@ class NeonApiService {
     }
   }
 
+  // 1b. Firebase ID Token Login (exchanges Firebase ID Token for backend JWT + user profile)
+  static Future<Map<String, dynamic>> firebaseLogin({
+    required String idToken,
+    bool rememberDevice = true,
+  }) async {
+    try {
+      final headers = await _getHeaders();
+      final body = jsonEncode({
+        'idToken': idToken,
+        'rememberDevice': rememberDevice,
+        'trustDevice': rememberDevice,
+      });
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/auth/firebase-login'),
+        headers: headers,
+        body: body,
+      );
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+      if (response.statusCode == 200 && data['success'] == true) {
+        if (data['accessToken'] != null) {
+          await _storage.write(key: _keyToken, value: data['accessToken']);
+        }
+        if (data['trustedDeviceToken'] != null) {
+          await _storage.write(
+              key: _keyDeviceTrustToken, value: data['trustedDeviceToken']);
+        }
+      }
+
+      return data;
+    } catch (e) {
+      debugPrint('NeonApiService firebaseLogin error: $e');
+      return {
+        'success': false,
+        'error': 'Network connection failed. Please check internet connection.',
+      };
+    }
+  }
+
   // 2. Register Trusted Device
   static Future<bool> registerTrustedDevice() async {
     try {
@@ -290,5 +331,95 @@ class NeonApiService {
       debugPrint('NeonApiService deleteIncident error: $e');
       return {'success': false, 'error': e.toString()};
     }
+  }
+
+  // 9. Geographical Data APIs
+  static Future<List<String>> getGeoStates() async {
+    try {
+      final response =
+          await http.get(Uri.parse('$baseUrl/geographical-data/states'));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['data'] != null) {
+          final list = data['data'] as List;
+          return list
+              .map((e) => e is String ? e : e['name']?.toString() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('NeonApiService getGeoStates error: $e');
+    }
+    return [];
+  }
+
+  static Future<List<String>> getGeoLGAs(String state) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/geographical-data/lgas?state=${Uri.encodeComponent(state)}'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['data'] != null) {
+          final list = data['data'] as List;
+          return list
+              .map((e) => e is String ? e : e['name']?.toString() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('NeonApiService getGeoLGAs error: $e');
+    }
+    return [];
+  }
+
+  static Future<List<String>> getGeoWards(String state, String lga) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/geographical-data/wards?state=${Uri.encodeComponent(state)}&lga=${Uri.encodeComponent(lga)}'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['data'] != null) {
+          final list = data['data'] as List;
+          return list
+              .map((e) => e is String ? e : e['name']?.toString() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('NeonApiService getGeoWards error: $e');
+    }
+    return [];
+  }
+
+  static Future<List<String>> getGeoPollingUnits(
+      String state, String lga, String ward) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/geographical-data/polling-units/public?state=${Uri.encodeComponent(state)}&lga=${Uri.encodeComponent(lga)}&ward=${Uri.encodeComponent(ward)}'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['data'] != null) {
+          final pus = data['data']['pollingUnits'] as List?;
+          if (pus != null) {
+            return pus
+                .map((e) => e.toString())
+                .where((s) => s.isNotEmpty)
+                .toList();
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('NeonApiService getGeoPollingUnits error: $e');
+    }
+    return [];
   }
 }

@@ -338,24 +338,40 @@ class _LoginScreenState extends State<LoginScreen> {
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor:
                                       const Color(0xFF991B1B), // Dark Red
+                                  disabledBackgroundColor: const Color(0xFF991B1B)
+                                      .withOpacity(0.6), // Keep visible when disabled
+                                  disabledForegroundColor: Colors.white,
                                   shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(12)),
                                   minimumSize: const Size(double.infinity, 50),
                                 ),
                                 child: isLoading
-                                    ? const SizedBox(
-                                        height: 20,
-                                        width: 20,
-                                        child: CircularProgressIndicator(
-                                            color: Colors.white,
-                                            strokeWidth: 2))
+                                    ? const Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          SizedBox(
+                                            height: 18,
+                                            width: 18,
+                                            child: CircularProgressIndicator(
+                                                color: Colors.white,
+                                                strokeWidth: 2),
+                                          ),
+                                          SizedBox(width: 10),
+                                          Text('LOGGING IN...',
+                                              style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 13)),
+                                        ],
+                                      )
                                     : const Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.center,
                                         children: [
-                                          Icon(LucideIcons.shield, size: 18),
+                                          Icon(LucideIcons.shield, size: 18, color: Colors.white),
                                           SizedBox(width: 8),
-                                          Text('LOGIN'),
+                                          Text('LOGIN', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                                         ],
                                       ),
                               );
