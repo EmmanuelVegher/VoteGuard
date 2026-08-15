@@ -564,11 +564,54 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
   }
 
   Future<void> _loadElection() async {
-    final doc =
-        await _firestore.collection('elections').doc(widget.electionId).get();
-    if (doc.exists && mounted) {
+    try {
+      final doc =
+          await _firestore.collection('elections').doc(widget.electionId).get();
+      if (doc.exists && mounted) {
+        setState(() {
+          _election = Election.fromFirestore(doc.data()!, doc.id);
+          _loading = false;
+        });
+        return;
+      }
+    } catch (e) {
+      debugPrint('Error fetching election from firestore: $e');
+    }
+
+    try {
+      final dbInstance = context.read<db.AppDatabase>();
+      final localElections = await dbInstance.getAllLocalElections();
+      final matchIndex =
+          localElections.indexWhere((e) => e.id == widget.electionId);
+      if (matchIndex != -1 && mounted) {
+        final local = localElections[matchIndex];
+        String? primaryElectionType;
+        if (local.metadataJson != null) {
+          try {
+            final meta = jsonDecode(local.metadataJson!);
+            primaryElectionType = meta['primaryElectionType']?.toString();
+          } catch (_) {}
+        }
+        setState(() {
+          _election = Election(
+            id: local.id,
+            name: local.name,
+            type: local.type,
+            status: local.status,
+            startDate: local.startDate,
+            endDate: local.endDate,
+            primaryElectionType: primaryElectionType,
+          );
+          _loading = false;
+        });
+        return;
+      }
+    } catch (e) {
+      debugPrint('Error fetching local election: $e');
+    }
+
+    if (mounted) {
       setState(() {
-        _election = Election.fromFirestore(doc.data()!, doc.id);
         _loading = false;
       });
     }
@@ -1804,6 +1847,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
               children: [
                 _DashboardTab(
                     electionId: widget.electionId,
+                    electionName: _election?.name,
                     tabController: _tabController,
                     isOffline: _isOffline),
                 _ChecklistTab(
@@ -1811,8 +1855,11 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                     onImportFromRelated: _importChecklistFromRelatedElection),
                 _IncidentsTab(
                     electionId: widget.electionId,
+                    electionName: _election?.name,
                     onImportFromRelated: _importIncidentFromRelatedElection),
-                _EC8AResultsTab(electionId: widget.electionId),
+                _EC8AResultsTab(
+                    electionId: widget.electionId,
+                    electionName: _election?.name),
               ],
             ),
           ),
@@ -1862,11 +1909,13 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 // --- TAB 1: DASHBOARD ---
 class _DashboardTab extends StatelessWidget {
   final String electionId;
+  final String? electionName;
   final TabController tabController;
   final bool isOffline;
 
   const _DashboardTab(
       {required this.electionId,
+      this.electionName,
       required this.tabController,
       required this.isOffline});
 
@@ -1906,7 +1955,7 @@ class _DashboardTab extends StatelessWidget {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
                 children: [
-                  _buildCommandHeader(profile),
+                  _buildCommandHeader(context, profile),
                   const SizedBox(height: 24),
                   _buildStatGrid(context, stats, profile),
                   const SizedBox(height: 24),
@@ -1923,7 +1972,7 @@ class _DashboardTab extends StatelessWidget {
         });
   }
 
-  Widget _buildCommandHeader(Map<String, dynamic>? profile) {
+  Widget _buildCommandHeader(BuildContext context, Map<String, dynamic>? profile) {
     final user = FirebaseAuth.instance.currentUser;
     return Container(
       padding: const EdgeInsets.all(24),
@@ -1987,11 +2036,19 @@ class _DashboardTab extends StatelessWidget {
                   color: const Color(0xFF0F172A),
                   letterSpacing: -1)),
           const SizedBox(height: 12),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              _buildBadge('2024 PRESIDENTIAL ELECTION', const Color(0xFFF1F5F9),
-                  const Color(0xFF475569)),
-              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width - 96),
+                child: _buildBadge(
+                    (electionName ?? 'ELECTION').toUpperCase(),
+                    const Color(0xFFF1F5F9),
+                    const Color(0xFF475569)),
+              ),
               _buildBadge('#VG-8829-LIVE', const Color(0xFFECFDF5),
                   const Color(0xFF10B981)),
             ],
@@ -4231,8 +4288,12 @@ class _ChecklistTabState extends State<_ChecklistTab>
 
 class _IncidentsTab extends StatefulWidget {
   final String electionId;
+  final String? electionName;
   final Future<void> Function()? onImportFromRelated;
-  const _IncidentsTab({required this.electionId, this.onImportFromRelated});
+  const _IncidentsTab(
+      {required this.electionId,
+      this.electionName,
+      this.onImportFromRelated});
 
   @override
   State<_IncidentsTab> createState() => _IncidentsTabState();
@@ -4839,7 +4900,7 @@ class _IncidentsTabState extends State<_IncidentsTab> {
                       color: const Color(0xFF0F172A),
                       letterSpacing: -1)),
               const SizedBox(height: 4),
-              Text('Reporting for 2026 Presidential Election',
+              Text('Reporting for ${widget.electionName ?? 'Election'}',
                   style: GoogleFonts.outfit(
                       fontSize: 14,
                       color: const Color(0xFF64748B),
@@ -5795,7 +5856,8 @@ class _IncidentsTabState extends State<_IncidentsTab> {
 
 class _EC8AResultsTab extends StatefulWidget {
   final String electionId;
-  const _EC8AResultsTab({required this.electionId});
+  final String? electionName;
+  const _EC8AResultsTab({required this.electionId, this.electionName});
 
   @override
   State<_EC8AResultsTab> createState() => _EC8AResultsTabState();
@@ -7796,7 +7858,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                       color: const Color(0xFF0F172A),
                       letterSpacing: -1)),
               const SizedBox(height: 4),
-              Text('Enter results for 2026 Presidential Election',
+              Text('Enter results for ${widget.electionName ?? 'Election'}',
                   style: GoogleFonts.outfit(
                       fontSize: 14,
                       color: const Color(0xFF64748B),

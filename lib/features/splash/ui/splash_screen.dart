@@ -112,7 +112,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'VERSION 4.0.0',
+                    'VERSION 5.0.0',
                     style: TextStyle(
                       color: Color(0xFF94A3B8),
                       fontSize: 9,
