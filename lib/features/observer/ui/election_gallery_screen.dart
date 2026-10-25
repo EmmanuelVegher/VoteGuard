@@ -841,10 +841,38 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
       backgroundColor: Colors.white,
       elevation: 0,
       pinned: true,
-      leading: IconButton(
-        icon: const Icon(LucideIcons.logOut, color: Color(0xFF1E293B)),
-        onPressed: () => _showLogoutConfirmation(),
+      leadingWidth: 100,
+      leading: Padding(
+        padding: const EdgeInsets.only(left: 12.0),
+        child: Center(
+          child: TextButton.icon(
+            onPressed: () => _showLogoutConfirmation(),
+            icon: const Icon(LucideIcons.logOut, color: Color(0xFFEF4444), size: 15),
+            label: Text(
+              'Logout',
+              style: GoogleFonts.outfit(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFFEF4444),
+              ),
+            ),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              backgroundColor: const Color(0xFFFEF2F2),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: BorderSide(
+                  color: const Color(0xFFFCA5A5).withValues(alpha: 0.5),
+                  width: 1,
+                ),
+              ),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        ),
       ),
+      centerTitle: true,
       title: Text(
         'ELECTION GALLERY',
         style: GoogleFonts.outfit(
