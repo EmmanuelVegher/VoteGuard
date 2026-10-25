@@ -1,16 +1,17 @@
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:voteguard/data/nigeria_wards_data.dart';
 import 'package:voteguard/models/geo_models.dart';
 import 'package:voteguard/services/neon_api_service.dart';
 
 class GeoService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // In-Memory Caches for instant responses (0ms)
-  final Map<String, List<GeoItem>> _cacheStates = {};
-  final Map<String, List<GeoItem>> _cacheLgas = {};
-  final Map<String, List<GeoItem>> _cacheWards = {};
-  final Map<String, List<PollingUnit>> _cachePus = {};
+  // In-Memory Caches for instant responses (0ms) across all service instances
+  static final Map<String, List<GeoItem>> _cacheStates = {};
+  static final Map<String, List<GeoItem>> _cacheLgas = {};
+  static final Map<String, List<GeoItem>> _cacheWards = {};
+  static final Map<String, List<PollingUnit>> _cachePus = {};
 
   Future<List<GeoItem>> getStates() async {
     if (_cacheStates.containsKey('all')) {
@@ -65,26 +66,27 @@ class GeoService {
       var snapshot = await _firestore
           .collection('lgas')
           .where('state', isEqualTo: stateName)
-          .orderBy('name')
           .get();
 
       if (snapshot.docs.isEmpty) {
         snapshot = await _firestore
             .collection('lgas')
             .where('state', isEqualTo: stateName.toUpperCase())
-            .orderBy('name')
             .get();
       }
 
-      final items =
-          snapshot.docs.map((doc) => GeoItem.fromFirestore(doc.data())).toList();
+      final items = snapshot.docs
+          .map((doc) => GeoItem.fromFirestore(doc.data()))
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
 
       if (items.isEmpty) {
         final staticLgas = _getStaticLGAsForState(stateName);
         if (staticLgas.isNotEmpty) {
           final staticItems = staticLgas
               .map((name) => GeoItem(id: name.hashCode, name: name))
-              .toList();
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
           _cacheLgas[cacheKey] = staticItems;
           return staticItems;
         }
@@ -98,27 +100,41 @@ class GeoService {
       if (staticLgas.isNotEmpty) {
         final staticItems = staticLgas
             .map((name) => GeoItem(id: name.hashCode, name: name))
-            .toList();
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
         _cacheLgas[cacheKey] = staticItems;
         return staticItems;
       }
-      rethrow;
+      return const [];
     }
   }
 
   Future<List<GeoItem>> getWards(String stateName, String lgaName) async {
     final cacheKey =
         "${stateName.toLowerCase().trim()}_${lgaName.toLowerCase().trim()}";
-    if (_cacheWards.containsKey(cacheKey)) {
+    if (_cacheWards.containsKey(cacheKey) && _cacheWards[cacheKey]!.isNotEmpty) {
       return _cacheWards[cacheKey]!;
     }
 
+    // 1. Comprehensive static INEC official ward mapping (instant 0ms response for all 774 LGAs)
+    final staticWards = getStaticWardsForLga(stateName, lgaName);
+    if (staticWards.isNotEmpty) {
+      final items = staticWards
+          .map((name) => GeoItem(id: name.hashCode, name: name))
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      _cacheWards[cacheKey] = items;
+      return items;
+    }
+
+    // 2. Fast API query to backend
     try {
       final apiWards = await NeonApiService.getGeoWards(stateName, lgaName);
       if (apiWards.isNotEmpty) {
         final items = apiWards
             .map((name) => GeoItem(id: name.hashCode, name: name))
-            .toList();
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
         _cacheWards[cacheKey] = items;
         return items;
       }
@@ -126,50 +142,74 @@ class GeoService {
       debugPrint("GeoService API (Wards) notice: $e");
     }
 
+    // 3. Fallback to Firestore (without orderBy to eliminate composite index requirement)
     try {
-      final lgaVariations = <String>{lgaName, lgaName.toLowerCase(), lgaName.toUpperCase()};
-      if (lgaName.toLowerCase().contains('atakunmosa')) {
+      final lgaVariations = <String>{
+        lgaName,
+        lgaName.trim(),
+        lgaName.toLowerCase(),
+        lgaName.toUpperCase(),
+      };
+
+      final lUpper = lgaName.trim().toUpperCase();
+      if (lUpper == 'MUNICIPAL AREA COUNCIL' || lUpper == 'AMAC') {
+        lgaVariations.addAll(['Municipal', 'MUNICIPAL', 'municipal']);
+      } else if (lUpper == 'MUNICIPAL') {
+        lgaVariations.addAll(['Municipal Area Council', 'MUNICIPAL AREA COUNCIL']);
+      } else if (lUpper.contains('ATAKUNMOSA')) {
         lgaVariations.add(lgaName.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'Atakumosa'));
-        lgaVariations.add(lgaName.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'atakumosa'));
         lgaVariations.add(lgaName.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'ATAKUMOSA'));
-      }
-      if (lgaName.toLowerCase().contains('atakumosa')) {
+      } else if (lUpper.contains('ATAKUMOSA')) {
         lgaVariations.add(lgaName.replaceAll(RegExp(r'atakumosa', caseSensitive: false), 'Atakunmosa'));
-        lgaVariations.add(lgaName.replaceAll(RegExp(r'atakumosa', caseSensitive: false), 'atakunmosa'));
         lgaVariations.add(lgaName.replaceAll(RegExp(r'atakumosa', caseSensitive: false), 'ATAKUNMOSA'));
+      } else if (lUpper == 'OBI NGWA' || lUpper == 'OBINGWA') {
+        lgaVariations.addAll(['Obingwa', 'OBI NGWA', 'Obi Ngwa', 'OBINGWA']);
+      } else if (lUpper == 'OSISIOMA' || lUpper == 'OSISIOMA NGWA') {
+        lgaVariations.addAll(['Osisioma Ngwa', 'OSISIOMA NGWA', 'Osisioma', 'OSISIOMA']);
+      } else if (lUpper == 'ISUIKWUATO' || lUpper == 'ISIUKWUATO') {
+        lgaVariations.addAll(['Isiukwuato', 'ISIUKWUATO', 'Isuikwuato', 'ISUIKWUATO']);
+      } else if (lUpper == 'UMU NNEOCHI' || lUpper == 'UMUNNEOCHI') {
+        lgaVariations.addAll(['Umunneochi', 'UMUNNEOCHI', 'Umu Nneochi', 'UMU NNEOCHI']);
       }
+
+      final sUpper = stateName.trim().toUpperCase();
+      final stateVariations = <String>{
+        stateName,
+        stateName.toUpperCase(),
+        stateName.toLowerCase(),
+        if (sUpper == 'FEDERAL CAPITAL TERRITORY' || sUpper == 'ABUJA') 'FCT',
+        if (sUpper == 'FCT') 'Federal Capital Territory',
+      };
 
       QuerySnapshot<Map<String, dynamic>>? snapshot;
-      for (var lgaVar in lgaVariations) {
-        var snap = await _firestore
-            .collection('wards')
-            .where('state', isEqualTo: stateName)
-            .where('lga', isEqualTo: lgaVar)
-            .orderBy('name')
-            .get();
-        if (snap.docs.isEmpty) {
-          snap = await _firestore
+      for (final sVar in stateVariations) {
+        for (final lgaVar in lgaVariations) {
+          final snap = await _firestore
               .collection('wards')
-              .where('state', isEqualTo: stateName.toUpperCase())
-              .where('lga', isEqualTo: lgaVar.toUpperCase())
-              .orderBy('name')
+              .where('state', isEqualTo: sVar)
+              .where('lga', isEqualTo: lgaVar)
               .get();
+          if (snap.docs.isNotEmpty) {
+            snapshot = snap;
+            break;
+          }
         }
-        if (snap.docs.isNotEmpty) {
-          snapshot = snap;
-          break;
-        }
+        if (snapshot != null) break;
       }
 
-      final items = snapshot != null
-          ? snapshot.docs.map((doc) => GeoItem.fromFirestore(doc.data())).toList()
-          : <GeoItem>[];
-      _cacheWards[cacheKey] = items;
-      return items;
+      if (snapshot != null && snapshot.docs.isNotEmpty) {
+        final items = snapshot.docs
+            .map((doc) => GeoItem.fromFirestore(doc.data()))
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
+        _cacheWards[cacheKey] = items;
+        return items;
+      }
     } catch (e) {
-      debugPrint("GeoService Error (Wards): $e");
-      rethrow;
+      debugPrint("GeoService Firestore Error (Wards): $e");
     }
+
+    return const [];
   }
 
   Future<List<PollingUnit>> getPollingUnits(

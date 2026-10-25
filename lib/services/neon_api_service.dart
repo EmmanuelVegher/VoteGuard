@@ -377,24 +377,58 @@ class NeonApiService {
   }
 
   static Future<List<String>> getGeoWards(String state, String lga) async {
-    try {
-      final response = await http.get(
-        Uri.parse(
-            '$baseUrl/geographical-data/wards?state=${Uri.encodeComponent(state)}&lga=${Uri.encodeComponent(lga)}'),
-      );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['success'] == true && data['data'] != null) {
-          final list = data['data'] as List;
-          return list
-              .map((e) => e is String ? e : e['name']?.toString() ?? '')
-              .where((s) => s.isNotEmpty)
-              .toList();
+    Future<List<String>> fetchOnce(String s, String l) async {
+      try {
+        final response = await http
+            .get(
+              Uri.parse(
+                  '$baseUrl/geographical-data/wards?state=${Uri.encodeComponent(s)}&lga=${Uri.encodeComponent(l)}'),
+            )
+            .timeout(const Duration(seconds: 3));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data['success'] == true && data['data'] != null) {
+            final list = data['data'] as List;
+            return list
+                .map((e) => e is String ? e : e['name']?.toString() ?? '')
+                .where((str) => str.isNotEmpty)
+                .toList();
+          }
         }
+      } catch (e) {
+        debugPrint('NeonApiService getGeoWards attempt ($s, $l) notice: $e');
       }
-    } catch (e) {
-      debugPrint('NeonApiService getGeoWards error: $e');
+      return [];
     }
+
+    // Attempt 1: primary state & LGA
+    var result = await fetchOnce(state, lga);
+    if (result.isNotEmpty) return result;
+
+    // Attempt 2: Try state/LGA aliases if first attempt was empty
+    final sUpper = state.trim().toUpperCase();
+    final altState = (sUpper == 'FEDERAL CAPITAL TERRITORY' || sUpper == 'ABUJA')
+        ? 'FCT'
+        : (sUpper == 'FCT' ? 'Federal Capital Territory' : null);
+
+    final lUpper = lga.trim().toUpperCase();
+    final altLga = (lUpper == 'MUNICIPAL AREA COUNCIL' || lUpper == 'AMAC')
+        ? 'Municipal'
+        : (lUpper == 'MUNICIPAL'
+            ? 'Municipal Area Council'
+            : (lUpper == 'OBI NGWA'
+                ? 'Obingwa'
+                : (lUpper == 'OBINGWA'
+                    ? 'Obi Ngwa'
+                    : (lUpper == 'OSISIOMA'
+                        ? 'Osisioma Ngwa'
+                        : (lUpper == 'OSISIOMA NGWA' ? 'Osisioma' : null)))));
+
+    if (altState != null || altLga != null) {
+      result = await fetchOnce(altState ?? state, altLga ?? lga);
+      if (result.isNotEmpty) return result;
+    }
+
     return [];
   }
 

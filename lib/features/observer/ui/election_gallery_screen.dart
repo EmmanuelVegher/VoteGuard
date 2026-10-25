@@ -11,7 +11,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:voteguard/models/election_model.dart';
 import 'package:voteguard/services/time_service.dart';
 import 'package:voteguard/services/export_service.dart';
-import 'package:voteguard/features/auth/ui/login_screen.dart';
 import 'package:voteguard/features/profile/ui/profile_screen.dart';
 import 'package:voteguard/services/geo_service.dart';
 import 'package:voteguard/services/auth_service.dart';
