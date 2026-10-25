@@ -6,9 +6,9 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:voteguard/core/routes/dashboard_redirect.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
@@ -47,7 +47,9 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   bool _isProcessingFrame = false;
   bool _isEvaluating = false;
   bool _cameraUnavailable = false;
-  bool _showManualUpload = false;
+
+  DateTime _stepStartTime = DateTime.now();
+  int _stableFrames = 0;
 
   LivenessStep _step = LivenessStep.initializing;
   String _instruction = "Initializing HD Face Detector...";
@@ -125,13 +127,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         _subInstruction = "Look straight at the front camera";
         _stepIcon = Icons.face_rounded;
         _progress = 0.15;
+        _stepStartTime = DateTime.now();
+        _stableFrames = 0;
       });
     } catch (e) {
       debugPrint("Camera init error: $e");
       if (mounted) {
         setState(() {
           _cameraUnavailable = true;
-          _errorMessage = "Could not initialize camera hardware. You can upload a photo from gallery or retry.";
+          _errorMessage = "Camera access was denied or hardware is busy. Please ensure camera permissions are enabled in device settings.";
         });
       }
     }
@@ -140,7 +144,6 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   void _processCameraFrame(CameraImage image) async {
     if (_isProcessingFrame ||
         _isEvaluating ||
-        _showManualUpload ||
         _step == LivenessStep.initializing ||
         _step == LivenessStep.capturing ||
         _step == LivenessStep.uploading ||
@@ -204,87 +207,156 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     final rightEye = face.rightEyeOpenProbability ?? 1.0;
     final smile = face.smilingProbability ?? 0.0;
 
+    final now = DateTime.now();
+
     switch (_step) {
       case LivenessStep.positionFace:
-        if (yaw.abs() < 10.0 && pitch.abs() < 14.0) {
-          HapticFeedback.selectionClick();
-          setState(() {
-            _step = LivenessStep.turnLeft;
-            _instruction = "Turn head to your LEFT ◀";
-            _subInstruction = "Slowly turn your head left until prompted";
-            _stepIcon = Icons.arrow_back_rounded;
-            _progress = 0.28;
+        if (yaw.abs() < 8.0 && pitch.abs() < 12.0) {
+          _stableFrames++;
+          if (_stableFrames >= 3) {
+            _stableFrames = 0;
+            _stepStartTime = now;
             _firstTurnYaw = null;
-          });
+            HapticFeedback.selectionClick();
+            setState(() {
+              _step = LivenessStep.turnLeft;
+              _instruction = "Turn head to your LEFT ◀";
+              _subInstruction = "Slowly turn your head left until prompted";
+              _stepIcon = Icons.arrow_back_rounded;
+              _progress = 0.28;
+            });
+          }
+        } else {
+          _stableFrames = 0;
         }
         break;
 
       case LivenessStep.turnLeft:
-        // Accepts user head turn to the side without inverted coordinate confusion
-        if (yaw.abs() > 11.0) {
-          _firstTurnYaw = yaw;
-          HapticFeedback.lightImpact();
-          setState(() {
-            _step = LivenessStep.center1;
-            _instruction = "Turn back STRAIGHT 🎯";
-            _subInstruction = "Look directly at the camera again";
-            _stepIcon = Icons.center_focus_strong_rounded;
-            _progress = 0.42;
-          });
+        // Enforce at least 500ms dwell time so user can read instruction and begin turning
+        if (now.difference(_stepStartTime).inMilliseconds < 500) {
+          _stableFrames = 0;
+          return;
+        }
+
+        // Standard Google ML Kit front-camera coordinate:
+        // Turning to subject's left is negative yaw (yaw < -15.0).
+        // Resilient fallback: If an inverted vendor camera driver is in use, allow positive yaw after 3.5s of attempting.
+        final isStandardLeft = yaw < -15.0;
+        final isInvertedLeft = now.difference(_stepStartTime).inMilliseconds > 3500 && yaw > 15.0;
+
+        if (isStandardLeft || isInvertedLeft) {
+          _stableFrames++;
+          if (_stableFrames >= 3) {
+            _firstTurnYaw = yaw;
+            _stableFrames = 0;
+            _stepStartTime = now;
+            HapticFeedback.lightImpact();
+            setState(() {
+              _step = LivenessStep.center1;
+              _instruction = "Turn back STRAIGHT 🎯";
+              _subInstruction = "Look directly at the camera again";
+              _stepIcon = Icons.center_focus_strong_rounded;
+              _progress = 0.42;
+            });
+          }
+        } else {
+          _stableFrames = 0;
         }
         break;
 
       case LivenessStep.center1:
-        if (yaw.abs() < 9.0 && pitch.abs() < 14.0) {
-          HapticFeedback.selectionClick();
-          setState(() {
-            _step = LivenessStep.turnRight;
-            _instruction = "Turn head to your RIGHT ▶";
-            _subInstruction = "Slowly turn your head right until prompted";
-            _stepIcon = Icons.arrow_forward_rounded;
-            _progress = 0.58;
-          });
+        if (now.difference(_stepStartTime).inMilliseconds < 450) {
+          _stableFrames = 0;
+          return;
+        }
+
+        if (yaw.abs() < 8.0 && pitch.abs() < 12.0) {
+          _stableFrames++;
+          if (_stableFrames >= 3) {
+            _stableFrames = 0;
+            _stepStartTime = now;
+            HapticFeedback.selectionClick();
+            setState(() {
+              _step = LivenessStep.turnRight;
+              _instruction = "Turn head to your RIGHT ▶";
+              _subInstruction = "Slowly turn your head right until prompted";
+              _stepIcon = Icons.arrow_forward_rounded;
+              _progress = 0.58;
+            });
+          }
+        } else {
+          _stableFrames = 0;
         }
         break;
 
       case LivenessStep.turnRight:
-        // Accept head turn to other side (or opposite of first turn)
-        final turnedOpposite = _firstTurnYaw != null && (yaw * _firstTurnYaw! < -40.0);
-        if (yaw.abs() > 11.0 || turnedOpposite) {
-          HapticFeedback.lightImpact();
-          setState(() {
-            _step = LivenessStep.center2;
-            _instruction = "Turn back STRAIGHT 🎯";
-            _subInstruction = "Face the camera to proceed";
-            _stepIcon = Icons.center_focus_strong_rounded;
-            _progress = 0.72;
-          });
+        if (now.difference(_stepStartTime).inMilliseconds < 500) {
+          _stableFrames = 0;
+          return;
+        }
+
+        // Must turn opposite to the left turn
+        final isStandardRight = _firstTurnYaw != null && _firstTurnYaw! < 0 ? yaw > 15.0 : yaw > 15.0;
+        final isInvertedRight = _firstTurnYaw != null && _firstTurnYaw! > 0 && yaw < -15.0;
+
+        if (isStandardRight || isInvertedRight) {
+          _stableFrames++;
+          if (_stableFrames >= 3) {
+            _stableFrames = 0;
+            _stepStartTime = now;
+            HapticFeedback.lightImpact();
+            setState(() {
+              _step = LivenessStep.center2;
+              _instruction = "Turn back STRAIGHT 🎯";
+              _subInstruction = "Face the camera to proceed";
+              _stepIcon = Icons.center_focus_strong_rounded;
+              _progress = 0.72;
+            });
+          }
+        } else {
+          _stableFrames = 0;
         }
         break;
 
       case LivenessStep.center2:
-        if (yaw.abs() < 9.0 && pitch.abs() < 14.0) {
-          HapticFeedback.selectionClick();
-          setState(() {
-            _step = LivenessStep.blink;
-            _instruction = "Blink your eyes 👁️";
-            _subInstruction = "Close both eyes and open them";
-            _stepIcon = Icons.visibility_rounded;
-            _progress = 0.85;
+        if (now.difference(_stepStartTime).inMilliseconds < 450) {
+          _stableFrames = 0;
+          return;
+        }
+
+        if (yaw.abs() < 8.0 && pitch.abs() < 12.0) {
+          _stableFrames++;
+          if (_stableFrames >= 3) {
+            _stableFrames = 0;
             _eyesClosedOnce = false;
-          });
+            _stepStartTime = now;
+            HapticFeedback.selectionClick();
+            setState(() {
+              _step = LivenessStep.blink;
+              _instruction = "Blink your eyes 👁️";
+              _subInstruction = "Close both eyes and open them";
+              _stepIcon = Icons.visibility_rounded;
+              _progress = 0.85;
+            });
+          }
+        } else {
+          _stableFrames = 0;
         }
         break;
 
       case LivenessStep.blink:
+        if (now.difference(_stepStartTime).inMilliseconds < 400) return;
+
         if (leftEye < 0.28 && rightEye < 0.28) {
           _eyesClosedOnce = true;
         } else if (_eyesClosedOnce && leftEye > 0.60 && rightEye > 0.60) {
+          _stableFrames = 0;
+          _stepStartTime = now;
           HapticFeedback.lightImpact();
           setState(() {
             _step = LivenessStep.smile;
             _instruction = "Smile for your profile! 😊";
-            _subInstruction = "Give a clear, natural smile";
+            _subInstruction = "Give a clear, natural smile looking straight";
             _stepIcon = Icons.sentiment_very_satisfied_rounded;
             _progress = 0.95;
           });
@@ -292,19 +364,25 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         break;
 
       case LivenessStep.smile:
-        if (smile > 0.38 && yaw.abs() < 12.0 && pitch.abs() < 14.0) {
-          _isEvaluating = true;
-          HapticFeedback.mediumImpact();
-          setState(() {
-            _step = LivenessStep.capturing;
-            _instruction = "Hold still! Capturing HD portrait...";
-            _subInstruction = "Enhancing clarity & cropping biometric photo";
-            _stepIcon = Icons.camera_rounded;
-            _progress = 1.0;
-          });
-          // Allow camera lens, auto-exposure, and user pose to settle
-          await Future.delayed(const Duration(milliseconds: 600));
-          await _captureAndEnroll();
+        if (now.difference(_stepStartTime).inMilliseconds < 400) return;
+
+        if (smile > 0.38 && yaw.abs() < 10.0 && pitch.abs() < 12.0) {
+          _stableFrames++;
+          if (_stableFrames >= 3) {
+            _isEvaluating = true;
+            HapticFeedback.mediumImpact();
+            setState(() {
+              _step = LivenessStep.capturing;
+              _instruction = "Hold still! Capturing HD portrait...";
+              _subInstruction = "Enhancing clarity & cropping biometric photo";
+              _stepIcon = Icons.camera_rounded;
+              _progress = 1.0;
+            });
+            await Future.delayed(const Duration(milliseconds: 500));
+            await _captureAndEnroll();
+          }
+        } else {
+          _stableFrames = 0;
         }
         break;
 
@@ -325,16 +403,18 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   }
 
   /// High-definition Biometric Pipeline: EXIF bake, tight passport crop, contrast & saturation boost, upload & sync
-  Future<void> _captureAndEnroll({XFile? manualPhoto}) async {
+  Future<void> _captureAndEnroll() async {
     try {
       if (_cameraController != null && _cameraController!.value.isStreamingImages) {
         await _cameraController!.stopImageStream();
       }
 
-      XFile? photo = manualPhoto;
-      if (photo == null && _cameraController != null && _cameraController!.value.isInitialized) {
-        photo = await _cameraController!.takePicture();
+      if (_cameraController == null || !_cameraController!.value.isInitialized) {
+        _showErrorDialog("Camera is not initialized. Please retry live verification.");
+        return;
       }
+
+      final photo = await _cameraController!.takePicture();
 
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
@@ -348,9 +428,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       });
 
       Uint8List? finalJpgBytes;
-      if (photo != null) {
-        final capturedTempFile = File(photo.path);
-        final rawBytes = await capturedTempFile.readAsBytes();
+      final capturedTempFile = File(photo.path);
+      final rawBytes = await capturedTempFile.readAsBytes();
         img.Image? decoded = img.decodeImage(rawBytes);
 
         if (decoded != null) {
@@ -436,13 +515,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
           finalJpgBytes = Uint8List.fromList(img.encodeJpg(hdAvatar, quality: 95));
         }
-      }
 
-      final effectiveBytes = finalJpgBytes ?? (photo != null ? await File(photo.path).readAsBytes() : null);
-      if (effectiveBytes == null) {
-        _showErrorDialog("Could not process photo bytes. Please retry.");
-        return;
-      }
+      final effectiveBytes = finalJpgBytes ?? await File(photo.path).readAsBytes();
 
       // 4. Save enhanced HD copy to local phone storage
       setState(() {
@@ -522,24 +596,6 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     } catch (e) {
       debugPrint("Photo capture/save error: $e");
       _showErrorDialog("Enrollment failed: $e. Please retry.");
-    }
-  }
-
-  /// Manual upload fallback via gallery picker
-  Future<void> _pickPhotoFromGallery() async {
-    try {
-      final picker = ImagePicker();
-      final picked = await picker.pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 1920,
-        maxHeight: 1920,
-        imageQuality: 95,
-      );
-      if (picked != null) {
-        await _captureAndEnroll(manualPhoto: picked);
-      }
-    } catch (e) {
-      _showErrorDialog("Could not select photo from gallery: $e");
     }
   }
 
@@ -687,8 +743,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         automaticallyImplyLeading: false,
       ),
       body: SafeArea(
-        child: _showManualUpload || _cameraUnavailable
-            ? _buildManualUploadFallback()
+        child: _cameraUnavailable
+            ? _buildCameraPermissionFallback()
             : _buildLiveCameraView(),
       ),
     );
@@ -949,83 +1005,69 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           ),
         ),
 
-        // Bottom Action Row: On-Device AI Beacon & Fallback button
+        // Bottom Action Row: Security Beacon
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: const BoxDecoration(
-                      color: AppColors.accent,
-                      shape: BoxShape.circle,
-                    ),
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: const BoxDecoration(
+                    color: AppColors.accent,
+                    shape: BoxShape.circle,
                   ),
-                  const SizedBox(width: 6),
-                  const Text(
-                    "On-Device 3D AI Active (Studio HD)",
-                    style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
-                  ),
-                ],
-              ),
-              GestureDetector(
-                onTap: () {
-                  setState(() => _showManualUpload = true);
-                },
-                child: const Row(
-                  children: [
-                    Icon(Icons.upload_rounded, color: Colors.cyanAccent, size: 14),
-                    SizedBox(width: 4),
-                    Text(
-                      "Upload file instead",
-                      style: TextStyle(
-                        color: Colors.cyanAccent,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
                 ),
-              ),
-            ],
+                const SizedBox(width: 8),
+                const Text(
+                  "🔒 Anti-Spoofing Active • Live 3D Face Verification",
+                  style: TextStyle(
+                    color: Color(0xFF94A3B8),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
     );
   }
 
-  // Manual Upload & Error Fallback View
-  Widget _buildManualUploadFallback() {
+  // Camera Permission & Hardware Access Fallback View
+  Widget _buildCameraPermissionFallback() {
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24.0),
+        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
               padding: const EdgeInsets.all(22),
               decoration: BoxDecoration(
-                color: Colors.cyanAccent.withValues(alpha: 0.12),
+                color: Colors.redAccent.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
+                border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3), width: 1.5),
               ),
-              child: const Icon(Icons.add_photo_alternate_rounded, color: Colors.cyanAccent, size: 52),
+              child: const Icon(Icons.videocam_off_rounded, color: Colors.redAccent, size: 48),
             ),
             const SizedBox(height: 20),
             const Text(
-              "Select Profile Portrait",
+              "Live Camera Access Required",
+              textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             const Text(
-              "Upload a clear front-facing portrait photo. Our biometric pipeline will crop and enhance your profile image.",
+              "For election observer accreditation and anti-spoofing integrity, live facial verification is strictly mandatory. Uploading photos or pre-recorded files is disabled.",
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
+              style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.45),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             if (_errorMessage != null) ...[
               Container(
                 margin: const EdgeInsets.only(bottom: 20),
@@ -1050,7 +1092,42 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
               ),
             ],
 
-            // Pick from Gallery
+            // Step-by-step guidance card
+            Container(
+              padding: const EdgeInsets.all(16),
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF334155)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    "Troubleshooting Steps:",
+                    style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 10),
+                  _PermissionGuideItem(
+                    number: "1",
+                    text: "Grant Camera permission in your device App Settings",
+                  ),
+                  SizedBox(height: 8),
+                  _PermissionGuideItem(
+                    number: "2",
+                    text: "Close any other apps currently accessing the camera",
+                  ),
+                  SizedBox(height: 8),
+                  _PermissionGuideItem(
+                    number: "3",
+                    text: "Tap 'Retry Live Camera' once permissions are enabled",
+                  ),
+                ],
+              ),
+            ),
+
+            // Open App Settings button
             SizedBox(
               width: double.infinity,
               height: 50,
@@ -1061,12 +1138,14 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   elevation: 0,
                 ),
-                icon: const Icon(Icons.photo_library_rounded, size: 20),
+                icon: const Icon(Icons.settings_outlined, size: 20),
                 label: const Text(
-                  "Choose Photo from Gallery",
+                  "Grant Camera Permissions",
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                 ),
-                onPressed: _pickPhotoFromGallery,
+                onPressed: () async {
+                  await Geolocator.openAppSettings();
+                },
               ),
             ),
             const SizedBox(height: 12),
@@ -1081,14 +1160,13 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                   side: const BorderSide(color: Color(0xFF334155)),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
-                icon: const Icon(Icons.camera_alt_rounded, size: 18, color: Colors.cyanAccent),
+                icon: const Icon(Icons.refresh_rounded, size: 18, color: Colors.cyanAccent),
                 label: const Text(
-                  "Back to Live Camera Liveness Check",
+                  "Retry Live Camera",
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 onPressed: () {
                   setState(() {
-                    _showManualUpload = false;
                     _cameraUnavailable = false;
                   });
                   _initCamera();
@@ -1109,6 +1187,42 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _PermissionGuideItem extends StatelessWidget {
+  final String number;
+  final String text;
+
+  const _PermissionGuideItem({required this.number, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 18,
+          height: 18,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.cyanAccent.withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Text(
+            number,
+            style: const TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, height: 1.3),
+          ),
+        ),
+      ],
     );
   }
 }
