@@ -7,6 +7,7 @@ import 'package:voteguard/features/auth/ui/login_screen.dart';
 import 'package:voteguard/features/auth/ui/liveness_enrollment_screen.dart';
 import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
 import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
+import 'package:voteguard/services/biometric_deduplication_service.dart';
 
 class DashboardRedirect extends StatelessWidget {
   const DashboardRedirect({super.key});
@@ -80,6 +81,7 @@ class BiometricEnrollmentGate extends StatefulWidget {
 class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
   static const _storage = FlutterSecureStorage();
   late Future<GateStatus> _gateCheck;
+  Map<String, dynamic>? _conflictData;
 
   @override
   void initState() {
@@ -104,9 +106,19 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
         return GateStatus.notEnrolled;
       }
 
-      // Check Biometric Deduplication Audit Flag
+      // 1. Check if already marked as FLAGGED_DUPLICATE or has conflict
       final auditStatus = data?['faceAuditStatus'] as String?;
-      if (auditStatus == 'FLAGGED_DUPLICATE') {
+      final hasConflict = data?['hasBiometricConflict'] == true;
+      if (auditStatus == 'FLAGGED_DUPLICATE' || hasConflict) {
+        _conflictData = data;
+        return GateStatus.flaggedDuplicate;
+      }
+
+      // 2. Perform on-the-fly deduplication audit against existing embeddings
+      final auditResult = await BiometricDeduplicationService().auditExistingUser(widget.userId);
+      if (auditResult != null && auditResult.isDuplicate) {
+        final refreshed = await FirebaseFirestore.instance.collection('users').doc(widget.userId).get();
+        _conflictData = refreshed.data();
         return GateStatus.flaggedDuplicate;
       }
 
@@ -133,12 +145,12 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
       ),
       body: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28.0),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(22),
                 decoration: BoxDecoration(
                   color: Colors.redAccent.withValues(alpha: 0.12),
                   shape: BoxShape.circle,
@@ -147,10 +159,10 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
                 child: const Icon(
                   Icons.gpp_bad_rounded,
                   color: Colors.redAccent,
-                  size: 64,
+                  size: 58,
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               const Text(
                 "Biometric Duplicate Detected",
                 style: TextStyle(
@@ -159,13 +171,80 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               const Text(
-                "Our biometric integrity system has detected that this facial portrait matches an already enrolled election observer.\n\nUnder election observation accreditation standards, each field observer is restricted to a single verified account to protect checklist credibility and Form EC8A chain of custody.",
+                "Our biometric integrity system detected that this facial portrait matches an already enrolled election observer account.",
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.5),
+                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.45),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
+
+              // Conflicting account details card
+              if (_conflictData != null) ...[
+                Builder(builder: (context) {
+                  final matchedName = (_conflictData!['duplicateOfName'] ?? _conflictData!['conflictAccountName'] ?? 'Enrolled Observer').toString();
+                  final matchedEmail = (_conflictData!['duplicateOfEmail'] ?? _conflictData!['conflictAccountEmail'] ?? 'N/A').toString();
+                  final matchedRole = (_conflictData!['duplicateOfRole'] ?? _conflictData!['conflictAccountRole'])?.toString();
+                  final matchedConf = _conflictData!['duplicateConfidence'] ?? _conflictData!['conflictConfidence'];
+
+                  if (matchedName == 'Enrolled Observer' && matchedEmail == 'N/A') {
+                    return const SizedBox.shrink();
+                  }
+
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    margin: const EdgeInsets.only(bottom: 24),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E293B),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.4)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: const [
+                            Icon(Icons.person_pin_rounded, color: Color(0xFFEF4444), size: 18),
+                            SizedBox(width: 8),
+                            Text(
+                              "MATCHED OBSERVER ACCOUNT",
+                              style: TextStyle(
+                                color: Color(0xFFEF4444),
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.8,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        _buildDetailRow("Observer Name:", matchedName),
+                        const SizedBox(height: 6),
+                        _buildDetailRow("Email:", matchedEmail),
+                        if (matchedRole != null && matchedRole.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          _buildDetailRow("Role:", matchedRole.toUpperCase()),
+                        ],
+                        if (matchedConf != null) ...[
+                          const SizedBox(height: 6),
+                          _buildDetailRow(
+                            "Match Confidence:",
+                            "${((matchedConf as num) * 100).toStringAsFixed(1)}%",
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                }),
+              ],
+
+              const Text(
+                "Under election observation accreditation standards, each field observer is restricted to a single verified account to protect checklist credibility and Form EC8A chain of custody.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Color(0xFF64748B), fontSize: 12, height: 1.4, fontStyle: FontStyle.italic),
+              ),
+              const SizedBox(height: 24),
 
               // Re-verify Selfie button
               SizedBox(
@@ -186,7 +265,7 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
                     final updated = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => LivenessEnrollmentScreen(isModal: true),
+                        builder: (context) => const LivenessEnrollmentScreen(isModal: true),
                       ),
                     );
                     if (updated == true) {
@@ -197,7 +276,7 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
                   },
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
 
               // Sign Out option
               TextButton(
@@ -213,6 +292,27 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 125,
+          child: Text(
+            label,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
     );
   }
 

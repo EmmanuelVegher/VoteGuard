@@ -12,6 +12,7 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:voteguard/core/routes/dashboard_redirect.dart';
 import 'package:voteguard/core/theme/app_theme.dart';
+import 'package:voteguard/services/biometric_deduplication_service.dart';
 import 'camera_image_converter.dart';
 
 enum LivenessStep {
@@ -535,7 +536,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
       // 5. Upload to Firebase Storage
       setState(() {
-        _uploadStatusText = "Uploading biometric portrait to Firebase Storage...";
+        _uploadStatusText = "Uploading biometric portrait to Database Storage...";
       });
 
       final storageRef = FirebaseStorage.instance
@@ -549,19 +550,19 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       );
       final downloadUrl = await uploadTask.ref.getDownloadURL();
 
-      // 6. Update Firestore user document
+      // 6. Biometric Deduplication Audit against all enrolled observers
       setState(() {
-        _uploadStatusText = "Syncing accredited observer profile in cloud database...";
+        _uploadStatusText = "Analyzing facial biometrics & checking for duplicate accounts...";
       });
 
-      await FirebaseFirestore.instance.collection("users").doc(user.uid).set({
-        "profilePictureUrl": downloadUrl,
-        "profileImageUrl": downloadUrl,
-        "localProfileImagePath": localFilePath,
-        "isFaceEnrolled": true,
-        "faceAuditStatus": "CLEAN",
-        "enrolledAt": FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      final faceForEmbedding = img.decodeImage(effectiveBytes)!;
+      final auditResult = await BiometricDeduplicationService().auditAndEnrollFace(
+        user: user,
+        faceImage: faceForEmbedding,
+        effectiveBytes: effectiveBytes,
+        downloadUrl: downloadUrl,
+        localFilePath: localFilePath,
+      );
 
       // 7. Cache flags locally in secure storage
       await _storage.write(key: "isFaceEnrolled_${user.uid}", value: "true");
@@ -574,15 +575,102 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("✨ Liveness Verified! Crystal-clear HD profile enrolled!"),
-          backgroundColor: AppColors.accent,
-          duration: Duration(seconds: 3),
-        ),
-      );
+      if (auditResult.isDuplicate) {
+        // Show immediate alert explaining the biometric match and conflicting account details
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF0F172A),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: const [
+                Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 26),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    "Duplicate Face Match",
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "Our biometric system detected that this face matches an already registered and accredited observer account.",
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.4)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        "CONFLICTING ACCOUNT DETAILS",
+                        style: TextStyle(color: Color(0xFFEF4444), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildConflictRow("Name:", auditResult.matchedName ?? "Observer"),
+                      const SizedBox(height: 4),
+                      _buildConflictRow("Email:", auditResult.matchedEmail ?? "N/A"),
+                      if (auditResult.matchedRole != null && auditResult.matchedRole!.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        _buildConflictRow("Role:", auditResult.matchedRole!.toUpperCase()),
+                      ],
+                      const SizedBox(height: 4),
+                      _buildConflictRow("Match Confidence:", "${(auditResult.similarity * 100).toStringAsFixed(1)}%"),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  "Under election observation accreditation standards, each individual is limited to one verified account.",
+                  style: TextStyle(color: Color(0xFF64748B), fontSize: 11, fontStyle: FontStyle.italic),
+                ),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFEF4444),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("UNDERSTOOD", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("✨ Liveness Verified! Unique observer profile enrolled!"),
+            backgroundColor: AppColors.accent,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
 
-      if (widget.isModal) {
+      if (!mounted) return;
+      if (auditResult.isDuplicate) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (context) => DashboardRedirect.getTargetScreen(context),
+          ),
+          (route) => false,
+        );
+      } else if (widget.isModal) {
         Navigator.pop(context, true);
       } else {
         Navigator.pushAndRemoveUntil(
@@ -650,6 +738,27 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     } catch (e) {
       _showErrorDialog("Simulation error: $e");
     }
+  }
+
+  Widget _buildConflictRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 120,
+          child: Text(
+            label,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
+    );
   }
 
   void _showErrorDialog(String message) {
