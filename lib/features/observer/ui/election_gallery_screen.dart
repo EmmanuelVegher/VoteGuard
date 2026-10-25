@@ -833,7 +833,10 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   }
 
   Widget _buildAppBar(Map<String, dynamic>? profile) {
-    final hasImg = profile?['profilePictureUrl'] != null;
+    final profileImgUrl = (profile?['profilePictureUrl'] ?? profile?['profileImageUrl'])?.toString();
+    final localImgPath = profile?['localProfileImagePath']?.toString();
+    final hasLocal = localImgPath != null && File(localImgPath).existsSync();
+    final hasImg = hasLocal || (profileImgUrl != null && profileImgUrl.isNotEmpty);
     return SliverAppBar(
       backgroundColor: Colors.white,
       elevation: 0,
@@ -925,24 +928,31 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
               backgroundColor: const Color(0xFF1E293B),
               child: hasImg
                   ? ClipOval(
-                      child: CachedNetworkImage(
-                        imageUrl: profile!['profilePictureUrl'].toString(),
-                        width: 32,
-                        height: 32,
-                        fit: BoxFit.cover,
-                        placeholder: (context, url) => const Center(
-                          child: SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white70),
-                          ),
-                        ),
-                        errorWidget: (context, url, error) => const Icon(
-                            LucideIcons.user,
-                            size: 16,
-                            color: Colors.white),
-                      ),
+                      child: hasLocal
+                          ? Image.file(
+                              File(localImgPath!),
+                              width: 32,
+                              height: 32,
+                              fit: BoxFit.cover,
+                            )
+                          : CachedNetworkImage(
+                              imageUrl: profileImgUrl ?? "",
+                              width: 32,
+                              height: 32,
+                              fit: BoxFit.cover,
+                              placeholder: (context, url) => const Center(
+                                child: SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white70),
+                                ),
+                              ),
+                              errorWidget: (context, url, error) => const Icon(
+                                  LucideIcons.user,
+                                  size: 16,
+                                  color: Colors.white),
+                            ),
                     )
                   : const Icon(LucideIcons.user, size: 16, color: Colors.white),
             ),
