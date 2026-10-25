@@ -202,7 +202,7 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
       children: [
         ClipRRect(
           borderRadius: BorderRadius.circular(24),
-          child: Image.file(_ec8aImage!, height: 300, width: double.infinity, fit: BoxFit.cover),
+          child: Image.file(_ec8aImage!, height: 300, width: double.infinity, fit: BoxFit.cover, cacheWidth: 1024),
         ),
         Positioned(
           top: 12,

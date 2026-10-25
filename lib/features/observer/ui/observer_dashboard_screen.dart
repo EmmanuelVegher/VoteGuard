@@ -3741,10 +3741,11 @@ class _ChecklistTabState extends State<_ChecklistTab>
                             onTap: () => _showFullScreenImage(url),
                             child: (!url.startsWith('http://') &&
                                     !url.startsWith('https://'))
-                                ? Image.file(File(url), fit: BoxFit.cover)
+                                ? Image.file(File(url), fit: BoxFit.cover, cacheWidth: 800)
                                 : CachedNetworkImage(
                                     imageUrl: url,
                                     fit: BoxFit.cover,
+                                    memCacheWidth: 800,
                                     placeholder: (c, u) => const Center(
                                         child: CircularProgressIndicator()),
                                     errorWidget: (c, u, e) => const Center(
@@ -4135,10 +4136,11 @@ class _ChecklistTabState extends State<_ChecklistTab>
                 maxScale: 4.0,
                 child: (!url.startsWith('http://') &&
                         !url.startsWith('https://'))
-                    ? Image.file(File(url), fit: BoxFit.contain)
+                    ? Image.file(File(url), fit: BoxFit.contain, cacheWidth: 1600)
                     : CachedNetworkImage(
                         imageUrl: url,
                         fit: BoxFit.contain,
+                        memCacheWidth: 1600,
                         placeholder: (c, u) => const CircularProgressIndicator(
                             color: Colors.white),
                       ),
@@ -5692,10 +5694,12 @@ class _IncidentsTabState extends State<_IncidentsTab> {
                                                         !url.startsWith(
                                                             'https://'))
                                                     ? Image.file(File(url),
-                                                        fit: BoxFit.cover)
+                                                        fit: BoxFit.cover,
+                                                        cacheWidth: 800)
                                                     : CachedNetworkImage(
                                                         imageUrl: url,
                                                         fit: BoxFit.cover,
+                                                        memCacheWidth: 800,
                                                         placeholder: (context,
                                                                 url) =>
                                                             const Center(
@@ -8482,11 +8486,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               maxScale: 4.0,
               child: Center(
                 child: _evidenceFile != null
-                    ? Image.file(_evidenceFile!)
+                    ? Image.file(_evidenceFile!, cacheWidth: 1600)
                     : ((!_evidenceUrl!.startsWith('http://') &&
                             !_evidenceUrl!.startsWith('https://'))
-                        ? Image.file(File(_evidenceUrl!))
-                        : CachedNetworkImage(imageUrl: _evidenceUrl!)),
+                        ? Image.file(File(_evidenceUrl!), cacheWidth: 1600)
+                        : CachedNetworkImage(imageUrl: _evidenceUrl!, memCacheWidth: 1600)),
               ),
             ),
             Positioned(

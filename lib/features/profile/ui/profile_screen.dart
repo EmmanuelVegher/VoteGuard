@@ -122,6 +122,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         width: 104,
         height: 104,
         fit: BoxFit.cover,
+        cacheWidth: 300,
+        cacheHeight: 300,
       );
     } else if (remoteUrl != null && remoteUrl.isNotEmpty) {
       avatarImage = CachedNetworkImage(
@@ -129,6 +131,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         width: 104,
         height: 104,
         fit: BoxFit.cover,
+        memCacheWidth: 300,
+        memCacheHeight: 300,
         placeholder: (context, url) => const Center(
           child: SizedBox(
             width: 24,

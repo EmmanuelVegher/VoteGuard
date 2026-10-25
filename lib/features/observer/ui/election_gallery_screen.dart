@@ -934,12 +934,16 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                               width: 32,
                               height: 32,
                               fit: BoxFit.cover,
+                              cacheWidth: 100,
+                              cacheHeight: 100,
                             )
                           : CachedNetworkImage(
                               imageUrl: profileImgUrl ?? "",
                               width: 32,
                               height: 32,
                               fit: BoxFit.cover,
+                              memCacheWidth: 100,
+                              memCacheHeight: 100,
                               placeholder: (context, url) => const Center(
                                 child: SizedBox(
                                   width: 12,

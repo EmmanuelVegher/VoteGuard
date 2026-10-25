@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -21,6 +22,22 @@ import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Modern Android Edge-to-Edge display (Android 15+ compatible)
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ),
+  );
+
+  // Bitmap downsampling & memory optimization: Cap in-memory image cache to 100MB
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 100 << 20; // 100 MB
+  PaintingBinding.instance.imageCache.maximumSize = 100; // 100 images
 
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
