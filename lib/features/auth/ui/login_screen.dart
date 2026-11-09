@@ -9,6 +9,7 @@ import 'package:voteguard/services/sync_service.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/core/routes/dashboard_redirect.dart';
+import 'package:voteguard/features/about/ui/about_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -464,6 +465,31 @@ class _LoginScreenState extends State<LoginScreen> {
                                         fontSize: 11,
                                         fontWeight: FontWeight.bold)),
                               ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 18),
+                          // About VoteGuard Link (matching web LoginForm)
+                          Center(
+                            child: TextButton.icon(
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => const AboutScreen(),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(LucideIcons.info,
+                                  size: 15, color: Color(0xFF64748B)),
+                              label: Text(
+                                'About VoteGuard',
+                                style: GoogleFonts.outfit(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: const Color(0xFF475569),
+                                ),
+                              ),
                             ),
                           ),
 
