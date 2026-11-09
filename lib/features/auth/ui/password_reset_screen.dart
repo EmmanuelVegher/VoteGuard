@@ -92,7 +92,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
                   ),
                   const SizedBox(height: 24),
                   DefaultTabController(
-                    length: 2,
+                    length: 1,
                     child: Container(
                       decoration: BoxDecoration(
                         color: Colors.white,
@@ -123,7 +123,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
                                 fontWeight: FontWeight.bold,
                               ),
                               tabs: const [
-                                Tab(text: 'PHONE'),
+                                // Tab(text: 'PHONE'), // Phone number tab commented out per request
                                 Tab(text: 'EMAIL'),
                               ],
                             ),
@@ -132,11 +132,13 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
                               height: 340,
                               child: TabBarView(
                                 children: [
+                                  /*
                                   Padding(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 24.0),
                                     child: _buildPhoneResetSection(),
                                   ),
+                                  */
                                   Padding(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 24.0),
@@ -151,6 +153,8 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
                       ),
                     ),
                   ),
+                  // Phone OTP notice commented out per request
+                  /*
                   const SizedBox(height: 24),
                   Text(
                     'For security, only users with a VoteGuard profile and active FCM token can receive a phone reset OTP.',
@@ -161,6 +165,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                  */
                   const SizedBox(height: 32),
                 ],
               ),
@@ -171,6 +176,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildPhoneResetSection() {
     return _buildResetCard(
       title: 'RESET WITH PHONE NUMBER',
