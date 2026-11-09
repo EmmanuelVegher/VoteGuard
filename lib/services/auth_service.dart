@@ -192,16 +192,19 @@ class AuthService {
     if (_looksLikeEmail(trimmedIdentifier)) {
       candidates.add(trimmedIdentifier.toLowerCase());
     } else {
-      final digits = trimmedIdentifier.replaceAll(RegExp(r'\D'), '');
-      if (digits.isNotEmpty) {
-        candidates.add('$digits@voteguard.com');
-        if (digits.startsWith('0') && digits.length == 11) {
-          candidates.add('234${digits.substring(1)}@voteguard.com');
-        } else if (digits.startsWith('234') && digits.length == 13) {
-          candidates.add('0${digits.substring(3)}@voteguard.com');
+      // 1. Resolve phone identifier to associated email(s) via backend API
+      try {
+        final resolved = await NeonApiService.resolveIdentifier(trimmedIdentifier);
+        for (final email in resolved) {
+          if (!candidates.contains(email)) {
+            candidates.add(email);
+          }
         }
+      } catch (e) {
+        debugPrint('NeonApiService resolveIdentifier notice: $e');
       }
-      // Also attempt Cloud Function resolution as fallback for custom emails
+
+      // 2. Also attempt Cloud Function resolution as secondary fallback
       try {
         final result = await resolveLoginIdentifier(trimmedIdentifier);
         final resolvedEmail = result['email'] as String?;
@@ -212,6 +215,20 @@ class AuthService {
         }
       } catch (e) {
         debugPrint('Cloud Function resolveLoginIdentifier notice: $e');
+      }
+
+      // 3. Fallback: synthetic @voteguard.com formats
+      final digits = trimmedIdentifier.replaceAll(RegExp(r'\D'), '');
+      if (digits.isNotEmpty) {
+        final synthetic = '$digits@voteguard.com';
+        if (!candidates.contains(synthetic)) candidates.add(synthetic);
+        if (digits.startsWith('0') && digits.length == 11) {
+          final s2 = '234${digits.substring(1)}@voteguard.com';
+          if (!candidates.contains(s2)) candidates.add(s2);
+        } else if (digits.startsWith('234') && digits.length == 13) {
+          final s3 = '0${digits.substring(3)}@voteguard.com';
+          if (!candidates.contains(s3)) candidates.add(s3);
+        }
       }
     }
 

@@ -35,6 +35,30 @@ class NeonApiService {
     return headers;
   }
 
+  // 0. Resolve phone number or identifier to associated email(s)
+  static Future<List<String>> resolveIdentifier(String identifier) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/auth/resolve-identifier'),
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+        body: jsonEncode({'identifier': identifier.trim()}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['emails'] is List) {
+          return (data['emails'] as List)
+              .map((e) => e.toString().toLowerCase().trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('NeonApiService.resolveIdentifier notice: $e');
+    }
+    return [];
+  }
+
   // 1. Mobile Login with 2FA, Device Trust & DoS Safeguards
   static Future<Map<String, dynamic>> login({
     required String identifier,
