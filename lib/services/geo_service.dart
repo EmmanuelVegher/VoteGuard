@@ -360,9 +360,17 @@ class GeoService {
         'kogi . k. k.': ['kogi'],
         'mopa muro': ['mopa moro', 'mopamuro', 'mopamoro'],
         'mopa moro': ['mopa muro'],
-        'ogori/magongo': ['ogori mangogo', 'ogori-magongo', 'ogori magongo'],
-        'ogori magongo': ['ogori mangogo', 'ogori/magongo'],
-        'ogori mangogo': ['ogori/magongo', 'ogori magongo'],
+        'ogori/magongo': ['ogori mangogo', 'ogori-magongo', 'ogori magongo', 'ogori/magungo', 'ogori magungo', 'ogori-magungo'],
+        'ogori magongo': ['ogori mangogo', 'ogori/magongo', 'ogori/magungo', 'ogori magungo'],
+        'ogori mangogo': ['ogori/magongo', 'ogori magongo', 'ogori/magungo', 'ogori magungo', 'ogori-magongo'],
+        'ogori/magungo': ['ogori mangogo', 'ogori-magongo', 'ogori magongo', 'ogori/magongo', 'ogori magungo', 'ogori-magungo'],
+        'ogori magungo': ['ogori mangogo', 'ogori/magongo', 'ogori magongo', 'ogori/magungo'],
+        'ogori-magungo': ['ogori mangogo', 'ogori/magongo', 'ogori magongo', 'ogori/magungo'],
+        'ogorimagungo': ['ogori mangogo', 'ogori/magongo', 'ogori magongo', 'ogori/magungo'],
+        'isu': ['isu (umundugba)', 'isuumundugba'],
+        'isu (umundugba)': ['isu'],
+        'moya': ['munya'],
+        'munya': ['moya'],
         'ilorin south': ['ilorin-south'],
         'ilorin west': ['ilorin-west'],
         'oke ero': ['okeero'],
@@ -441,6 +449,24 @@ class GeoService {
         lga.toUpperCase()
       };
 
+      if (lgaLower.contains('ogori')) {
+        lgaVariations.addAll([
+          'ogori mangogo',
+          'OGORI MANGOGO',
+          'ogori/magongo',
+          'OGORI/MAGONGO',
+          'ogori magongo',
+          'OGORI MAGONGO',
+          'ogori/magungo',
+          'OGORI/MAGUNGO',
+          'ogori magungo',
+          'OGORI MAGUNGO'
+        ]);
+      }
+      if (lgaLower.contains('moya') || lgaLower.contains('munya')) {
+        lgaVariations.addAll(['moya', 'munya', 'MOYA', 'MUNYA']);
+      }
+
       if (lgaAliasesMap.containsKey(lgaLower)) {
         for (var alias in lgaAliasesMap[lgaLower]!) {
           lgaVariations.add(alias);
@@ -449,6 +475,7 @@ class GeoService {
         }
       }
 
+      lgaVariations.add(lgaLower.replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim());
       lgaVariations.add(lgaLower.replaceAll(RegExp(r'[\/\-_]'), ' ').trim());
       lgaVariations.add(lgaLower.replaceAll(RegExp(r'[\/\-_]'), '').trim());
       lgaVariations.add(lgaLower.replaceAll(RegExp(r'\s+'), '-'));
@@ -498,14 +525,13 @@ class GeoService {
         }
       }
 
-      // Execute queries in PARALLEL batches
+      // Execute queries in PARALLEL batches without orderBy to avoid index requirement
       final futures = uniqueStrategies.map((strategy) {
         return _firestore
             .collection('polling_units')
             .where('state', isEqualTo: strategy['s'])
             .where('lga', isEqualTo: strategy['l'])
             .where('ward', isEqualTo: strategy['w'])
-            .orderBy('name')
             .get()
             .then<QuerySnapshot<Map<String, dynamic>>?>((snap) => snap)
             .catchError((_) => null);
@@ -517,6 +543,7 @@ class GeoService {
           final items = snapshot.docs
               .map((doc) => PollingUnit.fromFirestore(doc.data()))
               .toList();
+          items.sort((a, b) => a.name.compareTo(b.name));
           _cachePus[cacheKey] = items;
           debugPrint(
               "GeoService: Found ${items.length} units in Firestore parallel fallback");
@@ -526,7 +553,10 @@ class GeoService {
 
       // Stage 3 Fallback: State-level query with super-normalization matching
       try {
-        final String cleanTargetLga = lgaLower.replaceAll(RegExp(r'[^a-z0-9]'), '');
+        String cleanTargetLga = lgaLower.replaceAll(RegExp(r'\s*\([^)]*\)'), '').replaceAll(RegExp(r'[^a-z0-9]'), '');
+        if (cleanTargetLga.contains('ogori')) cleanTargetLga = 'ogorimagongo';
+        if (cleanTargetLga.contains('munya') || cleanTargetLga.contains('moya')) cleanTargetLga = 'munya';
+
         final String cleanTargetWard = ward
             .toLowerCase()
             .replaceAll(RegExp(r'[^a-z0-9]'), '')
@@ -544,14 +574,18 @@ class GeoService {
           if (stateSnap.docs.isNotEmpty) {
             final matchedDocs = stateSnap.docs.where((doc) {
               final data = doc.data();
-              final docLgaRaw = (data['lga'] ?? data['lgaName'] ?? '').toString().toLowerCase();
-              final docLgaClean = docLgaRaw.replaceAll(RegExp(r'[^a-z0-9]'), '');
+              final docLgaRaw = (data['lga'] ?? data['lgaName'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'\s*\([^)]*\)'), '');
+              String docLgaClean = docLgaRaw.replaceAll(RegExp(r'[^a-z0-9]'), '');
+              if (docLgaClean.contains('ogori')) docLgaClean = 'ogorimagongo';
+              if (docLgaClean.contains('munya') || docLgaClean.contains('moya')) docLgaClean = 'munya';
+
               final docWard = (data['ward'] ?? data['wardName'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').replaceAll(RegExp(r'^ward0+'), 'ward').replaceAll('ward', '').replaceAll(RegExp(r'^0+'), '');
               
               bool lgaMatch = docLgaClean.isEmpty || 
                               docLgaClean == cleanTargetLga || 
                               targetAliases.contains(docLgaClean) ||
-                              (docLgaClean.length >= 4 && cleanTargetLga.length >= 4 && 
+                              (docLgaClean.contains('ogori') && cleanTargetLga.contains('ogori')) ||
+                              (docLgaClean.length >= 3 && cleanTargetLga.length >= 3 && 
                                (docLgaClean.contains(cleanTargetLga) || cleanTargetLga.contains(docLgaClean)));
 
               final wardMatch = docWard == cleanTargetWard || 
@@ -564,6 +598,7 @@ class GeoService {
               final items = matchedDocs
                   .map((doc) => PollingUnit.fromFirestore(doc.data()))
                   .toList();
+              items.sort((a, b) => a.name.compareTo(b.name));
               _cachePus[cacheKey] = items;
               debugPrint("GeoService: Found ${items.length} units in state-wide fallback matcher");
               return items;
