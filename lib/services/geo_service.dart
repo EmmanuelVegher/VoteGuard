@@ -247,31 +247,230 @@ class GeoService {
 
     // 2. Parallelized Firestore Fallback
     try {
-      String searchLga = lga;
-      if (lga == "Municipal Area Council") searchLga = "municipal";
-
-      final lgaVariations = <String>{
-        searchLga,
-        searchLga.toLowerCase(),
-        searchLga.toUpperCase()
+      const lgaAliasesMap = <String, List<String>>{
+        'isiukwuato': ['isuikwuato'],
+        'isuikwuato': ['isiukwuato'],
+        'osisioma ngwa': ['osisioma'],
+        'osisioma': ['osisioma ngwa'],
+        'ukwa west': ['ukwa  west'],
+        'umuahia south': ['umuahia  south'],
+        'girei': ['gire 1', 'girei'],
+        'gire 1': ['girei'],
+        'mayo-belwa': ['mayobelwa'],
+        'mayobelwa': ['mayo-belwa'],
+        'esit-eket': ['esit eket'],
+        'esit eket': ['esit-eket'],
+        'etim-ekpo': ['etim ekpo'],
+        'etim ekpo': ['etim-ekpo'],
+        'ibesikpo-asutan': ['ibesikpo asutan'],
+        'ibesikpo asutan': ['ibesikpo-asutan'],
+        'ibiono-ibom': ['ibiono ibom'],
+        'ibiono ibom': ['ibiono-ibom'],
+        'mkpat-enin': ['mkpat enin'],
+        'mkpat enin': ['mkpat-enin'],
+        'nsit-atai': ['nsit atai'],
+        'nsit atai': ['nsit-atai'],
+        'nsit-ibom': ['nsit ibom'],
+        'nsit ibom': ['nsit-ibom'],
+        'nsit-ubium': ['nsit ubium'],
+        'nsit ubium': ['nsit-ubium'],
+        'udung-uko': ['udung uko'],
+        'udung uko': ['udung-uko'],
+        'urue-offong/oruko': ['urue offong/oruko', 'urue offong oruko'],
+        'ihiala': ['ihala'],
+        'ihala': ['ihiala'],
+        'idemili south': ['idemili-south'],
+        'idemili-south': ['idemili south'],
+        'onitsha north': ['onitsha-north'],
+        'onitsha-north': ['onitsha north'],
+        'onitsha south': ['onitsha -south', 'onitsha-south'],
+        'orumba south': ['orumba  south'],
+        'orumba  south': ['orumba south'],
+        'damban': ['dambam'],
+        'dambam': ['damban'],
+        'itas/gadau': ['itas-gadau', 'itas gadau'],
+        'jama\'are': ['jamaare', 'jama are'],
+        'askira/uba': ['askira / uba'],
+        'kala/balge': ['kala balge', 'kala-balge'],
+        'kwaya kusar': ['kwaya / kusar'],
+        'maiduguri': ['maiduguri m. c.', 'maiduguri mc', 'maiduguri municipal'],
+        'calabar municipal': ['calabar municipality'],
+        'calabar municipality': ['calabar municipal'],
+        'yakuur': ['yakurr'],
+        'yakurr': ['yakuur'],
+        'aniocha south': ['aniochasouth'],
+        'ethiope east': ['ethiope  east'],
+        'ethiope west': ['ethiope  west'],
+        'ika north east': ['ika north- east', 'ika north east'],
+        'ika south': ['ikasouth'],
+        'oshimili north': ['oshimilinorth'],
+        'oshimili south': ['oshimilisouth'],
+        'warri north': ['warri  north'],
+        'warri south west': ['warri south  west'],
+        'afikpo south': ['afikpo  south'],
+        'akoko-edo': ['akoko edo'],
+        'esan north-east': ['esan north east'],
+        'esan south-east': ['esan south east'],
+        'etsako west': ['etsako  west'],
+        'ikpoba-okha': ['ikpoba/okha'],
+        'ovia north-east': ['ovia north east'],
+        'ovia south-west': ['ovia south west'],
+        'uhunmwonde': ['uhunmwode'],
+        'uhunmwode': ['uhunmwonde'],
+        'ado-ekiti': ['ado ekiti'],
+        'ekiti south-west': ['ekiti south west'],
+        'ido-osi': ['ido / osi'],
+        'irepodun/ifelodun': ['irepodun / ifelodun'],
+        'ise/orun': ['ise / orun'],
+        'oji river': ['oji-river'],
+        'municipal area council': ['municipal', 'abuja municipal', 'amac'],
+        'abuja municipal': ['municipal', 'municipal area council'],
+        'amac': ['municipal', 'municipal area council'],
+        'municipal': ['municipal area council', 'abuja municipal'],
+        'yamaltu/deba': ['yalmaltu/ deba', 'yamaltu deba'],
+        'yalmaltu/ deba': ['yamaltu/deba', 'yamaltu deba'],
+        'ezinihitte': ['ezinihitte mbaise'],
+        'oru east': ['oru-east'],
+        'biriniwa': ['birniwa'],
+        'birniwa': ['biriniwa'],
+        'kirikasamma': ['kirika samma'],
+        'sule tankarkar': ['sule-tankarkar'],
+        'dambatta': ['danbata'],
+        'danbata': ['dambatta'],
+        'dawakin kudu': ['dawaki kudu'],
+        'dawaki kudu': ['dawakin kudu'],
+        'dawakin tofa': ['dawaki tofa'],
+        'dawaki tofa': ['dawakin tofa'],
+        'garun mallam': ['garun malam'],
+        'garun malam': ['garun mallam'],
+        'dutsin ma': ['dutsin-ma'],
+        'mai\'adua': ['maiadua', 'mai adua'],
+        'malumfashi': ['malufashi'],
+        'malufashi': ['malumfashi'],
+        'aleiro': ['aliero'],
+        'aliero': ['aleiro'],
+        'arewa dandi': ['arewa'],
+        'arewa': ['arewa dandi'],
+        'koko/besse': ['koko-besse', 'koko besse'],
+        'wasagu/danko': ['wasagu-danko', 'wasagu danko'],
+        'igalamela odolu': ['igalamela/odolu'],
+        'igalamela/odolu': ['igalamela odolu'],
+        'kabba/bunu': ['kabba bunu'],
+        'kogi': ['kogi . k. k.', 'kogi kk', 'kogi .k.k.'],
+        'kogi . k. k.': ['kogi'],
+        'mopa muro': ['mopa moro', 'mopamuro', 'mopamoro'],
+        'mopa moro': ['mopa muro'],
+        'ogori/magongo': ['ogori mangogo', 'ogori-magongo', 'ogori magongo'],
+        'ogori magongo': ['ogori mangogo', 'ogori/magongo'],
+        'ogori mangogo': ['ogori/magongo', 'ogori magongo'],
+        'ilorin south': ['ilorin-south'],
+        'ilorin west': ['ilorin-west'],
+        'oke ero': ['okeero'],
+        'okeero': ['oke ero'],
+        'pategi': ['patigi'],
+        'patigi': ['pategi'],
+        'ajeromi-ifelodun': ['ajeromi/ifelodun'],
+        'ibeju-lekki': ['ibeju/lekki'],
+        'ifako-ijaiye': ['ifako-ijaye'],
+        'ifako-ijaye': ['ifako-ijaiye'],
+        'oshodi-isolo': ['oshodi/isolo'],
+        'shomolu': ['somolu'],
+        'somolu': ['shomolu'],
+        'nasarawa egon': ['nasarawa eggon', 'nasarawa'],
+        'nasarawa eggon': ['nasarawa egon'],
+        'edati': ['edatti'],
+        'edatti': ['edati'],
+        'ado-odo/ota': ['ado odo-ota', 'ado-odo ota'],
+        'imeko afon': ['imeko/afon'],
+        'obafemi owode': ['obafemi/owode'],
+        'ogun waterside': ['ogun water side'],
+        'shagamu': ['sagamu'],
+        'sagamu': ['shagamu'],
+        'akoko north-east': ['akoko north east'],
+        'akoko north-west': ['akoko north west'],
+        'akoko south-east': ['akoko south east'],
+        'akoko south-west': ['akoko south west'],
+        'ese odo': ['ese-odo'],
+        'ile oluji/okeigbo': ['ileoluji/okeigbo'],
+        'aiyedaade': ['ayedaade'],
+        'ayedaade': ['aiyedaade'],
+        'aiyedire': ['ayedire'],
+        'ayedire': ['aiyedire'],
+        'atakunmosa east': ['atakumosa east'],
+        'atakumosa east': ['atakunmosa east'],
+        'atakunmosa west': ['atakumosa west'],
+        'atakumosa west': ['atakunmosa west'],
+        'odo otin': ['odo-otin'],
+        'ola oluwa': ['ola-oluwa'],
+        'ibadan north-east': ['ibadan north east'],
+        'ibadan north-west': ['ibadan north west'],
+        'ibadan south-west': ['ibadan south west'],
+        'ogo oluwa': ['ogo-oluwa'],
+        'ona ara': ['ona-ara'],
+        'orelope': ['oorelope'],
+        'oorelope': ['orelope'],
+        'barkin ladi': ['barikin ladi'],
+        'barikin ladi': ['barkin ladi'],
+        'qua\'an pan': ['quaan pan', 'qua an pan'],
+        'abua/odual': ['abua-odual'],
+        'akuku-toru': ['akuku toru'],
+        'asari-toru': ['asari toru'],
+        'emuoha': ['emohua'],
+        'emohua': ['emuoha'],
+        'opobo/nkoro': ['opobo/nekoro'],
+        'opobo/nekoro': ['opobo/nkoro'],
+        'dange shuni': ['dange/shuni'],
+        'sabon birni': ['s/birni', 'sabon-birni'],
+        's/birni': ['sabon birni'],
+        'wamako': ['wamakko'],
+        'wamakko': ['wamako'],
+        'ardo kola': ['ardokola'],
+        'karim lamido': ['karim-lamido'],
+        'karasuwa': ['karasawa'],
+        'karasawa': ['karasuwa'],
+        'birnin magaji/kiyaw': ['birnin magaji'],
+        'birnin magaji': ['birnin magaji/kiyaw'],
+        'chafe': ['tsafe'],
+        'tsafe': ['chafe']
       };
-      if (searchLga.toLowerCase().contains('atakunmosa')) {
-        lgaVariations.add(searchLga.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'Atakumosa'));
-        lgaVariations.add(searchLga.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'atakumosa'));
-        lgaVariations.add(searchLga.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'ATAKUMOSA'));
+
+      final lgaLower = lga.toLowerCase().trim();
+      final lgaVariations = <String>{
+        lga,
+        lgaLower,
+        lga.toUpperCase()
+      };
+
+      if (lgaAliasesMap.containsKey(lgaLower)) {
+        for (var alias in lgaAliasesMap[lgaLower]!) {
+          lgaVariations.add(alias);
+          lgaVariations.add(alias.toLowerCase());
+          lgaVariations.add(alias.toUpperCase());
+        }
       }
-      if (searchLga.toLowerCase().contains('atakumosa')) {
-        lgaVariations.add(searchLga.replaceAll(RegExp(r'atakumosa', caseSensitive: false), 'Atakunmosa'));
-        lgaVariations.add(searchLga.replaceAll(RegExp(r'atakumosa', caseSensitive: false), 'atakunmosa'));
-        lgaVariations.add(searchLga.replaceAll(RegExp(r'atakumosa', caseSensitive: false), 'ATAKUNMOSA'));
-      }
+
+      lgaVariations.add(lgaLower.replaceAll(RegExp(r'[\/\-_]'), ' ').trim());
+      lgaVariations.add(lgaLower.replaceAll(RegExp(r'[\/\-_]'), '').trim());
+      lgaVariations.add(lgaLower.replaceAll(RegExp(r'\s+'), '-'));
+      lgaVariations.add(lgaLower.replaceAll(RegExp(r'\s+'), '  '));
 
       final originalWard = ward;
       final singleSpacedWard = ward.replaceAll(RegExp(r'\s+'), ' ').trim();
       final doubleSpacedWard = ward.replaceAll(RegExp(r'\s+'), '  ').trim();
 
-      final stateVariations =
-          {state, state.toLowerCase(), state.toUpperCase()}.toList();
+      final stateVariations = <String>{
+        state,
+        state.toLowerCase(),
+        state.toUpperCase(),
+        '$state State',
+        '${state.toUpperCase()} STATE'
+      };
+      if (state.toUpperCase() == 'FCT' || state.toUpperCase() == 'ABUJA' || state.toUpperCase().contains('CAPITAL')) {
+        stateVariations.add('FCT');
+        stateVariations.add('fct');
+        stateVariations.add('Federal Capital Territory');
+        stateVariations.add('FEDERAL CAPITAL TERRITORY');
+      }
 
       List<Map<String, String>> strategies = [];
 
@@ -327,13 +526,15 @@ class GeoService {
 
       // Stage 3 Fallback: State-level query with super-normalization matching
       try {
-        final String superNormLgaTarget = lga.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').replaceAll('n', 'm');
-        final String superNormWardTarget = ward
+        final String cleanTargetLga = lgaLower.replaceAll(RegExp(r'[^a-z0-9]'), '');
+        final String cleanTargetWard = ward
             .toLowerCase()
             .replaceAll(RegExp(r'[^a-z0-9]'), '')
             .replaceAll(RegExp(r'^ward0+'), 'ward')
             .replaceAll('ward', '')
             .replaceAll(RegExp(r'^0+'), '');
+
+        final targetAliases = (lgaAliasesMap[lgaLower] ?? []).map((a) => a.replaceAll(RegExp(r'[^a-z0-9]'), '')).toSet();
 
         for (var s in stateVariations) {
           final stateSnap = await _firestore
@@ -343,11 +544,19 @@ class GeoService {
           if (stateSnap.docs.isNotEmpty) {
             final matchedDocs = stateSnap.docs.where((doc) {
               final data = doc.data();
-              final docLga = (data['lga'] ?? data['lgaName'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').replaceAll('n', 'm');
+              final docLgaRaw = (data['lga'] ?? data['lgaName'] ?? '').toString().toLowerCase();
+              final docLgaClean = docLgaRaw.replaceAll(RegExp(r'[^a-z0-9]'), '');
               final docWard = (data['ward'] ?? data['wardName'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').replaceAll(RegExp(r'^ward0+'), 'ward').replaceAll('ward', '').replaceAll(RegExp(r'^0+'), '');
               
-              final lgaMatch = docLga.isEmpty || docLga == superNormLgaTarget || docLga.contains(superNormLgaTarget) || superNormLgaTarget.contains(docLga);
-              final wardMatch = docWard == superNormWardTarget || docWard.contains(superNormWardTarget) || superNormWardTarget.contains(docWard);
+              bool lgaMatch = docLgaClean.isEmpty || 
+                              docLgaClean == cleanTargetLga || 
+                              targetAliases.contains(docLgaClean) ||
+                              (docLgaClean.length >= 4 && cleanTargetLga.length >= 4 && 
+                               (docLgaClean.contains(cleanTargetLga) || cleanTargetLga.contains(docLgaClean)));
+
+              final wardMatch = docWard == cleanTargetWard || 
+                                (docWard.length >= 3 && cleanTargetWard.length >= 3 && 
+                                 (docWard.contains(cleanTargetWard) || cleanTargetWard.contains(docWard)));
               return lgaMatch && wardMatch;
             }).toList();
 
