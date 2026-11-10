@@ -675,12 +675,18 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         return [];
       }
 
-      // Get user profile for location info
-      final profile = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-      final userProfile = profile.data() ?? {};
+      // Get user profile for location info (with offline-safe timeout)
+      Map<String, dynamic> userProfile = {};
+      try {
+        final profile = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        userProfile = profile.data() ?? {};
+      } catch (e) {
+        debugPrint('FindRelatedElections: Offline user profile fallback: $e');
+      }
       debugPrint('FindRelatedElections: User Profile data: $userProfile');
 
       final state = (userProfile['assignedState'] ?? userProfile['state'] ?? '').toString().trim();
@@ -688,26 +694,61 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       final ward = (userProfile['assignedWard'] ?? userProfile['ward'] ?? '').toString().trim();
       debugPrint('FindRelatedElections: Observer location: state=$state, lga=$lga, ward=$ward');
 
-      // Get all elections
-      final electionsSnap =
-          await FirebaseFirestore.instance.collection('elections').get();
+      // Load elections from Firestore (timeout-safe) merged with local Drift DB elections
+      final Map<String, Map<String, dynamic>> electionsMap = {};
+      try {
+        final electionsSnap = await FirebaseFirestore.instance
+            .collection('elections')
+            .get()
+            .timeout(const Duration(seconds: 4));
+        for (final doc in electionsSnap.docs) {
+          electionsMap[doc.id] = doc.data();
+        }
+      } catch (e) {
+        debugPrint('FindRelatedElections: Firestore elections unavailable, using local DB: $e');
+      }
+
+      try {
+        final localElections = await context.read<db.AppDatabase>().getAllLocalElections();
+        for (final local in localElections) {
+          if (electionsMap.containsKey(local.id)) continue;
+          Map<String, dynamic> meta = {};
+          if (local.metadataJson != null) {
+            try {
+              meta = Map<String, dynamic>.from(jsonDecode(local.metadataJson!));
+            } catch (_) {}
+          }
+          electionsMap[local.id] = {
+            ...meta,
+            'name': local.name,
+            'type': local.type,
+            'status': local.status,
+            'startDate': local.startDate?.millisecondsSinceEpoch,
+            'endDate': local.endDate?.millisecondsSinceEpoch,
+          };
+        }
+      } catch (e) {
+        debugPrint('FindRelatedElections: Local DB elections read warning: $e');
+      }
+
       final relatedElections = <Map<String, dynamic>>[];
-      debugPrint('FindRelatedElections: Total elections found in db: ${electionsSnap.docs.length}');
+      debugPrint('FindRelatedElections: Total elections inspected: ${electionsMap.length}');
 
       final currentStart = _election!.startDate;
       final currentEnd = _election!.endDate ?? currentStart;
 
-      for (final doc in electionsSnap.docs) {
-        if (doc.id == widget.electionId) continue; // Skip current election
+      for (final entry in electionsMap.entries) {
+        final docId = entry.key;
+        if (docId == widget.electionId) continue; // Skip current election
 
-        final data = doc.data();
+        final data = entry.value;
         final electionName = data['name'] ?? 'Unknown';
         final startDate = _parseDate(data['startDate'] ?? data['date'] ?? data['electionDate']);
         final endDate = _parseDate(data['endDate'] ?? data['end']) ?? startDate;
         final electionType = data['type'] ?? 'GENERAL';
 
         final dateMatches = _windowsOverlapOrSameDay(currentStart, currentEnd, startDate, endDate);
-        debugPrint('FindRelatedElections: Checking election ${doc.id} ($electionName): startDate=$startDate, endDate=$endDate, dateMatches=$dateMatches');
+        debugPrint('FindRelatedElections: Checking election $docId ($electionName): startDate=$startDate, endDate=$endDate, dateMatches=$dateMatches');
         if (!dateMatches) continue;
 
         List<String> parseNonEmptyList(dynamic raw) {
@@ -724,8 +765,6 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         final electionLgas = parseNonEmptyList(data['lga'] ?? data['lgas'] ?? data['targetLgas']);
         final electionWards = parseNonEmptyList(data['ward'] ?? data['wards'] ?? data['targetWards']);
 
-        debugPrint('FindRelatedElections: parsedStates=$electionStates, parsedLgas=$electionLgas, parsedWards=$electionWards');
-
         bool locationMatch = false;
         if (state.isNotEmpty && lga.isNotEmpty) {
           final hasStateMatch = electionStates.isEmpty ||
@@ -737,7 +776,6 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           final hasWardMatch = electionWards.isEmpty ||
               electionWards.any((w) => _normalizeLocationLoose(w) == _normalizeLocationLoose(ward));
 
-          debugPrint('FindRelatedElections: locationMatch hasStateMatch=$hasStateMatch, hasLgaMatch=$hasLgaMatch, hasWardMatch=$hasWardMatch');
           if (hasStateMatch && hasLgaMatch && hasWardMatch) {
             locationMatch = true;
           }
@@ -746,11 +784,9 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           locationMatch = true;
         }
 
-        debugPrint('FindRelatedElections: final locationMatch=$locationMatch');
-
         if (locationMatch) {
           relatedElections.add({
-            'id': doc.id,
+            'id': docId,
             'name': electionName,
             'type': electionType,
           });
@@ -765,7 +801,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
     }
   }
 
-  /// Check for and import checklist from related elections
+  /// Check for and import checklist from related elections (online Firestore + offline Drift DB)
   Future<void> _importChecklistFromRelatedElection() async {
     // Skip if already prompted for this election in this session
     if (_promptedChecklistElections.contains(widget.electionId)) return;
@@ -774,60 +810,121 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Double check if there's already a checklist for the current election with answers
       final currentDocId = '${user.uid}_${widget.electionId}';
       final currentAltId = '${widget.electionId}_${user.uid}';
-      DocumentSnapshot? currentDoc = await FirebaseFirestore.instance
-          .collection('observer_checklists')
-          .doc(currentDocId)
-          .get();
-      if (!currentDoc.exists) {
-        currentDoc = await FirebaseFirestore.instance
-            .collection('observer_checklists')
-            .doc(currentAltId)
-            .get();
+
+      // Helper to read local Drift checklists
+      List<db.Checklist> localChecklists = [];
+      try {
+        localChecklists = await context.read<db.AppDatabase>().getAllChecklists();
+      } catch (e) {
+        debugPrint('ImportChecklist: Local Drift DB read warning: $e');
       }
-      if (!currentDoc.exists) {
-        final q = await FirebaseFirestore.instance
-            .collection('observer_checklists')
-            .where('observerId', isEqualTo: user.uid)
-            .where('electionId', isEqualTo: widget.electionId)
-            .limit(1)
-            .get();
-        if (q.docs.isNotEmpty) {
-          currentDoc = q.docs.first;
-        }
+
+      Map<String, dynamic>? decodeLocalChecklist(db.Checklist item) {
+        try {
+          final decoded = jsonDecode(item.category);
+          if (decoded is Map && decoded.isNotEmpty) {
+            final match = RegExp(r'_([^_]+)$').firstMatch(item.title);
+            final parsedElectionId = match?.group(1) ?? '';
+            return {
+              'electionId': parsedElectionId,
+              'observerId': user.uid,
+              'answers': Map<String, dynamic>.from(decoded),
+              'status': item.isCompleted ? 'submitted' : 'draft',
+            };
+          }
+        } catch (_) {}
+        return null;
       }
-      if (currentDoc.exists) {
-        final currentData = currentDoc.data() as Map<String, dynamic>?;
-        if (currentData != null && currentData['answers'] != null && (currentData['answers'] as Map).isNotEmpty) {
+
+      bool matchesLocalElection(db.Checklist item, String targetElectionId) {
+        return item.title == '${user.uid}_$targetElectionId' ||
+            item.title == '${targetElectionId}_${user.uid}' ||
+            item.title.endsWith('_$targetElectionId');
+      }
+
+      // 1. Abort if current election already has local or Firestore answers
+      for (final local in localChecklists) {
+        if (matchesLocalElection(local, widget.electionId) &&
+            decodeLocalChecklist(local) != null) {
           return;
         }
       }
 
-      Future<Map<String, dynamic>?> fetchChecklistForElection(String electionId) async {
-        for (final candidateId in ['${user.uid}_$electionId', '${electionId}_${user.uid}']) {
-          final snap = await FirebaseFirestore.instance
+      try {
+        DocumentSnapshot? currentDoc = await FirebaseFirestore.instance
+            .collection('observer_checklists')
+            .doc(currentDocId)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        if (!currentDoc.exists) {
+          currentDoc = await FirebaseFirestore.instance
               .collection('observer_checklists')
-              .doc(candidateId)
-              .get();
-          if (snap.exists) {
-            final d = snap.data();
-            if (d != null && d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
+              .doc(currentAltId)
+              .get()
+              .timeout(const Duration(seconds: 4));
+        }
+        if (!currentDoc.exists) {
+          final q = await FirebaseFirestore.instance
+              .collection('observer_checklists')
+              .where('observerId', isEqualTo: user.uid)
+              .where('electionId', isEqualTo: widget.electionId)
+              .limit(1)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          if (q.docs.isNotEmpty) {
+            currentDoc = q.docs.first;
+          }
+        }
+        if (currentDoc.exists) {
+          final currentData = currentDoc.data() as Map<String, dynamic>?;
+          if (currentData != null && currentData['answers'] != null && (currentData['answers'] as Map).isNotEmpty) {
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint('ImportChecklist: Current checklist remote check skipped offline: $e');
+      }
+
+      Future<Map<String, dynamic>?> fetchChecklistForElection(String electionId) async {
+        // Check local Drift DB first (works 100% offline even when unsynced)
+        for (final local in localChecklists) {
+          if (matchesLocalElection(local, electionId)) {
+            final localMap = decodeLocalChecklist(local);
+            if (localMap != null) return localMap;
+          }
+        }
+
+        // Check Firestore with offline-safe timeout
+        try {
+          for (final candidateId in ['${user.uid}_$electionId', '${electionId}_${user.uid}']) {
+            final snap = await FirebaseFirestore.instance
+                .collection('observer_checklists')
+                .doc(candidateId)
+                .get()
+                .timeout(const Duration(seconds: 4));
+            if (snap.exists) {
+              final d = snap.data();
+              if (d != null && d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
+                return d;
+              }
+            }
+          }
+          final qSnap = await FirebaseFirestore.instance
+              .collection('observer_checklists')
+              .where('observerId', isEqualTo: user.uid)
+              .where('electionId', isEqualTo: electionId)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          for (final doc in qSnap.docs) {
+            final d = doc.data();
+            if (d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
               return d;
             }
           }
-        }
-        final qSnap = await FirebaseFirestore.instance
-            .collection('observer_checklists')
-            .where('observerId', isEqualTo: user.uid)
-            .where('electionId', isEqualTo: electionId)
-            .get();
-        for (final doc in qSnap.docs) {
-          final d = doc.data();
-          if (d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
-            return d;
-          }
+        } catch (e) {
+          debugPrint('ImportChecklist: Remote checklist fetch skipped offline for $electionId: $e');
         }
         return null;
       }
@@ -846,56 +943,88 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         }
       }
 
-      // Direct fallback: scan this observer's checklists for concurrent/overlapping elections
+      // Direct fallback: scan both Firestore + local Drift checklists for concurrent/overlapping elections
       if (sourceChecklistData == null && _election != null) {
-        final profileSnap = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .get();
-        final profileData = profileSnap.data() ?? {};
-        final userPuLoose = _normalizeLocationLoose(
-            (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '').toString());
+        String userPuLoose = '';
+        try {
+          final profileSnap = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          final profileData = profileSnap.data() ?? {};
+          userPuLoose = _normalizeLocationLoose(
+              (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '').toString());
+        } catch (_) {}
 
-        final allObsChecklists = await FirebaseFirestore.instance
-            .collection('observer_checklists')
-            .where('observerId', isEqualTo: user.uid)
-            .get();
+        final Map<String, Map<String, dynamic>> electionsById = {};
+        try {
+          final electionsSnap = await FirebaseFirestore.instance
+              .collection('elections')
+              .get()
+              .timeout(const Duration(seconds: 4));
+          for (final d in electionsSnap.docs) {
+            electionsById[d.id] = d.data();
+          }
+        } catch (_) {}
+        try {
+          final localElections = await context.read<db.AppDatabase>().getAllLocalElections();
+          for (final local in localElections) {
+            electionsById.putIfAbsent(local.id, () => {
+                  'name': local.name,
+                  'startDate': local.startDate?.millisecondsSinceEpoch,
+                  'endDate': local.endDate?.millisecondsSinceEpoch,
+                });
+          }
+        } catch (_) {}
 
-        if (allObsChecklists.docs.isNotEmpty) {
-          final electionsSnap = await FirebaseFirestore.instance.collection('elections').get();
-          final electionsById = <String, Map<String, dynamic>>{
-            for (final d in electionsSnap.docs) d.id: d.data(),
-          };
-          final currentStart = _election!.startDate;
-          final currentEnd = _election!.endDate ?? currentStart;
+        final List<Map<String, dynamic>> candidates = [];
+        // Add local Drift checklists first (always includes offline saves)
+        for (final local in localChecklists) {
+          final localMap = decodeLocalChecklist(local);
+          if (localMap != null) {
+            candidates.add(localMap);
+          }
+        }
+        // Add remote Firestore checklists when reachable
+        try {
+          final allObsChecklists = await FirebaseFirestore.instance
+              .collection('observer_checklists')
+              .where('observerId', isEqualTo: user.uid)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          for (final doc in allObsChecklists.docs) {
+            candidates.add(doc.data());
+          }
+        } catch (_) {}
 
-          // Prefer submitted checklists first, then drafts with answers
-          final sortedDocs = [...allObsChecklists.docs]..sort((a, b) {
-              final sa = (a.data()['status'] ?? '') == 'submitted' ? 0 : 1;
-              final sb = (b.data()['status'] ?? '') == 'submitted' ? 0 : 1;
-              return sa.compareTo(sb);
-            });
+        candidates.sort((a, b) {
+          final sa = (a['status'] ?? '') == 'submitted' ? 0 : 1;
+          final sb = (b['status'] ?? '') == 'submitted' ? 0 : 1;
+          return sa.compareTo(sb);
+        });
 
-          for (final doc in sortedDocs) {
-            final d = doc.data();
-            final srcElectionId = (d['electionId'] ?? '').toString();
-            if (srcElectionId.isEmpty || srcElectionId == widget.electionId) continue;
-            if (d['answers'] == null || (d['answers'] as Map).isEmpty) continue;
+        final currentStart = _election!.startDate;
+        final currentEnd = _election!.endDate ?? currentStart;
 
-            if (userPuLoose.isNotEmpty) {
-              final docPuLoose = _normalizeLocationLoose((d['pollingUnit'] ?? '').toString());
-              if (docPuLoose.isNotEmpty && docPuLoose != userPuLoose) continue;
-            }
+        for (final d in candidates) {
+          final srcElectionId = (d['electionId'] ?? '').toString();
+          if (srcElectionId.isEmpty || srcElectionId == widget.electionId) continue;
+          if (d['answers'] == null || (d['answers'] as Map).isEmpty) continue;
 
-            final srcElection = electionsById[srcElectionId];
-            if (srcElection == null) continue;
-            final srcStart = _parseDate(srcElection['startDate'] ?? srcElection['date'] ?? srcElection['electionDate']);
-            final srcEnd = _parseDate(srcElection['endDate'] ?? srcElection['end']) ?? srcStart;
-            if (_windowsOverlapOrSameDay(currentStart, currentEnd, srcStart, srcEnd)) {
-              sourceChecklistData = d;
-              sourceElectionName = (srcElection['name'] ?? 'Previous Election').toString();
-              break;
-            }
+          if (userPuLoose.isNotEmpty) {
+            final docPuLoose = _normalizeLocationLoose((d['pollingUnit'] ?? '').toString());
+            if (docPuLoose.isNotEmpty && docPuLoose != userPuLoose) continue;
+          }
+
+          final srcElection = electionsById[srcElectionId];
+          if (srcElection == null) continue;
+          final srcStart = _parseDate(srcElection['startDate'] ?? srcElection['date'] ?? srcElection['electionDate']);
+          final srcEnd = _parseDate(srcElection['endDate'] ?? srcElection['end']) ?? srcStart;
+          if (_windowsOverlapOrSameDay(currentStart, currentEnd, srcStart, srcEnd)) {
+            sourceChecklistData = d;
+            sourceElectionName = (srcElection['name'] ?? 'Previous Election').toString();
+            break;
           }
         }
       }
@@ -943,22 +1072,55 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           );
 
           if (shouldImport == true) {
-            // Import the answers to the current election as a draft
-            // so the user can review before finalizing
-            await FirebaseFirestore.instance
-                .collection('observer_checklists')
-                .doc(currentDocId)
-                .set({
-              'electionId': widget.electionId,
-              'observerId': user.uid,
-              'state': data['state'],
-              'lga': data['lga'],
-              'ward': data['ward'],
-              'pollingUnit': data['pollingUnit'],
-              'answers': data['answers'],
-              'status': 'draft', // Import as draft for review
-              'timestamp': FieldValue.serverTimestamp(),
-            }, SetOptions(merge: true));
+            bool syncedRemote = false;
+            try {
+              await FirebaseFirestore.instance
+                  .collection('observer_checklists')
+                  .doc(currentDocId)
+                  .set({
+                'electionId': widget.electionId,
+                'observerId': user.uid,
+                'state': data['state'],
+                'lga': data['lga'],
+                'ward': data['ward'],
+                'pollingUnit': data['pollingUnit'],
+                'answers': data['answers'],
+                'status': 'draft', // Import as draft for review
+                'timestamp': FieldValue.serverTimestamp(),
+              }, SetOptions(merge: true)).timeout(const Duration(seconds: 4));
+              syncedRemote = true;
+            } catch (e) {
+              debugPrint('ImportChecklist: Remote save failed offline, saving to Drift DB: $e');
+            }
+
+            // Always persist imported draft in local Drift DB so offline _loadData() sees it immediately
+            try {
+              final dbInstance = context.read<db.AppDatabase>();
+              final existingLocal = await dbInstance.getAllChecklists();
+              final matchIdx = existingLocal.indexWhere((c) => c.title == currentDocId);
+              final encodedAnswers = jsonEncode(data['answers']);
+              if (matchIdx != -1) {
+                await dbInstance.updateChecklistItem(
+                  existingLocal[matchIdx].copyWith(
+                    category: encodedAnswers,
+                    isCompleted: false,
+                    isSynced: syncedRemote,
+                    updatedAt: DateTime.now(),
+                  ),
+                );
+              } else {
+                await dbInstance.insertChecklist(
+                  db.ChecklistsCompanion(
+                    title: drift.Value(currentDocId),
+                    category: drift.Value(encodedAnswers),
+                    isCompleted: const drift.Value(false),
+                    isSynced: drift.Value(syncedRemote),
+                  ),
+                );
+              }
+            } catch (e) {
+              debugPrint('ImportChecklist: Local Drift save warning: $e');
+            }
 
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
