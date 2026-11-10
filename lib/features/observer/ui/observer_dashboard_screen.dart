@@ -2905,7 +2905,7 @@ class _ChecklistTab extends StatefulWidget {
 }
 
 class _ChecklistTabState extends State<_ChecklistTab>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, dynamic> _answers = {};
   bool _loading = true;
@@ -2917,6 +2917,9 @@ class _ChecklistTabState extends State<_ChecklistTab>
   final Set<String> _editableFields = {};
   bool _isOffline = false;
   Timer? _networkCheckTimer;
+  Timer? _autoDraftTimer;
+  bool _hasLocalDraftEdits = false;
+  late final db.AppDatabase _localDb;
   StreamSubscription<DocumentSnapshot>? _templateSubscription;
   StreamSubscription<DocumentSnapshot>? _templateDocSubscription;
   bool _hasImportedFromRelated = false;
@@ -2927,9 +2930,72 @@ class _ChecklistTabState extends State<_ChecklistTab>
   @override
   void initState() {
     super.initState();
+    _localDb = context.read<db.AppDatabase>();
+    WidgetsBinding.instance.addObserver(this);
     _loadData();
     _startNetworkTimer();
     _listenForTemplateChanges();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _autoDraftTimer?.cancel();
+      if (_hasLocalDraftEdits && !_isFinalized) {
+        _flushAutoDraftToLocalDb();
+      }
+    }
+  }
+
+  void _scheduleAutoDraftSave({bool immediate = false}) {
+    if (_isFinalized || _loading) return;
+    _hasLocalDraftEdits = true;
+    _hasSavedDraft = true;
+    _autoDraftTimer?.cancel();
+    if (immediate) {
+      _flushAutoDraftToLocalDb();
+    } else {
+      _autoDraftTimer = Timer(const Duration(milliseconds: 250), () {
+        _flushAutoDraftToLocalDb();
+      });
+    }
+  }
+
+  Future<void> _flushAutoDraftToLocalDb() async {
+    if (_isFinalized) return;
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final docId = '${user.uid}_${widget.electionId}';
+      final encoded = jsonEncode(_answers);
+      final localChecklists = await _localDb.getAllChecklists();
+      final matchIdx = localChecklists.indexWhere((c) => c.title == docId);
+      if (matchIdx != -1) {
+        final existing = localChecklists[matchIdx];
+        if (existing.isCompleted) return;
+        await _localDb.updateChecklistItem(
+          existing.copyWith(
+            category: encoded,
+            isCompleted: false,
+            isSynced: false,
+            updatedAt: DateTime.now(),
+          ),
+        );
+      } else {
+        await _localDb.insertChecklist(
+          db.ChecklistsCompanion(
+            title: drift.Value(docId),
+            category: drift.Value(encoded),
+            isCompleted: const drift.Value(false),
+            isSynced: const drift.Value(false),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Checklist auto-draft local DB save error: $e');
+    }
   }
 
   void _listenForTemplateChanges() {
@@ -3089,18 +3155,18 @@ class _ChecklistTabState extends State<_ChecklistTab>
       final secondaryId = '${widget.electionId}_${user?.uid}_$pu';
 
       // Step 4: Load draft/submission
+      db.Checklist? localMatch;
       bool loadedLocal = false;
       try {
-        final localChecklists =
-            await context.read<db.AppDatabase>().getAllChecklists();
+        final localChecklists = await _localDb.getAllChecklists();
         final matchIndex = localChecklists
             .indexWhere((c) => c.title == primaryId || c.title == secondaryId);
         if (matchIndex != -1) {
-          final match = localChecklists[matchIndex];
+          localMatch = localChecklists[matchIndex];
           _answers
-              .addAll(Map<String, dynamic>.from(jsonDecode(match.category)));
-          _isFinalized = match.isCompleted;
-          _hasSavedDraft = !match.isCompleted;
+              .addAll(Map<String, dynamic>.from(jsonDecode(localMatch.category)));
+          _isFinalized = localMatch.isCompleted;
+          _hasSavedDraft = !localMatch.isCompleted;
           loadedLocal = true;
         }
       } catch (localDbError) {
@@ -3112,12 +3178,14 @@ class _ChecklistTabState extends State<_ChecklistTab>
         draft = await FirebaseFirestore.instance
             .collection('observer_checklists')
             .doc(primaryId)
-            .get();
+            .get()
+            .timeout(const Duration(seconds: 5));
         if (!draft.exists) {
           draft = await FirebaseFirestore.instance
               .collection('observer_checklists')
               .doc(secondaryId)
-              .get();
+              .get()
+              .timeout(const Duration(seconds: 5));
         }
         // Query Fallback to make absolutely sure we find the document by fields!
         if (!draft.exists) {
@@ -3126,7 +3194,8 @@ class _ChecklistTabState extends State<_ChecklistTab>
               .where('observerId', isEqualTo: user?.uid)
               .where('electionId', isEqualTo: widget.electionId)
               .limit(1)
-              .get();
+              .get()
+              .timeout(const Duration(seconds: 5));
           if (querySnap.docs.isNotEmpty) {
             draft = querySnap.docs.first;
             debugPrint('Checklist: Found document via query fallback!');
@@ -3140,9 +3209,28 @@ class _ChecklistTabState extends State<_ChecklistTab>
       debugPrint(
           'Checklist load diagnostic: primaryId=$primaryId, draft.exists=${draft?.exists}, status=${dataMap?['status']}');
 
+      DateTime? remoteUpdatedAt;
+      if (dataMap != null) {
+        final rawTs = dataMap['updatedAt'] ?? dataMap['timestamp'];
+        if (rawTs is Timestamp) {
+          remoteUpdatedAt = rawTs.toDate();
+        } else if (rawTs is String) {
+          remoteUpdatedAt = DateTime.tryParse(rawTs);
+        }
+      }
+      final remoteSubmitted = dataMap?['status'] == 'submitted';
+      final preferLocalAutoDraft = localMatch != null &&
+          !localMatch.isCompleted &&
+          !localMatch.isSynced &&
+          !remoteSubmitted &&
+          (draft == null ||
+              !draft.exists ||
+              remoteUpdatedAt == null ||
+              localMatch.updatedAt.isAfter(remoteUpdatedAt));
+
       if (mounted) {
         setState(() {
-          if (draft != null && draft.exists) {
+          if (draft != null && draft.exists && !preferLocalAutoDraft) {
             final data = draft.data() as Map<String, dynamic>;
             _answers
                 .clear(); // Clear any local data to prioritize the remote Firestore master document
@@ -3162,7 +3250,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
 
             // Auto-sync the local database record to match Firestore
             try {
-              final dbInstance = context.read<db.AppDatabase>();
+              final dbInstance = _localDb;
               dbInstance.getAllChecklists().then((localList) {
                 final idx = localList.indexWhere(
                     (c) => c.title == primaryId || c.title == secondaryId);
@@ -3190,6 +3278,9 @@ class _ChecklistTabState extends State<_ChecklistTab>
               debugPrint('Local DB sync from Firestore failed: $err');
             }
           } else if (loadedLocal) {
+            if (preferLocalAutoDraft) {
+              _hasLocalDraftEdits = true;
+            }
             // Initialize controllers with saved local data
             _answers.forEach((key, value) {
               if (!_controllers.containsKey(key)) {
@@ -3602,6 +3693,8 @@ class _ChecklistTabState extends State<_ChecklistTab>
       }
 
       if (mounted) {
+        _autoDraftTimer?.cancel();
+        _hasLocalDraftEdits = false;
         setState(() {
           _isFinalized = isFinal;
           _hasSavedDraft = !isFinal;
@@ -3653,6 +3746,8 @@ class _ChecklistTabState extends State<_ChecklistTab>
           }
 
           if (mounted) {
+            _autoDraftTimer?.cancel();
+            _hasLocalDraftEdits = false;
             setState(() {
               _isFinalized = isFinal;
               _hasSavedDraft = !isFinal;
@@ -3684,23 +3779,49 @@ class _ChecklistTabState extends State<_ChecklistTab>
   }
 
   Future<void> _discardDraft() async {
+    _autoDraftTimer?.cancel();
+    _hasLocalDraftEdits = false;
     final user = FirebaseAuth.instance.currentUser;
     final docId = '${user?.uid}_${widget.electionId}';
 
-    await FirebaseFirestore.instance
-        .collection('observer_checklists')
-        .doc(docId)
-        .delete();
-    setState(() {
-      _answers.clear();
-      _controllers.values.forEach((c) => c.clear());
-      _hasSavedDraft = false;
-      _loadData(); // Reload to re-apply auto-fill
-    });
+    try {
+      await FirebaseFirestore.instance
+          .collection('observer_checklists')
+          .doc(docId)
+          .delete()
+          .timeout(const Duration(seconds: 4));
+    } catch (e) {
+      debugPrint('Discard remote draft warning: $e');
+    }
+
+    try {
+      final localChecklists = await _localDb.getAllChecklists();
+      for (final c in localChecklists) {
+        if (c.title == docId || c.title.endsWith('_${widget.electionId}')) {
+          await _localDb.deleteChecklist(c.id);
+        }
+      }
+    } catch (e) {
+      debugPrint('Discard local draft warning: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        _answers.clear();
+        _controllers.values.forEach((c) => c.clear());
+        _hasSavedDraft = false;
+        _loadData(); // Reload to re-apply auto-fill
+      });
+    }
   }
 
   @override
   void dispose() {
+    _autoDraftTimer?.cancel();
+    if (_hasLocalDraftEdits && !_isFinalized) {
+      _flushAutoDraftToLocalDb();
+    }
+    WidgetsBinding.instance.removeObserver(this);
     _templateSubscription?.cancel();
     _templateDocSubscription?.cancel();
     _networkCheckTimer?.cancel();
@@ -4224,6 +4345,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                         _answers[id] = value24h;
                         _controllers[id]!.text = display12h;
                       });
+                      _scheduleAutoDraftSave(immediate: true);
                     }
                   }
                 } else {
@@ -4278,6 +4400,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                       _answers[id] = value24h;
                       _controllers[id]!.text = display12h;
                     });
+                    _scheduleAutoDraftSave(immediate: true);
                   }
                 }
               },
@@ -4326,7 +4449,10 @@ class _ChecklistTabState extends State<_ChecklistTab>
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide.none),
         ),
-        onChanged: (v) => _answers[id] = v,
+        onChanged: (v) {
+          _answers[id] = v;
+          _scheduleAutoDraftSave();
+        },
       );
     }
 
@@ -4347,7 +4473,10 @@ class _ChecklistTabState extends State<_ChecklistTab>
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide.none),
       ),
-      onChanged: (v) => _answers[id] = v,
+      onChanged: (v) {
+        _answers[id] = v;
+        _scheduleAutoDraftSave();
+      },
     );
   }
 
@@ -4359,7 +4488,10 @@ class _ChecklistTabState extends State<_ChecklistTab>
 
     return Expanded(
       child: InkWell(
-        onTap: !enabled ? null : () => setState(() => _answers[id] = value),
+        onTap: !enabled ? null : () {
+          setState(() => _answers[id] = value);
+          _scheduleAutoDraftSave(immediate: true);
+        },
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
@@ -4628,6 +4760,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
       await ref.putFile(File(img.path));
       final url = await ref.getDownloadURL();
       setState(() => _answers[id] = url);
+      _scheduleAutoDraftSave(immediate: true);
     }
   }
 }
