@@ -10437,14 +10437,16 @@ const Map<String, Map<String, List<String>>> nigeriaWardMapping = {
 
 
 const Map<String, String> stateAliases = {
-  'FEDERAL CAPITAL TERRITORY': 'FCT',
-  'ABUJA': 'FCT',
+  'FCT': 'FEDERAL CAPITAL TERRITORY',
+  'ABUJA': 'FEDERAL CAPITAL TERRITORY',
+  'FEDERAL CAPITAL TERRITORY': 'FEDERAL CAPITAL TERRITORY',
   'NASSARAWA': 'NASARAWA',
 };
 
 const Map<String, String> lgaAliases = {
   'MUNICIPAL AREA COUNCIL': 'MUNICIPAL',
   'MUNICIPAL': 'MUNICIPAL AREA COUNCIL',
+  'ABUJA MUNICIPAL': 'MUNICIPAL',
   'ABUJA MUNICIPAL AREA COUNCIL': 'MUNICIPAL',
   'AMAC': 'MUNICIPAL',
   'ATAKUNMOSA WEST': 'ATAKUMOSA WEST',
@@ -10452,13 +10454,75 @@ const Map<String, String> lgaAliases = {
   'ATAKUNMOSA EAST': 'ATAKUMOSA EAST',
   'ATAKUMOSA EAST': 'ATAKUNMOSA EAST',
   'OBI NGWA': 'OBINGWA',
-  'OBINGWA': 'OBI NGWA',
-  'OSISIOMA': 'OSISIOMA NGWA',
+  'OBINGWA': 'OBINGWA',
+  'OSISIOMA': 'OSISIOMA',
   'OSISIOMA NGWA': 'OSISIOMA',
   'ISUIKWUATO': 'ISIUKWUATO',
   'ISIUKWUATO': 'ISUIKWUATO',
-  'UMU NNEOCHI': 'UMUNNEOCHI',
-  'UMUNNEOCHI': 'UMU NNEOCHI',
+  'UMU NNEOCHI': 'UMU - NNEOCHI',
+  'UMUNNEOCHI': 'UMU - NNEOCHI',
+  'GIREI': 'GIRE 1',
+  'GIRE 1': 'GIREI',
+  'IHIALA': 'IHALA',
+  'IHALA': 'IHIALA',
+  'YAKUUR': 'YAKURR',
+  'YAKURR': 'YAKUUR',
+  'EDDA': 'AFIKPO  SOUTH',
+  'AFIKPO SOUTH': 'AFIKPO  SOUTH',
+  'UHUNMWONDE': 'UHUNMWODE',
+  'UHUNMWODE': 'UHUNMWONDE',
+  'ESTAKO EAST': 'ETSAKO EAST',
+  'ESTAKO WEST': 'ETSAKO  WEST',
+  'ETSAKO WEST': 'ETSAKO  WEST',
+  'ESTAKO CENTRAL': 'ETSAKO CENTRAL',
+  'YAMALTU/DEBA': 'YALMALTU/ DEBA',
+  'YAMALTU DEBA': 'YALMALTU/ DEBA',
+  'ISU': 'ISU (UMUNDUGBA)',
+  'BIRINIWA': 'BIRNIWA',
+  'BIRNINWA': 'BIRNIWA',
+  'KAGAUMA': 'KAUGAMA',
+  'KIRI KASAMA': 'KIRIKA SAMMA',
+  'KIRIKASAMA': 'KIRIKA SAMMA',
+  'KIRIKASAMMA': 'KIRIKA SAMMA',
+  'DAMBATTA': 'DANBATA',
+  'DAWAKIN KUDU': 'DAWAKI KUDU',
+  'GARUN MALLAM': 'GARUN MALAM',
+  'GARIN MALAM': 'GARUN MALAM',
+  'MALUMFASHI': 'MALUFASHI',
+  'ALEIRO': 'ALIERO',
+  'MOPA MURO': 'MOPA MORO',
+  'MOPA-MURO': 'MOPA MORO',
+  'OGORI/MAGONGO': 'OGORI MANGOGO',
+  'OGORI/MAGUNGO': 'OGORI MANGOGO',
+  'OGORI MAGONGO': 'OGORI MANGOGO',
+  'OGORI MAGUNGO': 'OGORI MANGOGO',
+  'OGORI-MAGONGO': 'OGORI MANGOGO',
+  'OGORI-MAGUNGO': 'OGORI MANGOGO',
+  'PATEGI': 'PATIGI',
+  'OKE ERO': 'OKE - ERO',
+  'OKE-ERO (OKE ERO)': 'OKE - ERO',
+  'OKE- ERO (OKE ERO': 'OKE - ERO',
+  'IFAKO-IJAIYE': 'IFAKO-IJAYE',
+  'SHOMOLU': 'SOMOLU',
+  'EDATI': 'EDATTI',
+  'MOYA': 'MUNYA',
+  'MUNYA': 'MOYA',
+  'SHAGAMU': 'SAGAMU',
+  'YEWA NORTH': 'EGBADO NORTH',
+  'YEWA SOUTH': 'EGBADO SOUTH',
+  'IMOKE/ AFON': 'IMEKO/AFON',
+  'AIYEDAADE': 'AYEDAADE',
+  'AIYEDIRE': 'AYEDIRE',
+  'BARKIN LADI': 'BARIKIN LADI',
+  'EMUOHA': 'EMOHUA',
+  'OPOBO/NKORO': 'OPOBO/NEKORO',
+  'SABON BIRNI': 'S/BIRNI',
+  'WAMAKO': 'WAMAKKO',
+  'KARASUWA': 'KARASAWA',
+  'CHAFE': 'TSAFE',
+  'TALATAR MAFARA': 'TALATA MAFARA',
+  'MAIDUGURI (METROPOLITAN COUNCIL)': 'MAIDUGURI',
+  'DAMATURU (STATE CAPITAL)': 'DAMATURU',
 };
 
 List<String> getStaticWardsForLga(String state, String lga) {
@@ -10504,16 +10568,28 @@ List<String> getStaticWardsForLga(String state, String lga) {
     }
   }
 
-  // 3. Super-normalized alphanumeric fuzzy match
-  String norm(String str) =>
-      str.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '').replaceAll('N', 'M');
+  // 3. Super-normalized alphanumeric exact match first (strips parentheticals, spaces, punctuation; treats N/M as equivalent)
+  String norm(String str) => str
+      .toUpperCase()
+      .replaceAll(RegExp(r'\s*\([^)]*\)'), '')
+      .replaceAll(RegExp(r'[^A-Z0-9]'), '')
+      .replaceAll('N', 'M');
   final targetNorm = norm(lgaUpper);
+  final aliasNorm = lgaAlias != null ? norm(lgaAlias) : null;
 
   for (final k in stateData.keys) {
     final kNorm = norm(k);
-    if (kNorm == targetNorm ||
-        (targetNorm.length >= 4 && kNorm.contains(targetNorm)) ||
-        (kNorm.length >= 4 && targetNorm.contains(kNorm))) {
+    if (kNorm == targetNorm || (aliasNorm != null && kNorm == aliasNorm)) {
+      return stateData[k] ?? const [];
+    }
+  }
+
+  // 4. Fallback substring fuzzy match only if exact normalized match did not hit
+  for (final k in stateData.keys) {
+    final kNorm = norm(k);
+    if ((targetNorm.length >= 4 && kNorm.contains(targetNorm)) ||
+        (kNorm.length >= 4 && targetNorm.contains(kNorm)) ||
+        (aliasNorm != null && aliasNorm.length >= 4 && (kNorm.contains(aliasNorm) || aliasNorm.contains(kNorm)))) {
       return stateData[k] ?? const [];
     }
   }

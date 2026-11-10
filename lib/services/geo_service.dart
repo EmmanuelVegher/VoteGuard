@@ -49,12 +49,24 @@ class GeoService {
       return _cacheLgas[cacheKey]!;
     }
 
+    // 1. Authoritative canonical 774-LGA mapping (instant, clean, zero duplicates/typos)
+    final staticLgas = _getStaticLGAsForState(stateName);
+    if (staticLgas.isNotEmpty) {
+      final staticItems = staticLgas
+          .map((name) => GeoItem(id: name.hashCode, name: name))
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      _cacheLgas[cacheKey] = staticItems;
+      return staticItems;
+    }
+
     try {
       final apiLgas = await NeonApiService.getGeoLGAs(stateName);
       if (apiLgas.isNotEmpty) {
         final items = apiLgas
             .map((name) => GeoItem(id: name.hashCode, name: name))
-            .toList();
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
         _cacheLgas[cacheKey] = items;
         return items;
       }
@@ -80,31 +92,10 @@ class GeoService {
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
-      if (items.isEmpty) {
-        final staticLgas = _getStaticLGAsForState(stateName);
-        if (staticLgas.isNotEmpty) {
-          final staticItems = staticLgas
-              .map((name) => GeoItem(id: name.hashCode, name: name))
-              .toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
-          _cacheLgas[cacheKey] = staticItems;
-          return staticItems;
-        }
-      }
-
       _cacheLgas[cacheKey] = items;
       return items;
     } catch (e) {
       debugPrint("GeoService Error (LGAs): $e");
-      final staticLgas = _getStaticLGAsForState(stateName);
-      if (staticLgas.isNotEmpty) {
-        final staticItems = staticLgas
-            .map((name) => GeoItem(id: name.hashCode, name: name))
-            .toList()
-          ..sort((a, b) => a.name.compareTo(b.name));
-        _cacheLgas[cacheKey] = staticItems;
-        return staticItems;
-      }
       return const [];
     }
   }
@@ -152,10 +143,32 @@ class GeoService {
       };
 
       final lUpper = lgaName.trim().toUpperCase();
-      if (lUpper == 'MUNICIPAL AREA COUNCIL' || lUpper == 'AMAC') {
-        lgaVariations.addAll(['Municipal', 'MUNICIPAL', 'municipal']);
-      } else if (lUpper == 'MUNICIPAL') {
-        lgaVariations.addAll(['Municipal Area Council', 'MUNICIPAL AREA COUNCIL']);
+      if (lUpper == 'MUNICIPAL AREA COUNCIL' ||
+          lUpper == 'AMAC' ||
+          lUpper == 'MUNICIPAL' ||
+          lUpper == 'ABUJA MUNICIPAL' ||
+          lUpper == 'ABUJA MUNICIPAL AREA COUNCIL') {
+        lgaVariations.addAll([
+          'Municipal Area Council',
+          'MUNICIPAL AREA COUNCIL',
+          'Municipal',
+          'MUNICIPAL',
+          'municipal',
+          'AMAC',
+          'amac',
+          'Abuja Municipal',
+        ]);
+      } else if (lUpper.contains('OGORI')) {
+        lgaVariations.addAll([
+          'Ogori/Magongo',
+          'OGORI/MAGONGO',
+          'ogori mangogo',
+          'OGORI MANGOGO',
+          'Ogori/Magungo',
+          'ogori/magungo',
+        ]);
+      } else if (lUpper.contains('MOYA') || lUpper.contains('MUNYA')) {
+        lgaVariations.addAll(['Moya', 'Munya', 'MOYA', 'MUNYA']);
       } else if (lUpper.contains('ATAKUNMOSA')) {
         lgaVariations.add(lgaName.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'Atakumosa'));
         lgaVariations.add(lgaName.replaceAll(RegExp(r'atakunmosa', caseSensitive: false), 'ATAKUMOSA'));
@@ -204,6 +217,43 @@ class GeoService {
           ..sort((a, b) => a.name.compareTo(b.name));
         _cacheWards[cacheKey] = items;
         return items;
+      }
+
+      // State-wide Firestore wards fallback with normalized LGA matching
+      String cleanLgaNorm(String s) {
+        final base = s.toLowerCase().replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim();
+        if (base.contains('ogori')) return 'ogorimagongo';
+        if (base.contains('munya') || base.contains('moya')) return 'munya';
+        if (base == 'amac' ||
+            base == 'municipal' ||
+            base == 'municipal area council' ||
+            base == 'abuja municipal' ||
+            base == 'abuja municipal area council') {
+          return 'municipalareacouncil';
+        }
+        return base.replaceAll(RegExp(r'[^a-z0-9]'), '');
+      }
+
+      final targetCleanLga = cleanLgaNorm(lgaName);
+      for (final sVar in stateVariations) {
+        final stateSnap = await _firestore
+            .collection('wards')
+            .where('state', isEqualTo: sVar)
+            .get();
+        if (stateSnap.docs.isNotEmpty) {
+          final matched = stateSnap.docs
+              .where((doc) {
+                final docLga = (doc.data()['lga'] ?? '').toString();
+                return cleanLgaNorm(docLga) == targetCleanLga;
+              })
+              .map((doc) => GeoItem.fromFirestore(doc.data()))
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+          if (matched.isNotEmpty) {
+            _cacheWards[cacheKey] = matched;
+            return matched;
+          }
+        }
       }
     } catch (e) {
       debugPrint("GeoService Firestore Error (Wards): $e");
@@ -293,7 +343,8 @@ class GeoService {
         'askira/uba': ['askira / uba'],
         'kala/balge': ['kala balge', 'kala-balge'],
         'kwaya kusar': ['kwaya / kusar'],
-        'maiduguri': ['maiduguri m. c.', 'maiduguri mc', 'maiduguri municipal'],
+        'maiduguri': ['maiduguri m. c.', 'maiduguri mc', 'maiduguri municipal', 'maiduguri (metropolitan council)'],
+        'maiduguri (metropolitan council)': ['maiduguri'],
         'calabar municipal': ['calabar municipality'],
         'calabar municipality': ['calabar municipal'],
         'yakuur': ['yakurr'],
@@ -307,33 +358,46 @@ class GeoService {
         'oshimili south': ['oshimilisouth'],
         'warri north': ['warri  north'],
         'warri south west': ['warri south  west'],
-        'afikpo south': ['afikpo  south'],
+        'afikpo south': ['afikpo  south', 'edda'],
+        'edda': ['afikpo south'],
         'akoko-edo': ['akoko edo'],
         'esan north-east': ['esan north east'],
         'esan south-east': ['esan south east'],
-        'etsako west': ['etsako  west'],
+        'etsako central': ['estako central'],
+        'estako central': ['etsako central'],
+        'etsako east': ['estako east'],
+        'estako east': ['etsako east'],
+        'etsako west': ['etsako  west', 'estako west'],
+        'estako west': ['etsako west', 'etsako  west'],
         'ikpoba-okha': ['ikpoba/okha'],
         'ovia north-east': ['ovia north east'],
         'ovia south-west': ['ovia south west'],
         'uhunmwonde': ['uhunmwode'],
         'uhunmwode': ['uhunmwonde'],
-        'ado-ekiti': ['ado ekiti'],
+        'ado-ekiti': ['ado ekiti', 'ado'],
+        'ado': ['ado-ekiti'],
         'ekiti south-west': ['ekiti south west'],
-        'ido-osi': ['ido / osi'],
+        'ido-osi': ['ido / osi', 'ido/osi'],
+        'ido/osi': ['ido-osi'],
         'irepodun/ifelodun': ['irepodun / ifelodun'],
         'ise/orun': ['ise / orun'],
         'oji river': ['oji-river'],
-        'municipal area council': ['municipal', 'abuja municipal', 'amac'],
-        'abuja municipal': ['municipal', 'municipal area council'],
-        'amac': ['municipal', 'municipal area council'],
-        'municipal': ['municipal area council', 'abuja municipal'],
+        'municipal area council': ['municipal', 'abuja municipal', 'abuja municipal area council', 'amac'],
+        'abuja municipal': ['municipal area council', 'municipal', 'abuja municipal area council', 'amac'],
+        'abuja municipal area council': ['municipal area council', 'municipal', 'abuja municipal', 'amac'],
+        'amac': ['municipal area council', 'municipal', 'abuja municipal', 'abuja municipal area council'],
+        'municipal': ['municipal area council', 'abuja municipal', 'abuja municipal area council', 'amac'],
         'yamaltu/deba': ['yalmaltu/ deba', 'yamaltu deba'],
         'yalmaltu/ deba': ['yamaltu/deba', 'yamaltu deba'],
         'ezinihitte': ['ezinihitte mbaise'],
         'oru east': ['oru-east'],
-        'biriniwa': ['birniwa'],
-        'birniwa': ['biriniwa'],
-        'kirikasamma': ['kirika samma'],
+        'biriniwa': ['birniwa', 'birninwa'],
+        'birniwa': ['biriniwa', 'birninwa'],
+        'birninwa': ['biriniwa', 'birniwa'],
+        'kaugama': ['kagauma'],
+        'kagauma': ['kaugama'],
+        'kirikasamma': ['kirika samma', 'kiri kasama'],
+        'kiri kasama': ['kirikasamma', 'kirika samma'],
         'sule tankarkar': ['sule-tankarkar'],
         'dambatta': ['danbata'],
         'danbata': ['dambatta'],
@@ -373,7 +437,7 @@ class GeoService {
         'munya': ['moya'],
         'ilorin south': ['ilorin-south'],
         'ilorin west': ['ilorin-west'],
-        'oke ero': ['okeero'],
+        'oke ero': ['okeero', 'oke-ero (oke ero)'],
         'okeero': ['oke ero'],
         'pategi': ['patigi'],
         'patigi': ['pategi'],
@@ -389,9 +453,19 @@ class GeoService {
         'edati': ['edatti'],
         'edatti': ['edati'],
         'ado-odo/ota': ['ado odo-ota', 'ado-odo ota'],
-        'imeko afon': ['imeko/afon'],
+        'egbado north': ['yewa north'],
+        'yewa north': ['egbado north'],
+        'egbado south': ['yewa south'],
+        'yewa south': ['egbado south'],
+        'ijebu east': ['ijebu-east'],
+        'ijebu north': ['ijebu-north'],
+        'ijebu north east': ['ijebu north-east'],
+        'ijebu ode': ['ijebu-ode'],
+        'imeko afon': ['imeko/afon', 'imoke/ afon'],
+        'imoke/ afon': ['imeko afon', 'imeko/afon'],
         'obafemi owode': ['obafemi/owode'],
         'ogun waterside': ['ogun water side'],
+        'remo north': ['remo-north'],
         'shagamu': ['sagamu'],
         'sagamu': ['shagamu'],
         'akoko north-east': ['akoko north east'],
@@ -417,6 +491,8 @@ class GeoService {
         'ona ara': ['ona-ara'],
         'orelope': ['oorelope'],
         'oorelope': ['orelope'],
+        'ori ire': ['oriire'],
+        'oriire': ['ori ire'],
         'barkin ladi': ['barikin ladi'],
         'barikin ladi': ['barkin ladi'],
         'qua\'an pan': ['quaan pan', 'qua an pan'],
@@ -434,10 +510,14 @@ class GeoService {
         'wamakko': ['wamako'],
         'ardo kola': ['ardokola'],
         'karim lamido': ['karim-lamido'],
+        'damaturu': ['damaturu (state capital)'],
+        'damaturu (state capital)': ['damaturu'],
         'karasuwa': ['karasawa'],
         'karasawa': ['karasuwa'],
         'birnin magaji/kiyaw': ['birnin magaji'],
         'birnin magaji': ['birnin magaji/kiyaw'],
+        'talata mafara': ['talatar mafara'],
+        'talatar mafara': ['talata mafara'],
         'chafe': ['tsafe'],
         'tsafe': ['chafe']
       };
@@ -553,9 +633,21 @@ class GeoService {
 
       // Stage 3 Fallback: State-level query with super-normalization matching
       try {
-        String cleanTargetLga = lgaLower.replaceAll(RegExp(r'\s*\([^)]*\)'), '').replaceAll(RegExp(r'[^a-z0-9]'), '');
-        if (cleanTargetLga.contains('ogori')) cleanTargetLga = 'ogorimagongo';
-        if (cleanTargetLga.contains('munya') || cleanTargetLga.contains('moya')) cleanTargetLga = 'munya';
+        String normalizeLgaClean(String raw) {
+          final stripped = raw.toLowerCase().replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim();
+          if (stripped.contains('ogori')) return 'ogorimagongo';
+          if (stripped.contains('munya') || stripped.contains('moya')) return 'munya';
+          if (stripped == 'amac' ||
+              stripped == 'municipal' ||
+              stripped == 'municipal area council' ||
+              stripped == 'abuja municipal' ||
+              stripped == 'abuja municipal area council') {
+            return 'municipalareacouncil';
+          }
+          return stripped.replaceAll(RegExp(r'[^a-z0-9]'), '');
+        }
+
+        final String cleanTargetLga = normalizeLgaClean(lgaLower);
 
         final String cleanTargetWard = ward
             .toLowerCase()
@@ -564,7 +656,7 @@ class GeoService {
             .replaceAll('ward', '')
             .replaceAll(RegExp(r'^0+'), '');
 
-        final targetAliases = (lgaAliasesMap[lgaLower] ?? []).map((a) => a.replaceAll(RegExp(r'[^a-z0-9]'), '')).toSet();
+        final targetAliases = (lgaAliasesMap[lgaLower] ?? []).map((a) => normalizeLgaClean(a)).toSet();
 
         for (var s in stateVariations) {
           final stateSnap = await _firestore
@@ -574,19 +666,14 @@ class GeoService {
           if (stateSnap.docs.isNotEmpty) {
             final matchedDocs = stateSnap.docs.where((doc) {
               final data = doc.data();
-              final docLgaRaw = (data['lga'] ?? data['lgaName'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'\s*\([^)]*\)'), '');
-              String docLgaClean = docLgaRaw.replaceAll(RegExp(r'[^a-z0-9]'), '');
-              if (docLgaClean.contains('ogori')) docLgaClean = 'ogorimagongo';
-              if (docLgaClean.contains('munya') || docLgaClean.contains('moya')) docLgaClean = 'munya';
+              final docLgaClean = normalizeLgaClean((data['lga'] ?? data['lgaName'] ?? '').toString());
 
               final docWard = (data['ward'] ?? data['wardName'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').replaceAll(RegExp(r'^ward0+'), 'ward').replaceAll('ward', '').replaceAll(RegExp(r'^0+'), '');
               
               bool lgaMatch = docLgaClean.isEmpty || 
                               docLgaClean == cleanTargetLga || 
                               targetAliases.contains(docLgaClean) ||
-                              (docLgaClean.contains('ogori') && cleanTargetLga.contains('ogori')) ||
-                              (docLgaClean.length >= 3 && cleanTargetLga.length >= 3 && 
-                               (docLgaClean.contains(cleanTargetLga) || cleanTargetLga.contains(docLgaClean)));
+                              (docLgaClean.contains('ogori') && cleanTargetLga.contains('ogori'));
 
               final wardMatch = docWard == cleanTargetWard || 
                                 (docWard.length >= 3 && cleanTargetWard.length >= 3 && 
