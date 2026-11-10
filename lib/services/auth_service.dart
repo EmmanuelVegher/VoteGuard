@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -192,32 +193,70 @@ class AuthService {
     if (_looksLikeEmail(trimmedIdentifier)) {
       candidates.add(trimmedIdentifier.toLowerCase());
     } else {
-      // 1. Resolve phone identifier to associated email(s) via backend API
+      // 1. Direct Firestore phone lookup: Find the exact user matching this phone number in Firestore
       try {
-        final resolved = await NeonApiService.resolveIdentifier(trimmedIdentifier);
-        for (final email in resolved) {
-          if (!candidates.contains(email)) {
-            candidates.add(email);
+        final digits = trimmedIdentifier.replaceAll(RegExp(r'\D'), '');
+        final phoneVariants = <String>{trimmedIdentifier, digits};
+        if (digits.startsWith('234') && digits.length == 13) {
+          phoneVariants.add('0${digits.substring(3)}');
+          phoneVariants.add('+234${digits.substring(3)}');
+          phoneVariants.add(digits.substring(3));
+        } else if (digits.startsWith('0') && digits.length == 11) {
+          phoneVariants.add('234${digits.substring(1)}');
+          phoneVariants.add('+234${digits.substring(1)}');
+          phoneVariants.add(digits.substring(1));
+        } else if (digits.length == 10) {
+          phoneVariants.add('0$digits');
+          phoneVariants.add('234$digits');
+          phoneVariants.add('+234$digits');
+        }
+
+        final firestoreSnap = await FirebaseFirestore.instance
+            .collection('users')
+            .where('phone', whereIn: phoneVariants.take(10).toList())
+            .limit(1)
+            .get();
+
+        if (firestoreSnap.docs.isNotEmpty) {
+          final docData = firestoreSnap.docs.first.data();
+          final fsEmail = (docData['email'] as String?)?.trim().toLowerCase();
+          if (fsEmail != null && fsEmail.isNotEmpty && !candidates.contains(fsEmail)) {
+            candidates.add(fsEmail);
+            debugPrint('Direct Firestore phone lookup matched $trimmedIdentifier -> $fsEmail (UID: ${firestoreSnap.docs.first.id})');
           }
         }
       } catch (e) {
-        debugPrint('NeonApiService resolveIdentifier notice: $e');
+        debugPrint('Direct Firestore phone lookup notice: $e');
       }
 
-      // 2. Also attempt Cloud Function resolution as secondary fallback
+      // 2. If not resolved via direct Firestore, resolve phone identifier via backend API
+      if (candidates.isEmpty) {
+        try {
+          final resolved = await NeonApiService.resolveIdentifier(trimmedIdentifier);
+          for (final email in resolved) {
+            if (!candidates.contains(email)) {
+              candidates.add(email);
+            }
+          }
+        } catch (e) {
+          debugPrint('NeonApiService resolveIdentifier notice: $e');
+        }
+      }
+
+      // 3. Also attempt Cloud Function resolution as tertiary fallback
       try {
         final result = await resolveLoginIdentifier(trimmedIdentifier);
         final resolvedEmail = result['email'] as String?;
         if (resolvedEmail != null &&
             resolvedEmail.isNotEmpty &&
             !candidates.contains(resolvedEmail.toLowerCase())) {
-          candidates.insert(0, resolvedEmail.toLowerCase());
+          candidates.add(resolvedEmail.toLowerCase());
         }
       } catch (e) {
         debugPrint('Cloud Function resolveLoginIdentifier notice: $e');
       }
 
-      // 3. Fallback: synthetic @voteguard.com formats
+      // 4. Fallback: synthetic @voteguard.com formats
       final digits = trimmedIdentifier.replaceAll(RegExp(r'\D'), '');
       if (digits.isNotEmpty) {
         final synthetic = '$digits@voteguard.com';

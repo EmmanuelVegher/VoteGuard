@@ -234,7 +234,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildScaffold(Map<String, dynamic> userProfile) {
-    final isEnrolled = userProfile["isFaceEnrolled"] == true;
+    final profileUrl = (userProfile["profilePictureUrl"] ?? userProfile["profileImageUrl"]) as String?;
+    final hasPicture = profileUrl != null && profileUrl.trim().isNotEmpty;
+    final isEnrolled = userProfile["isFaceEnrolled"] == true || hasPicture;
 
     return Scaffold(
       backgroundColor: Colors.white,

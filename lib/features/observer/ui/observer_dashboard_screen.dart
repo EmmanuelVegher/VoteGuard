@@ -1812,6 +1812,64 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           ],
         ),
         actions: [
+          Builder(
+            builder: (btnContext) => StreamBuilder<List<dynamic>>(
+              stream: _unsyncedSubject.stream,
+              builder: (context, snapshot) {
+                final unsynced = snapshot.data ?? [];
+                final count = unsynced.length;
+                final hasPending = count > 0;
+                return InkWell(
+                  onTap: () => Scaffold.of(btnContext).openEndDrawer(),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: hasPending
+                          ? const Color(0xFFFEF3C7)
+                          : const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: hasPending
+                            ? const Color(0xFFF59E0B)
+                            : const Color(0xFFE2E8F0),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isOffline
+                              ? LucideIcons.wifiOff
+                              : (hasPending
+                                  ? LucideIcons.cloudLightning
+                                  : LucideIcons.cloud),
+                          color: hasPending
+                              ? const Color(0xFFD97706)
+                              : const Color(0xFF0D9488),
+                          size: 14,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          hasPending ? 'Sync ($count)' : 'Sync',
+                          style: GoogleFonts.outfit(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: hasPending
+                                ? const Color(0xFFB45309)
+                                : const Color(0xFF0F172A),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(width: 4),
           IconButton(
             icon: const Icon(LucideIcons.logOut,
                 color: Color(0xFFEF4444), size: 20),
@@ -2441,6 +2499,8 @@ class _DashboardTab extends StatelessWidget {
               const Color(0xFFEF4444), () => tabController.animateTo(2)),
           _buildActionItem('RESULT ENTRY', LucideIcons.trendingUp,
               const Color(0xFF0F172A), () => tabController.animateTo(3)),
+          _buildActionItem('SYNC MANAGER', LucideIcons.cloudLightning,
+              const Color(0xFFD97706), () => Scaffold.of(context).openEndDrawer()),
         ],
       ),
     );

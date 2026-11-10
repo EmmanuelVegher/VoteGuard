@@ -181,6 +181,8 @@ class BiometricDeduplicationService {
       for (final doc in embeddingsSnap.docs) {
         if (doc.id == user.uid) continue;
         final data = doc.data();
+        final role = (data['role'] ?? '').toString().toUpperCase();
+        if (role != 'OBSERVER' && role.isNotEmpty) continue;
         final rawEmb = data['embedding'];
         if (rawEmb is List) {
           final emb = rawEmb.map((e) => (e as num).toDouble()).toList();
@@ -207,6 +209,8 @@ class BiometricDeduplicationService {
         for (final doc in enrolledUsersSnap.docs) {
           if (doc.id == user.uid) continue;
           final d = doc.data();
+          final role = (d['role'] ?? '').toString().toUpperCase();
+          if (role != 'OBSERVER' && role.isNotEmpty) continue;
           final photoUrl = (d['profilePictureUrl'] ?? d['profileImageUrl']) as String?;
           if (photoUrl != null && photoUrl.trim().isNotEmpty) {
             try {
@@ -306,6 +310,18 @@ class BiometricDeduplicationService {
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
+        // Save candidate embedding to voter_embeddings collection
+        await _firestore.collection('voter_embeddings').doc(user.uid).set({
+          'userId': user.uid,
+          'name': currentName,
+          'email': currentEmail,
+          'role': currentRole,
+          'phone': currentPhone,
+          'profilePictureUrl': downloadUrl,
+          'embedding': candidateEmbedding,
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
         // B. Flag original account document with conflict record
         await _firestore.collection('users').doc(matchedUid).set({
           'hasBiometricConflict': true,
@@ -318,10 +334,10 @@ class BiometricDeduplicationService {
 
         // C. Send alert notification to Current User
         await _firestore.collection('push_notifications').add({
-          'title': '🚨 Biometric Duplicate Detected',
-          'body': 'Your face matches existing account: $matchedName ($matchedEmail). Under election observer guidelines, one person cannot hold multiple accounts.',
+          'title': '⚠️ Potential Duplicate Account Noted',
+          'body': 'Your facial biometrics have a similarity match with registered account: $matchedName ($matchedEmail). Your observer reporting privileges remain active.',
           'targetUserId': user.uid,
-          'type': 'BIOMETRIC_DUPLICATE',
+          'type': 'BIOMETRIC_DUPLICATE_NOTICE',
           'conflictEmail': matchedEmail,
           'conflictName': matchedName,
           'similarity': double.parse(highestSimilarity.toStringAsFixed(3)),
@@ -331,8 +347,8 @@ class BiometricDeduplicationService {
 
         // D. Send alert notification to Original User
         await _firestore.collection('push_notifications').add({
-          'title': '⚠️ Security Alert: Duplicate Face Match',
-          'body': 'A registration attempt matching your facial biometrics was detected and blocked ($currentEmail).',
+          'title': 'ℹ️ Biometric Notice: Potential Similarity',
+          'body': 'An observer registration with facial similarity to your profile was enrolled ($currentEmail). Recorded for administrative review.',
           'targetUserId': matchedUid,
           'type': 'BIOMETRIC_CONFLICT_ALERT',
           'conflictEmail': currentEmail,
@@ -567,10 +583,10 @@ class BiometricDeduplicationService {
 
     // C. Send alert notification to Current User
     await _firestore.collection('push_notifications').add({
-      'title': '🚨 Biometric Duplicate Detected',
-      'body': 'Your face matches existing account: $matchedName ($matchedEmail). Under election observer guidelines, one person cannot hold multiple accounts.',
+      'title': '⚠️ Potential Duplicate Account Noted',
+      'body': 'Your facial biometrics have a similarity match with registered account: $matchedName ($matchedEmail). Your observer reporting privileges remain active.',
       'targetUserId': currentUserId,
-      'type': 'BIOMETRIC_DUPLICATE',
+      'type': 'BIOMETRIC_DUPLICATE_NOTICE',
       'conflictEmail': matchedEmail,
       'conflictName': matchedName,
       'similarity': double.parse(similarity.toStringAsFixed(3)),
@@ -580,8 +596,8 @@ class BiometricDeduplicationService {
 
     // D. Send alert notification to Original User
     await _firestore.collection('push_notifications').add({
-      'title': '⚠️ Security Alert: Duplicate Face Match',
-      'body': 'A registration attempt matching your facial biometrics was detected and blocked ($currentEmail).',
+      'title': 'ℹ️ Biometric Notice: Potential Similarity',
+      'body': 'An observer profile with facial similarity to your biometric record was logged ($currentEmail). Recorded for administrative review.',
       'targetUserId': matchedUid,
       'type': 'BIOMETRIC_CONFLICT_ALERT',
       'conflictEmail': currentEmail,

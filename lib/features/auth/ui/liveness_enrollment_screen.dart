@@ -576,7 +576,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       if (!mounted) return;
 
       if (auditResult.isDuplicate) {
-        // Show immediate alert explaining the biometric match and conflicting account details
+        // Show advisory alert explaining the biometric match and potential duplicate notice
         await showDialog(
           context: context,
           barrierDismissible: false,
@@ -585,11 +585,11 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: Row(
               children: const [
-                Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 26),
+                Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 26),
                 SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    "Duplicate Face Match",
+                    "Potential Duplicate Account",
                     style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
                   ),
                 ),
@@ -600,7 +600,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  "Our biometric system detected that this face matches an already registered and accredited observer account.",
+                  "Our biometric system detected that this facial portrait has a potential similarity match with an existing registered observer account. Your reporting access remains enabled.",
                   style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
                 ),
                 const SizedBox(height: 16),
@@ -610,14 +610,14 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                   decoration: BoxDecoration(
                     color: const Color(0xFF1E293B),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.4)),
+                    border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        "CONFLICTING ACCOUNT DETAILS",
-                        style: TextStyle(color: Color(0xFFEF4444), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
+                        "POTENTIAL MATCH DETAILS",
+                        style: TextStyle(color: Color(0xFFF59E0B), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
                       ),
                       const SizedBox(height: 8),
                       _buildConflictRow("Name:", auditResult.matchedName ?? "Observer"),
@@ -634,7 +634,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  "Under election observation accreditation standards, each individual is limited to one verified account.",
+                  "This record has been logged for administrative audit. As an accredited observer, you may proceed to your polling unit dashboard.",
                   style: TextStyle(color: Color(0xFF64748B), fontSize: 11, fontStyle: FontStyle.italic),
                 ),
               ],
@@ -642,11 +642,11 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             actions: [
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFEF4444),
+                  backgroundColor: const Color(0xFF0D9488),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text("UNDERSTOOD", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                child: const Text("CONTINUE TO DASHBOARD", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ],
           ),

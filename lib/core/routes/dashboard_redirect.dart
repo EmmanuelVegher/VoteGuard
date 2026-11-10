@@ -7,7 +7,6 @@ import 'package:voteguard/features/auth/ui/login_screen.dart';
 import 'package:voteguard/features/auth/ui/liveness_enrollment_screen.dart';
 import 'package:voteguard/features/observer/ui/election_gallery_screen.dart';
 import 'package:voteguard/features/admin/ui/situation_room_screen.dart';
-import 'package:voteguard/services/biometric_deduplication_service.dart';
 
 class DashboardRedirect extends StatelessWidget {
   const DashboardRedirect({super.key});
@@ -82,6 +81,7 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
   static const _storage = FlutterSecureStorage();
   late Future<GateStatus> _gateCheck;
   Map<String, dynamic>? _conflictData;
+  bool _proceedAnyway = false;
 
   @override
   void initState() {
@@ -99,11 +99,21 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
       final data = doc.data();
       final profileUrl = (data?['profilePictureUrl'] ?? data?['profileImageUrl']) as String?;
       final hasPicture = profileUrl != null && profileUrl.trim().isNotEmpty;
-      final isEnrolled = data?['isFaceEnrolled'] == true && hasPicture;
+      final isFaceEnrolled = data?['isFaceEnrolled'] == true;
+      final isEnrolled = isFaceEnrolled || hasPicture;
 
       if (!isEnrolled) {
         await _storage.delete(key: 'isFaceEnrolled_${widget.userId}');
         return GateStatus.notEnrolled;
+      }
+
+      // Self-healing: ensure isFaceEnrolled is true in Firestore if user already has a profile picture
+      if (hasPicture && !isFaceEnrolled) {
+        FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.userId)
+            .set({'isFaceEnrolled': true}, SetOptions(merge: true))
+            .catchError((_) {});
       }
 
       // 1. Check if already marked as FLAGGED_DUPLICATE or has conflict
@@ -114,20 +124,15 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
         return GateStatus.flaggedDuplicate;
       }
 
-      // 2. Perform on-the-fly deduplication audit against existing embeddings
-      final auditResult = await BiometricDeduplicationService().auditExistingUser(widget.userId);
-      if (auditResult != null && auditResult.isDuplicate) {
-        final refreshed = await FirebaseFirestore.instance.collection('users').doc(widget.userId).get();
-        _conflictData = refreshed.data();
-        return GateStatus.flaggedDuplicate;
-      }
-
       await _storage.write(key: 'isFaceEnrolled_${widget.userId}', value: 'true');
       return GateStatus.verified;
     } catch (e) {
       debugPrint("Biometric check error: $e");
       final cached = await _storage.read(key: 'isFaceEnrolled_${widget.userId}');
-      return cached == 'true' ? GateStatus.verified : GateStatus.notEnrolled;
+      final cachedUrl = await _storage.read(key: 'profilePictureUrl_${widget.userId}');
+      return (cached == 'true' || (cachedUrl != null && cachedUrl.isNotEmpty))
+          ? GateStatus.verified
+          : GateStatus.notEnrolled;
     }
   }
 
@@ -138,7 +143,7 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: const Text(
-          "Biometric Security Alert",
+          "Biometric Advisory",
           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
         ),
         centerTitle: true,
@@ -152,19 +157,19 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
               Container(
                 padding: const EdgeInsets.all(22),
                 decoration: BoxDecoration(
-                  color: Colors.redAccent.withValues(alpha: 0.12),
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
                   shape: BoxShape.circle,
-                  border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4), width: 2),
+                  border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4), width: 2),
                 ),
                 child: const Icon(
-                  Icons.gpp_bad_rounded,
-                  color: Colors.redAccent,
+                  Icons.warning_amber_rounded,
+                  color: Color(0xFFF59E0B),
                   size: 58,
                 ),
               ),
               const SizedBox(height: 20),
               const Text(
-                "Biometric Duplicate Detected",
+                "Potential Duplicate Account",
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 20,
@@ -173,7 +178,7 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
               ),
               const SizedBox(height: 10),
               const Text(
-                "Our biometric integrity system detected that this facial portrait matches an already enrolled election observer account.",
+                "Our biometric integrity system detected that this facial portrait has a similarity match with an existing registered election observer account.",
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.45),
               ),
@@ -198,19 +203,19 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF1E293B),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.4)),
+                      border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: const [
-                            Icon(Icons.person_pin_rounded, color: Color(0xFFEF4444), size: 18),
+                            Icon(Icons.person_pin_rounded, color: Color(0xFFF59E0B), size: 18),
                             SizedBox(width: 8),
                             Text(
-                              "MATCHED OBSERVER ACCOUNT",
+                              "POTENTIAL MATCH DETAILS",
                               style: TextStyle(
-                                color: Color(0xFFEF4444),
+                                color: Color(0xFFF59E0B),
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
                                 letterSpacing: 0.8,
@@ -240,26 +245,51 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
               ],
 
               const Text(
-                "Under election observation accreditation standards, each field observer is restricted to a single verified account to protect checklist credibility and Form EC8A chain of custody.",
+                "As an accredited field observer, your access to polling unit checklists, incident reporting, and Form EC8A submission remains fully active. This match has been logged for administrative audit.",
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Color(0xFF64748B), fontSize: 12, height: 1.4, fontStyle: FontStyle.italic),
               ),
               const SizedBox(height: 24),
 
-              // Re-verify Selfie button
+              // Primary Button: Proceed to Dashboard
               SizedBox(
                 width: double.infinity,
-                height: 50,
+                height: 52,
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0D9488),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 3,
                   ),
-                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 20),
+                  label: const Text(
+                    "PROCEED TO DASHBOARD",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5),
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _proceedAnyway = true;
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Re-verify Selfie button (optional)
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF94A3B8),
+                    side: BorderSide(color: const Color(0xFF334155)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
                   label: const Text(
                     "Re-capture Live Face Photo",
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                   ),
                   onPressed: () async {
                     final updated = await Navigator.push<bool>(
@@ -285,7 +315,7 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
                 },
                 child: const Text(
                   "Log out of this account",
-                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                  style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
                 ),
               ),
             ],
@@ -331,6 +361,10 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
         }
 
         final status = snapshot.data ?? GateStatus.notEnrolled;
+
+        if (_proceedAnyway) {
+          return widget.targetScreen;
+        }
 
         switch (status) {
           case GateStatus.flaggedDuplicate:
