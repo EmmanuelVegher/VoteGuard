@@ -623,15 +623,50 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
+  /// Helper to check if two election date windows are on the same day or overlap
+  bool _windowsOverlapOrSameDay(
+      DateTime? aStart, DateTime? aEnd, DateTime? bStart, DateTime? bEnd) {
+    if (aStart == null || bStart == null) return false;
+    final effAEnd = aEnd ?? aStart;
+    final effBEnd = bEnd ?? bStart;
+    if (_isSameDay(aStart, bStart) ||
+        _isSameDay(aStart, effBEnd) ||
+        _isSameDay(effAEnd, bStart)) {
+      return true;
+    }
+    return !bStart.isAfter(effAEnd) && !effBEnd.isBefore(aStart);
+  }
+
+  String _normalizeLocationText(String? val) {
+    return (val ?? '')
+        .toLowerCase()
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[._-]'), ' ');
+  }
+
+  String _normalizeLocationLoose(String? val) {
+    return _normalizeLocationText(val).replaceAll(RegExp(r'[^a-z0-9]'), '');
+  }
+
+  bool _isStateEquivalent(String a, String b) {
+    final ca = _normalizeLocationText(a);
+    final cb = _normalizeLocationText(b);
+    if (ca == cb) return true;
+    const fctNames = {'fct', 'abuja', 'federal capital territory'};
+    return fctNames.contains(ca) && fctNames.contains(cb);
+  }
+
   /// Parse date from various formats
   DateTime? _parseDate(dynamic value) {
     if (value == null) return null;
     if (value is Timestamp) return value.toDate();
+    if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
     if (value is String) return DateTime.tryParse(value);
     return null;
   }
 
-  /// Find related elections happening on the same day at the same polling unit
+  /// Find related elections happening on the same day or within the same start/end date window
   Future<List<Map<String, dynamic>>> _findRelatedElections() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
@@ -648,9 +683,9 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       final userProfile = profile.data() ?? {};
       debugPrint('FindRelatedElections: User Profile data: $userProfile');
 
-      final state = userProfile['assignedState']?.toString() ?? '';
-      final lga = userProfile['assignedLga']?.toString() ?? '';
-      final ward = userProfile['assignedWard']?.toString() ?? '';
+      final state = (userProfile['assignedState'] ?? userProfile['state'] ?? '').toString().trim();
+      final lga = (userProfile['assignedLga'] ?? userProfile['lga'] ?? '').toString().trim();
+      final ward = (userProfile['assignedWard'] ?? userProfile['ward'] ?? '').toString().trim();
       debugPrint('FindRelatedElections: Observer location: state=$state, lga=$lga, ward=$ward');
 
       // Get all elections
@@ -659,57 +694,48 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       final relatedElections = <Map<String, dynamic>>[];
       debugPrint('FindRelatedElections: Total elections found in db: ${electionsSnap.docs.length}');
 
+      final currentStart = _election!.startDate;
+      final currentEnd = _election!.endDate ?? currentStart;
+
       for (final doc in electionsSnap.docs) {
         if (doc.id == widget.electionId) continue; // Skip current election
 
         final data = doc.data();
         final electionName = data['name'] ?? 'Unknown';
-        final startDate = _parseDate(data['startDate']);
+        final startDate = _parseDate(data['startDate'] ?? data['date'] ?? data['electionDate']);
+        final endDate = _parseDate(data['endDate'] ?? data['end']) ?? startDate;
         final electionType = data['type'] ?? 'GENERAL';
 
-        final dateMatches = _isSameDay(startDate, _election!.startDate);
-        debugPrint('FindRelatedElections: Checking election ${doc.id} ($electionName): startDate=$startDate, dateMatches=$dateMatches');
+        final dateMatches = _windowsOverlapOrSameDay(currentStart, currentEnd, startDate, endDate);
+        debugPrint('FindRelatedElections: Checking election ${doc.id} ($electionName): startDate=$startDate, endDate=$endDate, dateMatches=$dateMatches');
         if (!dateMatches) continue;
 
-        // Safely parse state
-        List<String> electionStates = [];
-        final rawState = data['state'] ?? data['states'] ?? data['targetStates'] ?? data['region'] ?? data['regions'] ?? data['targetJurisdictions'];
-        if (rawState is List) {
-          electionStates = rawState.map((e) => e.toString()).toList();
-        } else if (rawState is String) {
-          electionStates = [rawState];
+        List<String> parseNonEmptyList(dynamic raw) {
+          if (raw is List) {
+            return raw.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+          } else if (raw is String && raw.trim().isNotEmpty) {
+            return [raw.trim()];
+          }
+          return [];
         }
 
-        // Safely parse lga
-        List<String> electionLgas = [];
-        final rawLga = data['lga'] ?? data['lgas'] ?? data['targetLgas'];
-        if (rawLga is List) {
-          electionLgas = rawLga.map((e) => e.toString()).toList();
-        } else if (rawLga is String) {
-          electionLgas = [rawLga];
-        }
-
-        // Safely parse ward
-        List<String> electionWards = [];
-        final rawWard = data['ward'] ?? data['wards'] ?? data['targetWards'];
-        if (rawWard is List) {
-          electionWards = rawWard.map((e) => e.toString()).toList();
-        } else if (rawWard is String) {
-          electionWards = [rawWard];
-        }
+        final electionStates = parseNonEmptyList(
+            data['state'] ?? data['states'] ?? data['targetStates'] ?? data['region'] ?? data['regions'] ?? data['targetJurisdictions']);
+        final electionLgas = parseNonEmptyList(data['lga'] ?? data['lgas'] ?? data['targetLgas']);
+        final electionWards = parseNonEmptyList(data['ward'] ?? data['wards'] ?? data['targetWards']);
 
         debugPrint('FindRelatedElections: parsedStates=$electionStates, parsedLgas=$electionLgas, parsedWards=$electionWards');
 
         bool locationMatch = false;
         if (state.isNotEmpty && lga.isNotEmpty) {
-          final hasStateMatch = electionStates.any((s) => s.trim().toLowerCase() == state.trim().toLowerCase()) ||
-              electionStates.isEmpty;
+          final hasStateMatch = electionStates.isEmpty ||
+              electionStates.any((s) => _isStateEquivalent(s, state));
           
-          final hasLgaMatch = electionLgas.any((l) => l.trim().toLowerCase() == lga.trim().toLowerCase()) ||
-              electionLgas.isEmpty;
+          final hasLgaMatch = electionLgas.isEmpty ||
+              electionLgas.any((l) => _normalizeLocationLoose(l) == _normalizeLocationLoose(lga));
           
-          final hasWardMatch = electionWards.any((w) => w.trim().toLowerCase() == ward.trim().toLowerCase()) ||
-              electionWards.isEmpty;
+          final hasWardMatch = electionWards.isEmpty ||
+              electionWards.any((w) => _normalizeLocationLoose(w) == _normalizeLocationLoose(ward));
 
           debugPrint('FindRelatedElections: locationMatch hasStateMatch=$hasStateMatch, hasLgaMatch=$hasLgaMatch, hasWardMatch=$hasWardMatch');
           if (hasStateMatch && hasLgaMatch && hasWardMatch) {
@@ -750,103 +776,199 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       // Double check if there's already a checklist for the current election with answers
       final currentDocId = '${user.uid}_${widget.electionId}';
-      final currentDoc = await FirebaseFirestore.instance
+      final currentAltId = '${widget.electionId}_${user.uid}';
+      DocumentSnapshot? currentDoc = await FirebaseFirestore.instance
           .collection('observer_checklists')
           .doc(currentDocId)
           .get();
+      if (!currentDoc.exists) {
+        currentDoc = await FirebaseFirestore.instance
+            .collection('observer_checklists')
+            .doc(currentAltId)
+            .get();
+      }
+      if (!currentDoc.exists) {
+        final q = await FirebaseFirestore.instance
+            .collection('observer_checklists')
+            .where('observerId', isEqualTo: user.uid)
+            .where('electionId', isEqualTo: widget.electionId)
+            .limit(1)
+            .get();
+        if (q.docs.isNotEmpty) {
+          currentDoc = q.docs.first;
+        }
+      }
       if (currentDoc.exists) {
-        final currentData = currentDoc.data();
+        final currentData = currentDoc.data() as Map<String, dynamic>?;
         if (currentData != null && currentData['answers'] != null && (currentData['answers'] as Map).isNotEmpty) {
           return;
         }
       }
 
-      final relatedElections = await _findRelatedElections();
-      if (relatedElections.isEmpty) return;
+      Future<Map<String, dynamic>?> fetchChecklistForElection(String electionId) async {
+        for (final candidateId in ['${user.uid}_$electionId', '${electionId}_${user.uid}']) {
+          final snap = await FirebaseFirestore.instance
+              .collection('observer_checklists')
+              .doc(candidateId)
+              .get();
+          if (snap.exists) {
+            final d = snap.data();
+            if (d != null && d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
+              return d;
+            }
+          }
+        }
+        final qSnap = await FirebaseFirestore.instance
+            .collection('observer_checklists')
+            .where('observerId', isEqualTo: user.uid)
+            .where('electionId', isEqualTo: electionId)
+            .get();
+        for (final doc in qSnap.docs) {
+          final d = doc.data();
+          if (d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
+            return d;
+          }
+        }
+        return null;
+      }
 
-      // Check each related election for a checklist
+      Map<String, dynamic>? sourceChecklistData;
+      String? sourceElectionName;
+
+      final relatedElections = await _findRelatedElections();
       for (final election in relatedElections) {
         final electionId = election['id'] as String;
-        final docId = '${user.uid}_$electionId';
+        final data = await fetchChecklistForElection(electionId);
+        if (data != null) {
+          sourceChecklistData = data;
+          sourceElectionName = (election['name'] ?? 'Previous Election').toString();
+          break;
+        }
+      }
 
-        final doc = await FirebaseFirestore.instance
-            .collection('observer_checklists')
-            .doc(docId)
+      // Direct fallback: scan this observer's checklists for concurrent/overlapping elections
+      if (sourceChecklistData == null && _election != null) {
+        final profileSnap = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
             .get();
-        if (doc.exists) {
-          final data = doc.data() as Map<String, dynamic>;
+        final profileData = profileSnap.data() ?? {};
+        final userPuLoose = _normalizeLocationLoose(
+            (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '').toString());
 
-          // Import if it has answers, whether submitted or draft
-          if (data['answers'] != null && (data['answers'] as Map).isNotEmpty) {
-            // Mark as prompted
-            _promptedChecklistElections.add(widget.electionId);
+        final allObsChecklists = await FirebaseFirestore.instance
+            .collection('observer_checklists')
+            .where('observerId', isEqualTo: user.uid)
+            .get();
 
-            // Show import dialog
-            if (mounted) {
-              final shouldImport = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  backgroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                  title: Text(
-                    'Import Checklist?',
-                    style: GoogleFonts.outfit(
-                        fontWeight: FontWeight.bold, color: Colors.black),
-                  ),
-                  content: Text(
-                    'An existing checklist was found for "${election['name']}" on the same day. Would you like to auto-populate this checklist with its answers as a draft for review?',
-                    style: GoogleFonts.outfit(color: Colors.black),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: Text('NO',
-                          style: GoogleFonts.outfit(
-                              fontWeight: FontWeight.bold, color: Colors.grey)),
-                    ),
-                    ElevatedButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF065F46)),
-                      child: Text('IMPORT',
-                          style: GoogleFonts.outfit(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white)),
-                    ),
-                  ],
-                ),
-              );
+        if (allObsChecklists.docs.isNotEmpty) {
+          final electionsSnap = await FirebaseFirestore.instance.collection('elections').get();
+          final electionsById = <String, Map<String, dynamic>>{
+            for (final d in electionsSnap.docs) d.id: d.data(),
+          };
+          final currentStart = _election!.startDate;
+          final currentEnd = _election!.endDate ?? currentStart;
 
-              if (shouldImport == true) {
-                // Import the answers to the current election as a draft
-                // so the user can review before finalizing
-                await FirebaseFirestore.instance
-                    .collection('observer_checklists')
-                    .doc(currentDocId)
-                    .set({
-                  'electionId': widget.electionId,
-                  'observerId': user.uid,
-                  'state': data['state'],
-                  'lga': data['lga'],
-                  'ward': data['ward'],
-                  'pollingUnit': data['pollingUnit'],
-                  'answers': data['answers'],
-                  'status': 'draft', // Import as draft for review
-                  'timestamp': FieldValue.serverTimestamp(),
-                }, SetOptions(merge: true));
+          // Prefer submitted checklists first, then drafts with answers
+          final sortedDocs = [...allObsChecklists.docs]..sort((a, b) {
+              final sa = (a.data()['status'] ?? '') == 'submitted' ? 0 : 1;
+              final sb = (b.data()['status'] ?? '') == 'submitted' ? 0 : 1;
+              return sa.compareTo(sb);
+            });
 
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text(
-                            'Checklist imported! Please review before finalizing.'),
-                        backgroundColor: Color(0xFF10B981)),
-                  );
-                }
-                return; // Stop after first successful import
-              }
+          for (final doc in sortedDocs) {
+            final d = doc.data();
+            final srcElectionId = (d['electionId'] ?? '').toString();
+            if (srcElectionId.isEmpty || srcElectionId == widget.electionId) continue;
+            if (d['answers'] == null || (d['answers'] as Map).isEmpty) continue;
+
+            if (userPuLoose.isNotEmpty) {
+              final docPuLoose = _normalizeLocationLoose((d['pollingUnit'] ?? '').toString());
+              if (docPuLoose.isNotEmpty && docPuLoose != userPuLoose) continue;
             }
+
+            final srcElection = electionsById[srcElectionId];
+            if (srcElection == null) continue;
+            final srcStart = _parseDate(srcElection['startDate'] ?? srcElection['date'] ?? srcElection['electionDate']);
+            final srcEnd = _parseDate(srcElection['endDate'] ?? srcElection['end']) ?? srcStart;
+            if (_windowsOverlapOrSameDay(currentStart, currentEnd, srcStart, srcEnd)) {
+              sourceChecklistData = d;
+              sourceElectionName = (srcElection['name'] ?? 'Previous Election').toString();
+              break;
+            }
+          }
+        }
+      }
+
+      if (sourceChecklistData != null && sourceElectionName != null) {
+        final data = sourceChecklistData;
+        // Mark as prompted
+        _promptedChecklistElections.add(widget.electionId);
+
+        // Show import dialog
+        if (mounted) {
+          final shouldImport = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Text(
+                'Import Checklist?',
+                style: GoogleFonts.outfit(
+                    fontWeight: FontWeight.bold, color: Colors.black),
+              ),
+              content: Text(
+                'An existing checklist was found for "$sourceElectionName" for this polling unit within the same election period. Would you like to auto-populate this checklist with its answers as a draft for review?',
+                style: GoogleFonts.outfit(color: Colors.black),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('NO',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.grey)),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF065F46)),
+                  child: Text('IMPORT',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white)),
+                ),
+              ],
+            ),
+          );
+
+          if (shouldImport == true) {
+            // Import the answers to the current election as a draft
+            // so the user can review before finalizing
+            await FirebaseFirestore.instance
+                .collection('observer_checklists')
+                .doc(currentDocId)
+                .set({
+              'electionId': widget.electionId,
+              'observerId': user.uid,
+              'state': data['state'],
+              'lga': data['lga'],
+              'ward': data['ward'],
+              'pollingUnit': data['pollingUnit'],
+              'answers': data['answers'],
+              'status': 'draft', // Import as draft for review
+              'timestamp': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                    content: Text(
+                        'Checklist imported! Please review before finalizing.'),
+                    backgroundColor: Color(0xFF10B981)),
+              );
+            }
+            return;
           }
         }
       }
