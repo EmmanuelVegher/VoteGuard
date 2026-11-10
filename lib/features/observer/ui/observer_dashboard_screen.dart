@@ -434,7 +434,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           try {
             final stats =
                 jsonDecode(item.ballotStatsJson) as Map<String, dynamic>;
-            return stats['electionId'] == widget.electionId;
+            return stats['electionId'] == widget.electionId &&
+                stats['isAutoDraft'] != true;
           } catch (e) {
             return false;
           }
@@ -1139,7 +1140,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
     }
   }
 
-  /// Check for and import incident from related elections
+  /// Check for and import incident from related / concurrent elections (online + offline Drift fallback)
   Future<void> _importIncidentFromRelatedElection() async {
     // Skip if already prompted for this election in this session
     if (_promptedIncidentElections.contains(widget.electionId)) return;
@@ -1148,137 +1149,359 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Check if there is already a draft incident or a reported incident for the current election
-      final currentDraftDoc = await FirebaseFirestore.instance
-          .collection('incident_reports')
-          .doc('${widget.electionId}_${user.uid}_draft')
-          .get();
-      if (currentDraftDoc.exists) {
-        final data = currentDraftDoc.data();
-        if (data != null && data['incidentType'] != null && data['description'] != null && data['description'].toString().isNotEmpty) {
-          return; // Already has draft details, do not overwrite/prompt
+      final dbInstance = context.read<db.AppDatabase>();
+      List<db.Incident> localIncidents = [];
+      try {
+        localIncidents = await dbInstance.getAllIncidents();
+      } catch (e) {
+        debugPrint('ImportIncident: Local Drift DB read warning: $e');
+      }
+
+      bool hasLocalIncidentDetails(db.Incident item) {
+        return item.category.trim().isNotEmpty && item.description.trim().isNotEmpty;
+      }
+
+      List<dynamic> decodeMediaField(String raw) {
+        if (raw.trim().isEmpty) return [];
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is List) return decoded;
+        } catch (_) {}
+        return [];
+      }
+
+      Map<String, dynamic> localIncidentToSourceMap(db.Incident item, String srcElectionId) {
+        final rawMedia = decodeMediaField(item.mediaPathsJson);
+        final List<Map<String, dynamic>> mediaItems = [];
+        final List<String> mediaUrls = [];
+        for (final entry in rawMedia) {
+          if (entry is Map) {
+            final urlOrPath = (entry['url'] ?? entry['path'] ?? '').toString();
+            if (urlOrPath.isNotEmpty) {
+              mediaItems.add({
+                'type': (entry['type'] ?? 'photo').toString(),
+                if (entry['url'] != null) 'url': entry['url'].toString(),
+                if (entry['path'] != null) 'path': entry['path'].toString(),
+              });
+              mediaUrls.add(urlOrPath);
+            }
+          } else if (entry is String && entry.isNotEmpty) {
+            mediaItems.add({'type': 'photo', 'path': entry});
+            mediaUrls.add(entry);
+          }
+        }
+        return {
+          'electionId': srcElectionId,
+          'observerId': user.uid,
+          'incidentType': item.category,
+          'description': item.description,
+          'mediaItems': mediaItems,
+          'mediaUrls': mediaUrls,
+          'latitude': item.latitude,
+          'longitude': item.longitude,
+          'status': item.severity.startsWith('reported_') ? 'reported' : 'draft',
+        };
+      }
+
+      String? extractIncidentElectionId(db.Incident item) {
+        if (item.severity.startsWith('reported_')) {
+          return item.severity.substring('reported_'.length);
+        }
+        if (item.severity.startsWith('draft_')) {
+          return item.severity.substring('draft_'.length);
+        }
+        return null;
+      }
+
+      // 1. Abort if current election already has local reported or draft incident
+      for (final local in localIncidents) {
+        if ((local.severity == 'reported_${widget.electionId}' ||
+                local.severity == 'draft_${widget.electionId}') &&
+            hasLocalIncidentDetails(local)) {
+          return;
         }
       }
 
-      final currentReportedSnap = await FirebaseFirestore.instance
-          .collection('incident_reports')
-          .where('electionId', isEqualTo: widget.electionId)
-          .where('observerId', isEqualTo: user.uid)
-          .where('status', isEqualTo: 'reported')
-          .limit(1)
-          .get();
-      if (currentReportedSnap.docs.isNotEmpty) {
-        return; // Already submitted a report, do not prompt
-      }
-
-      final relatedElections = await _findRelatedElections();
-      if (relatedElections.isEmpty) return;
-
-      // Check each related election for reported incidents or draft incidents
-      for (final election in relatedElections) {
-        final electionId = election['id'] as String;
-
-        // Try to fetch a reported incident first
-        final querySnap = await FirebaseFirestore.instance
+      // 2. Abort if current election already has Firestore draft or reported incident
+      try {
+        final currentDraftDoc = await FirebaseFirestore.instance
             .collection('incident_reports')
-            .where('electionId', isEqualTo: electionId)
-            .where('observerId', isEqualTo: user.uid)
-            .where('status', isEqualTo: 'reported')
-            .limit(1)
-            .get();
-
-        Map<String, dynamic>? sourceData;
-        if (querySnap.docs.isNotEmpty) {
-          sourceData = querySnap.docs.first.data();
-        } else {
-          // If no reported incident, try to fetch a draft incident
-          final draftDoc = await FirebaseFirestore.instance
-              .collection('incident_reports')
-              .doc('${electionId}_${user.uid}_draft')
-              .get();
-          if (draftDoc.exists) {
-            sourceData = draftDoc.data();
+            .doc('${widget.electionId}_${user.uid}_draft')
+            .get()
+            .timeout(const Duration(seconds: 4));
+        if (currentDraftDoc.exists) {
+          final data = currentDraftDoc.data();
+          if (data != null &&
+              data['incidentType'] != null &&
+              data['description'] != null &&
+              data['description'].toString().isNotEmpty) {
+            return;
           }
         }
 
-        // If we found incident data from a related election
-        if (sourceData != null && sourceData['incidentType'] != null) {
-          // Mark as prompted
-          _promptedIncidentElections.add(widget.electionId);
+        final currentReportedSnap = await FirebaseFirestore.instance
+            .collection('incident_reports')
+            .where('electionId', isEqualTo: widget.electionId)
+            .where('observerId', isEqualTo: user.uid)
+            .where('status', isEqualTo: 'reported')
+            .limit(1)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        if (currentReportedSnap.docs.isNotEmpty) {
+          return;
+        }
+      } catch (e) {
+        debugPrint('ImportIncident: Current incident remote check skipped offline: $e');
+      }
 
-          // Show import dialog
-          if (mounted) {
-            final shouldImport = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                backgroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
-                title: Text(
-                  'Import Incident Report?',
-                  style: GoogleFonts.outfit(
-                      fontWeight: FontWeight.bold, color: Colors.black),
-                ),
-                content: Text(
-                  'An existing incident report was found for "${election['name']}" on the same day. Would you like to auto-populate this incident report as a draft for review?',
-                  style: GoogleFonts.outfit(color: Colors.black),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, false),
-                    child: Text('NO',
-                        style: GoogleFonts.outfit(
-                            fontWeight: FontWeight.bold, color: Colors.grey)),
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF065F46)),
-                    child: Text('IMPORT',
-                        style: GoogleFonts.outfit(
-                            fontWeight: FontWeight.bold, color: Colors.white)),
-                  ),
-                ],
+      Future<Map<String, dynamic>?> fetchIncidentForElection(String electionId) async {
+        // Check local Drift DB first (reported prioritized over draft)
+        for (final local in localIncidents) {
+          if (local.severity == 'reported_$electionId' && hasLocalIncidentDetails(local)) {
+            return localIncidentToSourceMap(local, electionId);
+          }
+        }
+        for (final local in localIncidents) {
+          if (local.severity == 'draft_$electionId' && hasLocalIncidentDetails(local)) {
+            return localIncidentToSourceMap(local, electionId);
+          }
+        }
+
+        // Check Firestore with offline-safe timeout
+        try {
+          final querySnap = await FirebaseFirestore.instance
+              .collection('incident_reports')
+              .where('electionId', isEqualTo: electionId)
+              .where('observerId', isEqualTo: user.uid)
+              .where('status', isEqualTo: 'reported')
+              .limit(1)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          if (querySnap.docs.isNotEmpty) {
+            return querySnap.docs.first.data();
+          }
+
+          final draftDoc = await FirebaseFirestore.instance
+              .collection('incident_reports')
+              .doc('${electionId}_${user.uid}_draft')
+              .get()
+              .timeout(const Duration(seconds: 4));
+          if (draftDoc.exists) {
+            final d = draftDoc.data();
+            if (d != null && d['incidentType'] != null) {
+              return d;
+            }
+          }
+        } catch (e) {
+          debugPrint('ImportIncident: Remote incident fetch skipped offline for $electionId: $e');
+        }
+        return null;
+      }
+
+      Map<String, dynamic>? sourceData;
+      String? sourceElectionName;
+
+      final relatedElections = await _findRelatedElections();
+      for (final election in relatedElections) {
+        final electionId = election['id'] as String;
+        final data = await fetchIncidentForElection(electionId);
+        if (data != null && data['incidentType'] != null) {
+          sourceData = data;
+          sourceElectionName = (election['name'] ?? 'Previous Election').toString();
+          break;
+        }
+      }
+
+      // Direct concurrent/overlapping election fallback (scans Drift + Firestore)
+      if (sourceData == null && _election != null) {
+        String userPuLoose = '';
+        try {
+          final profileSnap = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          final profileData = profileSnap.data() ?? {};
+          userPuLoose = _normalizeLocationLoose(
+              (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '').toString());
+        } catch (_) {}
+
+        final Map<String, Map<String, dynamic>> electionsById = {};
+        try {
+          final electionsSnap = await FirebaseFirestore.instance
+              .collection('elections')
+              .get()
+              .timeout(const Duration(seconds: 4));
+          for (final d in electionsSnap.docs) {
+            electionsById[d.id] = d.data();
+          }
+        } catch (_) {}
+        try {
+          final localElections = await dbInstance.getAllLocalElections();
+          for (final local in localElections) {
+            electionsById.putIfAbsent(local.id, () => {
+                  'name': local.name,
+                  'startDate': local.startDate?.millisecondsSinceEpoch,
+                  'endDate': local.endDate?.millisecondsSinceEpoch,
+                });
+          }
+        } catch (_) {}
+
+        final List<Map<String, dynamic>> candidates = [];
+        for (final local in localIncidents) {
+          final srcId = extractIncidentElectionId(local);
+          if (srcId != null && hasLocalIncidentDetails(local)) {
+            candidates.add(localIncidentToSourceMap(local, srcId));
+          }
+        }
+        try {
+          final obsIncidents = await FirebaseFirestore.instance
+              .collection('incident_reports')
+              .where('observerId', isEqualTo: user.uid)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          for (final doc in obsIncidents.docs) {
+            candidates.add(doc.data());
+          }
+        } catch (_) {}
+
+        candidates.sort((a, b) {
+          final sa = (a['status'] ?? '') == 'reported' ? 0 : 1;
+          final sb = (b['status'] ?? '') == 'reported' ? 0 : 1;
+          return sa.compareTo(sb);
+        });
+
+        final currentStart = _election!.startDate;
+        final currentEnd = _election!.endDate ?? currentStart;
+
+        for (final d in candidates) {
+          final srcElectionId = (d['electionId'] ?? '').toString();
+          if (srcElectionId.isEmpty || srcElectionId == widget.electionId) continue;
+          if (d['incidentType'] == null || d['incidentType'].toString().isEmpty) continue;
+
+          if (userPuLoose.isNotEmpty) {
+            final docPuLoose = _normalizeLocationLoose((d['pollingUnit'] ?? '').toString());
+            if (docPuLoose.isNotEmpty && docPuLoose != userPuLoose) continue;
+          }
+
+          final srcElection = electionsById[srcElectionId];
+          if (srcElection == null) continue;
+          final srcStart = _parseDate(srcElection['startDate'] ?? srcElection['date'] ?? srcElection['electionDate']);
+          final srcEnd = _parseDate(srcElection['endDate'] ?? srcElection['end']) ?? srcStart;
+          if (_windowsOverlapOrSameDay(currentStart, currentEnd, srcStart, srcEnd)) {
+            sourceData = d;
+            sourceElectionName = (srcElection['name'] ?? 'Previous Election').toString();
+            break;
+          }
+        }
+      }
+
+      if (sourceData != null && sourceElectionName != null) {
+        final importedData = sourceData;
+        // Mark as prompted
+        _promptedIncidentElections.add(widget.electionId);
+
+        // Show import dialog
+        if (mounted) {
+          final shouldImport = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Text(
+                'Import Incident Report?',
+                style: GoogleFonts.outfit(
+                    fontWeight: FontWeight.bold, color: Colors.black),
               ),
-            );
+              content: Text(
+                'An existing incident report was found for "$sourceElectionName" for this polling unit within the same election period. Would you like to auto-populate this incident report as a draft for review?',
+                style: GoogleFonts.outfit(color: Colors.black),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('NO',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.grey)),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF065F46)),
+                  child: Text('IMPORT',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.white)),
+                ),
+              ],
+            ),
+          );
 
-            if (shouldImport == true) {
-              final payload = {
-                'electionId': widget.electionId,
-                'observerId': user.uid,
-                'submittedBy': user.uid,
-                'incidentType': sourceData['incidentType'],
-                'description': sourceData['description'],
-                'mediaItems': sourceData['mediaItems'] ?? [],
-                'mediaUrls': sourceData['mediaUrls'] ?? [],
-                'state': sourceData['state'],
-                'lga': sourceData['lga'],
-                'ward': sourceData['ward'],
-                'pollingUnit': sourceData['pollingUnit'],
-                'latitude': sourceData['latitude'],
-                'longitude': sourceData['longitude'],
-                'deviceId': 'OBS-${DateTime.now().millisecondsSinceEpoch}',
-                'status': 'draft', // Save as draft for the current election
-                'isSynced': true,
-                'createdAt': FieldValue.serverTimestamp(),
-                'updatedAt': FieldValue.serverTimestamp(),
-              };
+          if (shouldImport == true) {
+            final payload = {
+              'electionId': widget.electionId,
+              'observerId': user.uid,
+              'submittedBy': user.uid,
+              'incidentType': importedData['incidentType'],
+              'description': importedData['description'],
+              'mediaItems': importedData['mediaItems'] ?? [],
+              'mediaUrls': importedData['mediaUrls'] ?? [],
+              'state': importedData['state'],
+              'lga': importedData['lga'],
+              'ward': importedData['ward'],
+              'pollingUnit': importedData['pollingUnit'],
+              'latitude': importedData['latitude'],
+              'longitude': importedData['longitude'],
+              'deviceId': 'OBS-${DateTime.now().millisecondsSinceEpoch}',
+              'status': 'draft',
+              'isSynced': true,
+              'createdAt': FieldValue.serverTimestamp(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            };
 
-              // Import the incident as draft to the current election
+            bool syncedRemote = false;
+            try {
               await FirebaseFirestore.instance
                   .collection('incident_reports')
                   .doc('${widget.electionId}_${user.uid}_draft')
-                  .set(payload, SetOptions(merge: true));
-
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('Incident report imported as draft! Please review.'),
-                      backgroundColor: Color(0xFF10B981)),
-                );
-              }
-              return; // Stop after first successful import
+                  .set(payload, SetOptions(merge: true))
+                  .timeout(const Duration(seconds: 4));
+              syncedRemote = true;
+            } catch (e) {
+              debugPrint('ImportIncident: Remote save failed offline, saving to Drift DB: $e');
             }
+
+            // Always persist imported draft locally in Drift DB so offline _initData sees it immediately
+            try {
+              final existingRows = await dbInstance.getAllIncidents();
+              for (final row in existingRows) {
+                if (row.severity == 'draft_${widget.electionId}') {
+                  await dbInstance.deleteIncident(row.id);
+                }
+              }
+              await dbInstance.insertIncident(
+                db.IncidentsCompanion(
+                  category: drift.Value((importedData['incidentType'] ?? '').toString()),
+                  severity: drift.Value('draft_${widget.electionId}'),
+                  description: drift.Value((importedData['description'] ?? '').toString()),
+                  latitude: drift.Value((importedData['latitude'] as num?)?.toDouble()),
+                  longitude: drift.Value((importedData['longitude'] as num?)?.toDouble()),
+                  mediaPathsJson: drift.Value(jsonEncode(importedData['mediaItems'] ?? [])),
+                  isSynced: drift.Value(syncedRemote),
+                ),
+              );
+            } catch (e) {
+              debugPrint('ImportIncident: Local Drift save warning: $e');
+            }
+
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                    content: Text('Incident report imported as draft! Please review.'),
+                    backgroundColor: Color(0xFF10B981)),
+              );
+            }
+            return;
           }
         }
       }
@@ -4778,7 +5001,7 @@ class _IncidentsTab extends StatefulWidget {
   State<_IncidentsTab> createState() => _IncidentsTabState();
 }
 
-class _IncidentsTabState extends State<_IncidentsTab> {
+class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserver {
   final _descriptionController = TextEditingController();
   String? _selectedType;
   final List<Map<String, dynamic>> _media = [];
@@ -4793,6 +5016,10 @@ class _IncidentsTabState extends State<_IncidentsTab> {
   bool _isOffline = false;
   Timer? _networkCheckTimer;
   bool _hasPromptedForRelatedImport = false;
+  late final db.AppDatabase _localDb;
+  Timer? _autoDraftTimer;
+  bool _isHydrated = false;
+  bool _hasLocalDraftEdits = false;
 
   final List<Map<String, String>> _types = [
     {'id': 'ballot_snatching', 'label': 'Ballot Snatching'},
@@ -4808,6 +5035,9 @@ class _IncidentsTabState extends State<_IncidentsTab> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _localDb = context.read<db.AppDatabase>();
+    _descriptionController.addListener(_onDescriptionChanged);
     _initData();
     _startNetworkTimer();
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -4816,11 +5046,216 @@ class _IncidentsTabState extends State<_IncidentsTab> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      if (_isHydrated && _hasLocalDraftEdits) {
+        _flushIncidentAutoDraft();
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    _autoDraftTimer?.cancel();
+    if (_isHydrated && _hasLocalDraftEdits) {
+      _flushIncidentAutoDraft();
+    }
+    _descriptionController.removeListener(_onDescriptionChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _networkCheckTimer?.cancel();
     _clockTimer?.cancel();
     _descriptionController.dispose();
     super.dispose();
+  }
+
+  void _onDescriptionChanged() {
+    if (_isHydrated) {
+      _scheduleIncidentAutoDraft();
+    }
+  }
+
+  void _scheduleIncidentAutoDraft({bool immediate = false}) {
+    if (!_isHydrated) return;
+    _hasLocalDraftEdits = true;
+    _autoDraftTimer?.cancel();
+    if (immediate) {
+      _flushIncidentAutoDraft();
+    } else {
+      _autoDraftTimer =
+          Timer(const Duration(milliseconds: 250), _flushIncidentAutoDraft);
+    }
+  }
+
+  String _encodeMediaForDraft() {
+    return jsonEncode(_media.map((item) {
+      return {
+        'type': item['type'],
+        if (item['file'] != null) 'path': (item['file'] as File).path,
+        if (item['url'] != null) 'url': item['url'],
+      };
+    }).toList());
+  }
+
+  List<Map<String, dynamic>> _decodeMediaItems(List<dynamic> rawItems) {
+    final List<Map<String, dynamic>> restored = [];
+    for (final item in rawItems) {
+      if (item is Map) {
+        final type = (item['type'] ?? 'photo').toString();
+        final path = item['path']?.toString();
+        final url = item['url']?.toString();
+        if (path != null && path.isNotEmpty && File(path).existsSync()) {
+          restored.add({'type': type, 'file': File(path)});
+        } else if (url != null && url.isNotEmpty) {
+          restored.add({'type': type, 'url': url});
+        }
+      } else if (item is String && item.isNotEmpty) {
+        if (File(item).existsSync()) {
+          restored.add({'type': 'photo', 'file': File(item)});
+        } else if (item.startsWith('http')) {
+          restored.add({'type': 'photo', 'url': item});
+        }
+      }
+    }
+    return restored;
+  }
+
+  Future<void> _clearLocalIncidentDraft() async {
+    try {
+      final rows = await _localDb.getAllIncidents();
+      for (final row in rows) {
+        if (row.severity == 'draft_${widget.electionId}') {
+          await _localDb.deleteIncident(row.id);
+        }
+      }
+    } catch (e) {
+      debugPrint('IncidentAutoDraft: Clear failed: $e');
+    }
+  }
+
+  Future<void> _flushIncidentAutoDraft(
+      {bool isSynced = false, bool force = false}) async {
+    if (!force && !_hasLocalDraftEdits) return;
+    try {
+      if (_selectedType == null &&
+          _descriptionController.text.isEmpty &&
+          _media.isEmpty) {
+        await _clearLocalIncidentDraft();
+        return;
+      }
+
+      await _clearLocalIncidentDraft();
+      await _localDb.insertIncident(
+        db.IncidentsCompanion(
+          category: drift.Value(_selectedType ?? ''),
+          severity: drift.Value('draft_${widget.electionId}'),
+          description: drift.Value(_descriptionController.text),
+          latitude: drift.Value(_currentPosition?.latitude),
+          longitude: drift.Value(_currentPosition?.longitude),
+          mediaPathsJson: drift.Value(_encodeMediaForDraft()),
+          isSynced: drift.Value(isSynced),
+        ),
+      );
+    } catch (e) {
+      debugPrint('IncidentAutoDraft: Save failed: $e');
+    }
+  }
+
+  void _applyIncidentDraftFields({
+    String? type,
+    String? desc,
+    List<Map<String, dynamic>> mediaItems = const [],
+  }) {
+    final normalizedType = (type != null && type.trim().isNotEmpty) ? type : null;
+    if (mounted) {
+      setState(() {
+        _selectedType = normalizedType;
+        _descriptionController.text = desc ?? '';
+        _media.clear();
+        _media.addAll(mediaItems);
+      });
+    } else {
+      _selectedType = normalizedType;
+      _descriptionController.text = desc ?? '';
+      _media.clear();
+      _media.addAll(mediaItems);
+    }
+  }
+
+  Future<void> _loadIncidentDraftFromSources() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    db.Incident? localDraft;
+    try {
+      final rows = await _localDb.getAllIncidents();
+      final idx = rows.indexWhere((r) => r.severity == 'draft_${widget.electionId}');
+      if (idx != -1) {
+        localDraft = rows[idx];
+      }
+    } catch (e) {
+      debugPrint('IncidentDraft: Local DB read warning: $e');
+    }
+
+    Map<String, dynamic>? remoteDraft;
+    DateTime? remoteUpdatedAt;
+    try {
+      final draftDoc = await FirebaseFirestore.instance
+          .collection('incident_reports')
+          .doc('${widget.electionId}_${user.uid}_draft')
+          .get()
+          .timeout(const Duration(seconds: 4));
+      if (draftDoc.exists && draftDoc.data() != null) {
+        remoteDraft = draftDoc.data()!;
+        final rawTs = remoteDraft['updatedAt'] ?? remoteDraft['createdAt'];
+        if (rawTs is Timestamp) {
+          remoteUpdatedAt = rawTs.toDate();
+        } else if (rawTs is String) {
+          remoteUpdatedAt = DateTime.tryParse(rawTs);
+        }
+      }
+    } catch (e) {
+      debugPrint('IncidentDraft: Remote read skipped offline: $e');
+    }
+
+    final preferLocal = localDraft != null &&
+        (!localDraft.isSynced || remoteDraft == null) &&
+        (remoteDraft == null ||
+            remoteUpdatedAt == null ||
+            localDraft.createdAt.isAfter(remoteUpdatedAt));
+
+    if (preferLocal) {
+      List<dynamic> decodedMedia = [];
+      try {
+        final raw = jsonDecode(localDraft.mediaPathsJson);
+        if (raw is List) decodedMedia = raw;
+      } catch (_) {}
+      _applyIncidentDraftFields(
+        type: localDraft.category,
+        desc: localDraft.description,
+        mediaItems: _decodeMediaItems(decodedMedia),
+      );
+      _hasLocalDraftEdits = !localDraft.isSynced;
+    } else if (remoteDraft != null) {
+      final mediaItems = remoteDraft['mediaItems'] as List<dynamic>? ?? [];
+      _applyIncidentDraftFields(
+        type: remoteDraft['incidentType']?.toString(),
+        desc: remoteDraft['description']?.toString(),
+        mediaItems: _decodeMediaItems(mediaItems),
+      );
+    } else if (localDraft != null) {
+      List<dynamic> decodedMedia = [];
+      try {
+        final raw = jsonDecode(localDraft.mediaPathsJson);
+        if (raw is List) decodedMedia = raw;
+      } catch (_) {}
+      _applyIncidentDraftFields(
+        type: localDraft.category,
+        desc: localDraft.description,
+        mediaItems: _decodeMediaItems(decodedMedia),
+      );
+    }
   }
 
   void _startNetworkTimer() {
@@ -4853,6 +5288,9 @@ class _IncidentsTabState extends State<_IncidentsTab> {
   }
 
   Future<void> _initData() async {
+    _isHydrated = false;
+    _hasLocalDraftEdits = false;
+
     // Force clear state to prevent cross-election data bleed
     if (mounted) {
       setState(() {
@@ -4866,84 +5304,40 @@ class _IncidentsTabState extends State<_IncidentsTab> {
 
     try {
       final user = FirebaseAuth.instance.currentUser;
-      final profile = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user?.uid)
-          .get();
-      _userProfile = profile.data();
-      _currentPosition = await _determinePosition();
+      try {
+        final profile = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user?.uid)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        _userProfile = profile.data();
+      } catch (e) {
+        debugPrint('Incident: User profile fetch skipped offline: $e');
+      }
+      try {
+        _currentPosition = await _determinePosition();
+      } catch (e) {
+        debugPrint('Incident: Location skipped: $e');
+      }
       if (mounted) setState(() {});
 
-      // Load current draft if exists
-      if (user != null) {
-        final draftDoc = await FirebaseFirestore.instance
-            .collection('incident_reports')
-            .doc('${widget.electionId}_${user.uid}_draft')
-            .get();
-        if (draftDoc.exists && mounted) {
-          final data = draftDoc.data();
-          if (data != null) {
-            setState(() {
-              _selectedType = data['incidentType'];
-              _descriptionController.text = data['description'] ?? '';
-              final mediaItems = data['mediaItems'] as List<dynamic>? ?? [];
-              _media.clear();
-              for (final item in mediaItems) {
-                if (item is Map) {
-                  _media.add({
-                    'type': item['type'],
-                    'url': item['url'],
-                  });
-                }
-              }
-            });
-          }
-        }
+      // Load draft from Drift / Firestore
+      await _loadIncidentDraftFromSources();
+
+      // After loading, check if we should import from related / concurrent elections
+      if (!_hasPromptedForRelatedImport &&
+          _selectedType == null &&
+          _descriptionController.text.isEmpty &&
+          _media.isEmpty &&
+          widget.onImportFromRelated != null) {
+        _hasPromptedForRelatedImport = true;
+        await widget.onImportFromRelated!();
+        await _loadIncidentDraftFromSources();
       }
     } catch (e) {
       debugPrint('Location/Draft load error: $e');
-    }
-
-    // After loading, check if we should import from related elections
-    if (!_hasPromptedForRelatedImport &&
-        _selectedType == null &&
-        _descriptionController.text.isEmpty &&
-        _media.isEmpty &&
-        widget.onImportFromRelated != null) {
-      _hasPromptedForRelatedImport = true;
-      await widget.onImportFromRelated!();
-
-      // Reload draft after potential import
-      try {
-        final user = FirebaseAuth.instance.currentUser;
-        if (user != null) {
-          final draftDoc = await FirebaseFirestore.instance
-              .collection('incident_reports')
-              .doc('${widget.electionId}_${user.uid}_draft')
-              .get();
-          if (draftDoc.exists && mounted) {
-            final data = draftDoc.data();
-            if (data != null) {
-              setState(() {
-                _selectedType = data['incidentType'];
-                _descriptionController.text = data['description'] ?? '';
-                final mediaItems = data['mediaItems'] as List<dynamic>? ?? [];
-                _media.clear();
-                for (final item in mediaItems) {
-                  if (item is Map) {
-                    _media.add({
-                      'type': item['type'],
-                      'url': item['url'],
-                    });
-                  }
-                }
-              });
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint('Error reloading incident draft: $e');
-      }
+    } finally {
+      _isHydrated = true;
     }
   }
 
@@ -4971,6 +5365,7 @@ class _IncidentsTabState extends State<_IncidentsTab> {
       if (result != null && result.files.single.path != null) {
         setState(() => _media
             .add({'type': type, 'file': File(result.files.single.path!)}));
+        _scheduleIncidentAutoDraft(immediate: true);
       }
       return;
     }
@@ -4990,6 +5385,7 @@ class _IncidentsTabState extends State<_IncidentsTab> {
 
     if (file != null) {
       setState(() => _media.add({'type': type, 'file': File(file!.path)}));
+      _scheduleIncidentAutoDraft(immediate: true);
     }
   }
 
@@ -5233,10 +5629,16 @@ class _IncidentsTabState extends State<_IncidentsTab> {
       }
 
       // Clean up draft if it exists
-      await FirebaseFirestore.instance
-          .collection('incident_reports')
-          .doc('${widget.electionId}_${user?.uid}_draft')
-          .delete();
+      _autoDraftTimer?.cancel();
+      _hasLocalDraftEdits = false;
+      await _clearLocalIncidentDraft();
+      try {
+        await FirebaseFirestore.instance
+            .collection('incident_reports')
+            .doc('${widget.electionId}_${user?.uid}_draft')
+            .delete()
+            .timeout(const Duration(seconds: 4));
+      } catch (_) {}
 
       if (mounted) {
         _descriptionController.clear();
@@ -5275,6 +5677,10 @@ class _IncidentsTabState extends State<_IncidentsTab> {
           await context
               .read<db.AppDatabase>()
               .insertIncident(incidentCompanion);
+
+          _autoDraftTimer?.cancel();
+          _hasLocalDraftEdits = false;
+          await _clearLocalIncidentDraft();
 
           if (mounted) {
             _descriptionController.clear();
@@ -5318,20 +5724,38 @@ class _IncidentsTabState extends State<_IncidentsTab> {
         'observerId': user?.uid,
         'incidentType': _selectedType,
         'description': _descriptionController.text,
+        'mediaItems': _media
+            .where((m) => m['url'] != null)
+            .map((m) => {'type': m['type'], 'url': m['url']})
+            .toList(),
         'status': 'draft',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
-      await FirebaseFirestore.instance
-          .collection('incident_reports')
-          .doc('${widget.electionId}_${user?.uid}_draft')
-          .set(payload, SetOptions(merge: true));
+      bool syncedRemote = false;
+      try {
+        await FirebaseFirestore.instance
+            .collection('incident_reports')
+            .doc('${widget.electionId}_${user?.uid}_draft')
+            .set(payload, SetOptions(merge: true))
+            .timeout(const Duration(seconds: 4));
+        syncedRemote = true;
+      } catch (e) {
+        debugPrint('Incident SaveDraft: Remote save skipped offline: $e');
+      }
+
+      _autoDraftTimer?.cancel();
+      await _flushIncidentAutoDraft(isSynced: syncedRemote, force: true);
+      _hasLocalDraftEdits = false;
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Draft saved successfully'),
-            backgroundColor: Color(0xFF065F46)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(syncedRemote
+                ? 'Draft saved successfully'
+                : 'Offline: Draft saved locally on device'),
+            backgroundColor:
+                syncedRemote ? const Color(0xFF065F46) : Colors.orange));
       }
     } catch (e) {
       debugPrint('Save draft error: $e');
@@ -5457,7 +5881,10 @@ class _IncidentsTabState extends State<_IncidentsTab> {
                             fontWeight: FontWeight.w600,
                             color: Colors.black))))
                 .toList(),
-            onChanged: (v) => setState(() => _selectedType = v),
+            onChanged: (v) {
+              setState(() => _selectedType = v);
+              _scheduleIncidentAutoDraft(immediate: true);
+            },
           ),
           const SizedBox(height: 24),
           Text('POLLING UNIT',
@@ -5591,7 +6018,10 @@ class _IncidentsTabState extends State<_IncidentsTab> {
                       top: -8,
                       right: -8,
                       child: GestureDetector(
-                        onTap: () => setState(() => _media.removeAt(i)),
+                        onTap: () {
+                          setState(() => _media.removeAt(i));
+                          _scheduleIncidentAutoDraft(immediate: true);
+                        },
                         child: Container(
                             padding: const EdgeInsets.all(6),
                             decoration: const BoxDecoration(
@@ -6344,7 +6774,8 @@ class _EC8AResultsTab extends StatefulWidget {
   State<_EC8AResultsTab> createState() => _EC8AResultsTabState();
 }
 
-class _EC8AResultsTabState extends State<_EC8AResultsTab> {
+class _EC8AResultsTabState extends State<_EC8AResultsTab>
+    with WidgetsBindingObserver {
   final Map<String, int> _partyVotes = {};
   final Map<String, int> _stats = {
     'votersInRegister': 0,
@@ -6408,13 +6839,31 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   StreamSubscription<DocumentSnapshot>? _electionSubscription;
   StreamSubscription<DocumentSnapshot>? _resultsSubscription;
   String? _currentWebDocId;
+  late final db.AppDatabase _localDb;
+  Timer? _autoDraftTimer;
+  bool _isHydrated = false;
+  bool _hasLocalDraftEdits = false;
+  String _cachedPuKey = '';
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _localDb = context.read<db.AppDatabase>();
     _loadData();
     _startNetworkTimer();
     _listenForElectionChanges();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      if (_isHydrated && _hasLocalDraftEdits && !_isFinal) {
+        _flushResultsAutoDraft();
+      }
+    }
   }
 
   void _listenForElectionChanges() {
@@ -6432,6 +6881,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
   @override
   void dispose() {
+    _autoDraftTimer?.cancel();
+    if (_isHydrated && _hasLocalDraftEdits && !_isFinal) {
+      _flushResultsAutoDraft();
+    }
+    WidgetsBinding.instance.removeObserver(this);
     _electionSubscription?.cancel();
     _resultsSubscription?.cancel();
     _networkCheckTimer?.cancel();
@@ -6442,6 +6896,79 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  void _scheduleResultsAutoDraft({bool immediate = false}) {
+    if (!_isHydrated || _isFinal) return;
+    _hasLocalDraftEdits = true;
+    _autoDraftTimer?.cancel();
+    if (immediate) {
+      _flushResultsAutoDraft();
+    } else {
+      _autoDraftTimer =
+          Timer(const Duration(milliseconds: 250), _flushResultsAutoDraft);
+    }
+  }
+
+  Future<void> _flushResultsAutoDraft() async {
+    if (!_hasLocalDraftEdits || _isFinal) return;
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final state = _userProfile?['assignedState'] ?? '';
+      final lga = _userProfile?['assignedLga'] ?? '';
+      final ward = _userProfile?['assignedWard'] ?? '';
+      final pu = _userProfile?['assignedPollingUnit'] ?? '';
+      final puKey = _cachedPuKey.isNotEmpty
+          ? _cachedPuKey
+          : _sanitizeId('${state}_${lga}_${ward}_$pu');
+      final pollingUnitId = '${widget.electionId}_$puKey';
+
+      final existingRows = await _localDb.getAllResults();
+      for (final row in existingRows) {
+        if (row.observerId != user.uid) continue;
+        final matchesExact = row.pollingUnitId == pollingUnitId;
+        final matchesElectionOffline = puKey == '___' &&
+            row.pollingUnitId.startsWith('${widget.electionId}_');
+        if (matchesExact || matchesElectionOffline) {
+          bool rowIsFinal = false;
+          try {
+            final statsMap =
+                jsonDecode(row.ballotStatsJson) as Map<String, dynamic>;
+            rowIsFinal = statsMap['isFinal'] == true;
+          } catch (_) {}
+          if (!rowIsFinal) {
+            await _localDb.deleteResult(row.id);
+          }
+        }
+      }
+
+      await _localDb.insertResult(
+        db.ResultsCompanion(
+          observerId: drift.Value(user.uid),
+          pollingUnitId: drift.Value(pollingUnitId),
+          partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+          ballotStatsJson: drift.Value(jsonEncode({
+            ..._stats,
+            'electionId': widget.electionId,
+            'state': state,
+            'lga': lga,
+            'ward': ward,
+            'pollingUnit': pu,
+            'totalValidVotes': _totalValidVotes,
+            'totalUsedBallots': _totalUsedBallots,
+            'isFinal': false,
+            'isAutoDraft': true,
+            'updatedAt': DateTime.now().toIso8601String(),
+          })),
+          imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
+          isSynced: const drift.Value(false),
+        ),
+      );
+    } catch (e) {
+      debugPrint('EC8A AutoDraft: Save failed: $e');
+    }
   }
 
   void _startNetworkTimer() {
@@ -6530,13 +7057,19 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
   }
 
   Future<void> _loadData() async {
+    _isHydrated = false;
     try {
       final user = FirebaseAuth.instance.currentUser;
-      final profileSnap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user?.uid)
-          .get();
-      _userProfile = profileSnap.data();
+      try {
+        final profileSnap = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user?.uid)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        _userProfile = profileSnap.data();
+      } catch (e) {
+        debugPrint('EC8A: User profile fetch skipped offline: $e');
+      }
 
       final state = _userProfile?['assignedState'] ?? '';
       final lga = _userProfile?['assignedLga'] ?? '';
@@ -6548,6 +7081,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       }
 
       final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+      _cachedPuKey = puKey;
       final webDocId = '${widget.electionId}_$puKey';
       final mobileDocId = '${widget.electionId}_${user?.uid}';
       final submissionId = '${widget.electionId}_${puKey}_${user?.uid}';
@@ -6573,14 +7107,14 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         final partiesSnap = await FirebaseFirestore.instance
             .collection('parties')
             .orderBy('abbreviation')
-            .get();
+            .get()
+            .timeout(const Duration(seconds: 4));
         partiesData = partiesSnap.docs
             .map((d) => d.data() as Map<String, dynamic>)
             .toList();
       } catch (e) {
         debugPrint('EC8A: Offline parties fallback');
-        final localParties =
-            await context.read<db.AppDatabase>().getAllLocalParties();
+        final localParties = await _localDb.getAllLocalParties();
         partiesData = localParties
             .map((p) => {
                   'id': p.id,
@@ -6639,7 +7173,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         electionDoc = await FirebaseFirestore.instance
             .collection('elections')
             .doc(widget.electionId)
-            .get();
+            .get()
+            .timeout(const Duration(seconds: 4));
       } catch (e) {
         debugPrint('EC8A: Offline election fallback');
       }
@@ -6710,6 +7245,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
 
       Map<String, dynamic>? observerSubmission;
       Map<String, dynamic>? observerStats;
+      File? restoredLocalEvidenceFile;
 
       bool checkLocalOnly = _isOffline;
       List<dynamic> localSubmissions = [];
@@ -6735,31 +7271,27 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               observerSubmission = Map<String, dynamic>.from(sub);
               observerStats = observerSubmission;
             } else {
-              // Not found in submissions array -> Deleted or wiped on Firestore!
-              // Automatically wipe local copy from Drift DB
-              final dbInstance = context.read<db.AppDatabase>();
-              final localResults = await dbInstance.getAllResults();
+              // Not found in submissions array -> only wipe SYNCED local copy (never wipe unsynced local Auto-Drafts!)
+              final localResults = await _localDb.getAllResults();
               final matchIndex = localResults.indexWhere((r) =>
                   r.pollingUnitId == '${widget.electionId}_$puKey' &&
                   r.observerId == user?.uid);
-              if (matchIndex != -1) {
-                await dbInstance.deleteResult(localResults[matchIndex].id);
+              if (matchIndex != -1 && localResults[matchIndex].isSynced) {
+                await _localDb.deleteResult(localResults[matchIndex].id);
                 debugPrint(
-                    'EC8A: Wiped local result because submission was deleted in Firestore submissions array');
+                    'EC8A: Wiped synced local result because submission was deleted in Firestore submissions array');
               }
             }
           } else {
-            // Entire document deleted on Firestore!
-            // Automatically wipe local copy from Drift DB
-            final dbInstance = context.read<db.AppDatabase>();
-            final localResults = await dbInstance.getAllResults();
+            // Entire document absent on Firestore -> only wipe SYNCED local copy
+            final localResults = await _localDb.getAllResults();
             final matchIndex = localResults.indexWhere((r) =>
                 r.pollingUnitId == '${widget.electionId}_$puKey' &&
                 r.observerId == user?.uid);
-            if (matchIndex != -1) {
-              await dbInstance.deleteResult(localResults[matchIndex].id);
+            if (matchIndex != -1 && localResults[matchIndex].isSynced) {
+              await _localDb.deleteResult(localResults[matchIndex].id);
               debugPrint(
-                  'EC8A: Wiped local result because Firestore document was deleted');
+                  'EC8A: Wiped synced local result because Firestore document was deleted');
             }
           }
         } catch (e) {
@@ -6768,51 +7300,30 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         }
       }
 
-      if (checkLocalOnly || observerSubmission == null) {
-        // Fallback or read from local database
-        try {
-          final localResults =
-              await context.read<db.AppDatabase>().getAllResults();
-          final matchIndex = localResults.indexWhere((r) =>
-              r.pollingUnitId == '${widget.electionId}_$puKey' &&
-              r.observerId == user?.uid);
-          if (matchIndex != -1) {
-            final match = localResults[matchIndex];
-            final statsMap =
-                jsonDecode(match.ballotStatsJson) as Map<String, dynamic>;
-            observerSubmission = {
-              'partyVotes': jsonDecode(match.partyVotesJson),
-              'evidenceUrl': match.imagePath,
-              'status': statsMap['isFinal'] == true ? 'final' : 'draft',
-            };
-            observerStats = statsMap;
-          }
-        } catch (localDbError) {
-          debugPrint('EC8A: Error loading local result: $localDbError');
-        }
-      }
-
-      // If no submission is found in the array, check legacy paths
-      if (observerSubmission == null) {
+      // Check legacy Firestore paths if still no remote submission (only when online)
+      if (!checkLocalOnly && observerSubmission == null) {
         try {
           var legacyDoc = await FirebaseFirestore.instance
               .collection('election_submissions')
               .doc(submissionId)
-              .get();
+              .get()
+              .timeout(const Duration(seconds: 4));
           if (legacyDoc.exists) {
             observerSubmission = legacyDoc.data();
           } else {
             legacyDoc = await FirebaseFirestore.instance
                 .collection('election_results')
                 .doc(mobileDocId)
-                .get();
+                .get()
+                .timeout(const Duration(seconds: 4));
             if (legacyDoc.exists) {
               observerSubmission = legacyDoc.data();
             } else {
               legacyDoc = await FirebaseFirestore.instance
                   .collection('election_results')
                   .doc(webDocId)
-                  .get();
+                  .get()
+                  .timeout(const Duration(seconds: 4));
               if (legacyDoc.exists) {
                 observerSubmission = legacyDoc.data();
               }
@@ -6823,26 +7334,29 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
         }
       }
 
-      if (observerStats == null) {
+      if (!checkLocalOnly && observerStats == null) {
         try {
           var legacyStats = await FirebaseFirestore.instance
               .collection('election_statistics_submissions')
               .doc(submissionId)
-              .get();
+              .get()
+              .timeout(const Duration(seconds: 4));
           if (legacyStats.exists) {
             observerStats = legacyStats.data();
           } else {
             legacyStats = await FirebaseFirestore.instance
                 .collection('election_statistics')
                 .doc(mobileDocId)
-                .get();
+                .get()
+                .timeout(const Duration(seconds: 4));
             if (legacyStats.exists) {
               observerStats = legacyStats.data();
             } else {
               legacyStats = await FirebaseFirestore.instance
                   .collection('election_statistics')
                   .doc('${webDocId}_stats')
-                  .get();
+                  .get()
+                  .timeout(const Duration(seconds: 4));
               if (legacyStats.exists) {
                 observerStats = legacyStats.data();
               }
@@ -6852,6 +7366,63 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           debugPrint('EC8A: Error loading legacy statistics: $e');
         }
       }
+
+      // Check local Drift Auto-Draft / offline draft & restore if offline or newer than non-final server draft
+      try {
+        final localResults = await _localDb.getAllResults();
+        final matchingRows = localResults.where((r) =>
+            r.observerId == user?.uid &&
+            (r.pollingUnitId == '${widget.electionId}_$puKey' ||
+                (puKey == '___' &&
+                    r.pollingUnitId.startsWith('${widget.electionId}_'))));
+        if (matchingRows.isNotEmpty) {
+          final match = matchingRows.last;
+          final statsMap =
+              jsonDecode(match.ballotStatsJson) as Map<String, dynamic>;
+          final remoteIsFinal = observerSubmission?['status'] == 'final';
+          DateTime? remoteUpdatedAt;
+          final rawRemoteTs =
+              observerSubmission?['updatedAt'] ?? observerSubmission?['submittedAt'];
+          if (rawRemoteTs is Timestamp) {
+            remoteUpdatedAt = rawRemoteTs.toDate();
+          } else if (rawRemoteTs is String) {
+            remoteUpdatedAt = DateTime.tryParse(rawRemoteTs);
+          }
+          final localUpdatedAt =
+              DateTime.tryParse(statsMap['updatedAt']?.toString() ?? '') ??
+                  match.createdAt;
+          final preferLocal = !remoteIsFinal &&
+              (observerSubmission == null ||
+                  (!match.isSynced &&
+                      (remoteUpdatedAt == null ||
+                          localUpdatedAt.isAfter(remoteUpdatedAt) ||
+                          statsMap['isFinal'] == true)));
+
+          if (preferLocal) {
+            final savedImage = match.imagePath;
+            String? remoteEvidenceUrl;
+            if (savedImage != null && savedImage.isNotEmpty) {
+              if (!savedImage.startsWith('http') &&
+                  File(savedImage).existsSync()) {
+                restoredLocalEvidenceFile = File(savedImage);
+              } else if (savedImage.startsWith('http')) {
+                remoteEvidenceUrl = savedImage;
+              }
+            }
+            observerSubmission = {
+              'partyVotes': jsonDecode(match.partyVotesJson),
+              'evidenceUrl': remoteEvidenceUrl,
+              'status': statsMap['isFinal'] == true ? 'final' : 'draft',
+            };
+            observerStats = statsMap;
+          }
+        }
+      } catch (localDbError) {
+        debugPrint('EC8A: Error loading local result: $localDbError');
+      }
+
+      final bool skipOverwriteActiveEdits =
+          _hasLocalDraftEdits && observerSubmission?['status'] != 'final';
 
       if (mounted) {
         setState(() {
@@ -6907,31 +7478,38 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             }
           });
 
-          // Hydrate Party Votes Draft Data
-          if (observerSubmission != null) {
-            final votes =
-                observerSubmission!['partyVotes'] as Map<String, dynamic>? ??
-                    {};
-            votes.forEach(
-                (k, v) => _partyVotes[k] = int.tryParse(v.toString()) ?? 0);
-            _isFinal = observerSubmission!['status'] == 'final';
-            _evidenceUrl = observerSubmission!['evidenceUrl'] as String?;
-          }
-
-          // Hydrate EC8A Statistics Draft Data
-          if (observerStats != null) {
-            _stats.keys.forEach((key) {
-              if (observerStats!.containsKey(key)) {
-                _stats[key] = int.tryParse(observerStats![key].toString()) ?? 0;
+          if (!skipOverwriteActiveEdits) {
+            // Hydrate Party Votes Draft Data
+            if (observerSubmission != null) {
+              final votes =
+                  observerSubmission!['partyVotes'] as Map<String, dynamic>? ??
+                      {};
+              votes.forEach(
+                  (k, v) => _partyVotes[k] = int.tryParse(v.toString()) ?? 0);
+              _isFinal = observerSubmission!['status'] == 'final';
+              _evidenceUrl = observerSubmission!['evidenceUrl'] as String?;
+              if (restoredLocalEvidenceFile != null) {
+                _evidenceFile = restoredLocalEvidenceFile;
               }
-            });
+            }
+
+            // Hydrate EC8A Statistics Draft Data
+            if (observerStats != null) {
+              _stats.keys.forEach((key) {
+                if (observerStats!.containsKey(key)) {
+                  _stats[key] = int.tryParse(observerStats![key].toString()) ?? 0;
+                }
+              });
+            }
+            _updateControllers();
           }
           _loading = false;
-          _updateControllers();
         });
       }
     } catch (e) {
       if (mounted) setState(() => _loading = false);
+    } finally {
+      _isHydrated = true;
     }
   }
 
@@ -7068,6 +7646,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
     setState(() {
       _evidenceFile = evidenceFile;
     });
+    _scheduleResultsAutoDraft(immediate: true);
 
     // Ask for pre-scan validation before automatically running the OCR
     _showPreScanValidation();
@@ -7139,6 +7718,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               setState(() {
                 _evidenceFile = null;
               });
+              _scheduleResultsAutoDraft(immediate: true);
             },
             child: Text('RETAKE IMAGE',
                 style: GoogleFonts.outfit(
@@ -7359,6 +7939,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           });
           _updateControllers();
         });
+        _scheduleResultsAutoDraft(immediate: true);
 
         if (usedFallback) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -7835,15 +8416,19 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
       }
 
       // Also ALWAYS store/update in local Drift database!
+      _autoDraftTimer?.cancel();
+      _hasLocalDraftEdits = false;
       try {
-        final dbInstance = context.read<db.AppDatabase>();
+        final dbInstance = _localDb;
         final localResults = await dbInstance.getAllResults();
-        final matchIndex = localResults.indexWhere(
-            (r) => r.pollingUnitId == '${widget.electionId}_$puKey');
-
-        if (matchIndex != -1) {
-          final existing = localResults[matchIndex];
-          await dbInstance.deleteResult(existing.id);
+        for (final existing in localResults) {
+          if (existing.observerId == user?.uid &&
+              (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
+                  (puKey == '___' &&
+                      existing.pollingUnitId
+                          .startsWith('${widget.electionId}_')))) {
+            await dbInstance.deleteResult(existing.id);
+          }
         }
 
         final resultCompanion = db.ResultsCompanion(
@@ -7860,6 +8445,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
             'totalValidVotes': _totalValidVotes,
             'totalUsedBallots': _totalUsedBallots,
             'isFinal': isFinal,
+            'updatedAt': DateTime.now().toIso8601String(),
             if (resolvedSenatorialDistrict != null)
               'senatorialDistrict': resolvedSenatorialDistrict,
             if (resolvedAssemblyConstituency != null)
@@ -7901,22 +8487,28 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
           errorStr.contains('timeout');
 
       if (isNetworkError) {
+        _autoDraftTimer?.cancel();
+        _hasLocalDraftEdits = false;
         try {
           final user = FirebaseAuth.instance.currentUser;
           final state = _userProfile?['assignedState'] ?? '';
           final lga = _userProfile?['assignedLga'] ?? '';
           final ward = _userProfile?['assignedWard'] ?? '';
           final pu = _userProfile?['assignedPollingUnit'] ?? '';
-          final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+          final puKey = _cachedPuKey.isNotEmpty
+              ? _cachedPuKey
+              : _sanitizeId('${state}_${lga}_${ward}_$pu');
 
-          final dbInstance = context.read<db.AppDatabase>();
+          final dbInstance = _localDb;
           final localResults = await dbInstance.getAllResults();
-          final matchIndex = localResults.indexWhere(
-              (r) => r.pollingUnitId == '${widget.electionId}_$puKey');
-
-          if (matchIndex != -1) {
-            final existing = localResults[matchIndex];
-            await dbInstance.deleteResult(existing.id);
+          for (final existing in localResults) {
+            if (existing.observerId == user?.uid &&
+                (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
+                    (puKey == '___' &&
+                        existing.pollingUnitId
+                            .startsWith('${widget.electionId}_')))) {
+              await dbInstance.deleteResult(existing.id);
+            }
           }
 
           final resultCompanion = db.ResultsCompanion(
@@ -7933,8 +8525,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               'totalValidVotes': _totalValidVotes,
               'totalUsedBallots': _totalUsedBallots,
               'isFinal': isFinal,
+              'updatedAt': DateTime.now().toIso8601String(),
             })),
-            imagePath: drift.Value(_evidenceFile?.path),
+            imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
             isSynced: const drift.Value(false),
           );
 
@@ -8602,8 +9195,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                     borderRadius: BorderRadius.circular(100),
                     borderSide: BorderSide.none),
               ),
-              onChanged: (v) =>
-                  setState(() => _partyVotes[abb] = int.tryParse(v) ?? 0),
+              onChanged: (v) {
+                setState(() => _partyVotes[abb] = int.tryParse(v) ?? 0);
+                _scheduleResultsAutoDraft();
+              },
               controller: _partyControllers[abb],
             ),
           ),
@@ -8697,8 +9292,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
                     borderRadius: BorderRadius.circular(8),
                     borderSide: BorderSide.none),
               ),
-              onChanged: (v) =>
-                  setState(() => _partyVotes[abb] = int.tryParse(v) ?? 0),
+              onChanged: (v) {
+                setState(() => _partyVotes[abb] = int.tryParse(v) ?? 0);
+                _scheduleResultsAutoDraft();
+              },
               controller: _partyControllers[abb],
             ),
           ),
@@ -9112,8 +9709,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab> {
               contentPadding:
                   const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
             ),
-            onChanged: (v) =>
-                setState(() => _stats[key] = int.tryParse(v) ?? 0),
+            onChanged: (v) {
+              setState(() => _stats[key] = int.tryParse(v) ?? 0);
+              _scheduleResultsAutoDraft();
+            },
             controller: _statControllers[key],
           ),
         ],
