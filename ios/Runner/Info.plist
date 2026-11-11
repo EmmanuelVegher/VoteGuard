@@ -53,9 +53,22 @@
 	<string>This app needs camera access to capture photos and videos of election incidents and result sheets.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs microphone access to record audio evidence of election incidents.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>This app needs access to your photo library to allow uploading evidence from your gallery.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>This app needs access to Face ID to authenticate you securely.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>https</string>
+		<string>http</string>
+		<string>mailto</string>
+		<string>tel</string>
+	</array>
 </dict>
 </plist>

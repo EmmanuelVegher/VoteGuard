@@ -4,7 +4,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:camera/camera.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -155,8 +158,23 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
     );
   }
 
+  static bool _isReportedIncidentFor(String severity, String electionId) {
+    return severity == 'reported_$electionId' ||
+        severity.startsWith('reported_${electionId}::');
+  }
+
+  static String? _extractClientIncidentId(String severity) {
+    final idx = severity.indexOf('::');
+    if (idx != -1 && idx + 2 < severity.length) {
+      return severity.substring(idx + 2);
+    }
+    return null;
+  }
+
   Future<void> _syncOfflineResult(db.Result result,
       [StateSetter? modalState]) async {
+    if (_syncingMap[result.id] == true) return;
+    _syncingMap[result.id] = true;
     if (modalState != null) {
       modalState(() => _syncingMap[result.id] = true);
     } else {
@@ -446,7 +464,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         }).toList();
 
         final filteredIncidents = i.where((item) {
-          return item.severity == 'reported_${widget.electionId}';
+          return _isReportedIncidentFor(item.severity, widget.electionId);
         }).toList();
 
         return [
@@ -509,7 +527,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       // Fetch and filter incidents (incidents submitted offline are always final reports)
       final incidents = await database.getUnsyncedIncidents();
       final filteredIncidents = incidents.where((item) {
-        return item.severity == 'reported_${widget.electionId}';
+        return _isReportedIncidentFor(item.severity, widget.electionId);
       }).toList();
 
       if (filteredResults.isEmpty &&
@@ -1205,7 +1223,9 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       String? extractIncidentElectionId(db.Incident item) {
         if (item.severity.startsWith('reported_')) {
-          return item.severity.substring('reported_'.length);
+          final rest = item.severity.substring('reported_'.length);
+          final sepIdx = rest.indexOf('::');
+          return sepIdx != -1 ? rest.substring(0, sepIdx) : rest;
         }
         if (item.severity.startsWith('draft_')) {
           return item.severity.substring('draft_'.length);
@@ -1215,7 +1235,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       // 1. Abort if current election already has local reported or draft incident
       for (final local in localIncidents) {
-        if ((local.severity == 'reported_${widget.electionId}' ||
+        if ((_isReportedIncidentFor(local.severity, widget.electionId) ||
                 local.severity == 'draft_${widget.electionId}') &&
             hasLocalIncidentDetails(local)) {
           return;
@@ -1257,7 +1277,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       Future<Map<String, dynamic>?> fetchIncidentForElection(String electionId) async {
         // Check local Drift DB first (reported prioritized over draft)
         for (final local in localIncidents) {
-          if (local.severity == 'reported_$electionId' && hasLocalIncidentDetails(local)) {
+          if (_isReportedIncidentFor(local.severity, electionId) && hasLocalIncidentDetails(local)) {
             return localIncidentToSourceMap(local, electionId);
           }
         }
@@ -1656,6 +1676,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
   Future<void> _syncOfflineChecklist(db.Checklist checklist,
       [StateSetter? modalState]) async {
+    if (_syncingMap[checklist.id] == true) return;
+    _syncingMap[checklist.id] = true;
     if (modalState != null) {
       modalState(() => _syncingMap[checklist.id] = true);
     } else {
@@ -1689,7 +1711,15 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           .set(payload, SetOptions(merge: true))
           .timeout(const Duration(seconds: 10));
 
-      await context.read<db.AppDatabase>().markChecklistSynced(checklist.id);
+      final dbInstance = context.read<db.AppDatabase>();
+      await dbInstance.markChecklistSynced(checklist.id);
+      // Clean up any duplicate local rows for the same checklist
+      final allChecklists = await dbInstance.getAllChecklists();
+      for (final row in allChecklists) {
+        if (row.id != checklist.id && row.title == checklist.title) {
+          await dbInstance.deleteChecklist(row.id);
+        }
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1717,6 +1747,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
   Future<void> _syncOfflineIncident(db.Incident incident,
       [StateSetter? modalState]) async {
+    if (_syncingMap[incident.id] == true) return;
+    _syncingMap[incident.id] = true;
     if (modalState != null) {
       modalState(() => _syncingMap[incident.id] = true);
     } else {
@@ -1728,7 +1760,12 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       final List<Map<String, String>> mediaItems = [];
 
       for (int i = 0; i < mediaPaths.length; i++) {
-        final file = File(mediaPaths[i]);
+        final itemPath = mediaPaths[i];
+        if (itemPath.startsWith('http://') || itemPath.startsWith('https://')) {
+          mediaItems.add({'url': itemPath, 'type': 'photo'});
+          continue;
+        }
+        final file = File(itemPath);
         if (await file.exists()) {
           final ref = FirebaseStorage.instance.ref().child(
               'incidents/${user?.uid}/${DateTime.now().millisecondsSinceEpoch}_$i');
@@ -1744,7 +1781,12 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           .get();
       final userProfile = userSnap.data();
 
+      final docId = _extractClientIncidentId(incident.severity) ??
+          'offline_${incident.id}_${user?.uid ?? 'obs'}_${widget.electionId}';
+
       final payload = {
+        'id': docId,
+        'clientIncidentId': docId,
         'electionId': widget.electionId,
         'observerId': user?.uid,
         'submittedBy': user?.uid,
@@ -1758,7 +1800,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         'pollingUnit': userProfile?['assignedPollingUnit'],
         'latitude': incident.latitude,
         'longitude': incident.longitude,
-        'deviceId': 'OBS-${DateTime.now().millisecondsSinceEpoch}',
+        'deviceId': 'OBS-${incident.id}',
         'status': 'reported',
         'isSynced': true,
         'createdAt': FieldValue.serverTimestamp(),
@@ -1767,10 +1809,18 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       await FirebaseFirestore.instance
           .collection('incident_reports')
-          .add(payload)
+          .doc(docId)
+          .set(payload, SetOptions(merge: true))
           .timeout(const Duration(seconds: 10));
 
       await context.read<db.AppDatabase>().markIncidentSynced(incident.id);
+      try {
+        await FirebaseFirestore.instance
+            .collection('incident_reports')
+            .doc('${widget.electionId}_${user?.uid}_draft')
+            .delete()
+            .timeout(const Duration(seconds: 4));
+      } catch (_) {}
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2279,6 +2329,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(_election!.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.outfit(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
@@ -2376,14 +2428,36 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
               },
             ),
           ),
-          const SizedBox(width: 4),
-          IconButton(
-            icon: const Icon(LucideIcons.logOut,
-                color: Color(0xFFEF4444), size: 20),
-            onPressed: () => _showLogoutConfirmation(),
-            tooltip: 'Logout',
+          const SizedBox(width: 6),
+          Center(
+            child: TextButton.icon(
+              onPressed: () => _showLogoutConfirmation(),
+              icon: const Icon(LucideIcons.logOut,
+                  color: Color(0xFFEF4444), size: 14),
+              label: Text(
+                'Logout',
+                style: GoogleFonts.outfit(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFFEF4444),
+                ),
+              ),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                backgroundColor: const Color(0xFFFEF2F2),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: BorderSide(
+                    color: const Color(0xFFFCA5A5).withValues(alpha: 0.5),
+                    width: 1,
+                  ),
+                ),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
         ],
         bottom: TabBar(
           controller: _tabController,
@@ -3146,6 +3220,8 @@ class _ChecklistTabState extends State<_ChecklistTab>
   StreamSubscription<DocumentSnapshot>? _templateSubscription;
   StreamSubscription<DocumentSnapshot>? _templateDocSubscription;
   bool _hasImportedFromRelated = false;
+  bool _isFlushingAutoDraft = false;
+  bool _pendingAutoDraftFlush = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -3188,36 +3264,53 @@ class _ChecklistTabState extends State<_ChecklistTab>
 
   Future<void> _flushAutoDraftToLocalDb() async {
     if (_isFinalized) return;
+    if (_isFlushingAutoDraft) {
+      _pendingAutoDraftFlush = true;
+      return;
+    }
+    _isFlushingAutoDraft = true;
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
-      final docId = '${user.uid}_${widget.electionId}';
-      final encoded = jsonEncode(_answers);
-      final localChecklists = await _localDb.getAllChecklists();
-      final matchIdx = localChecklists.indexWhere((c) => c.title == docId);
-      if (matchIdx != -1) {
-        final existing = localChecklists[matchIdx];
-        if (existing.isCompleted) return;
-        await _localDb.updateChecklistItem(
-          existing.copyWith(
-            category: encoded,
-            isCompleted: false,
-            isSynced: false,
-            updatedAt: DateTime.now(),
-          ),
-        );
-      } else {
-        await _localDb.insertChecklist(
-          db.ChecklistsCompanion(
-            title: drift.Value(docId),
-            category: drift.Value(encoded),
-            isCompleted: const drift.Value(false),
-            isSynced: const drift.Value(false),
-          ),
-        );
-      }
+      do {
+        _pendingAutoDraftFlush = false;
+        if (_isFinalized) break;
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null) break;
+        final docId = '${user.uid}_${widget.electionId}';
+        final encoded = jsonEncode(_answers);
+        final localChecklists = await _localDb.getAllChecklists();
+        final matchingRows =
+            localChecklists.where((c) => c.title == docId).toList();
+        if (matchingRows.any((c) => c.isCompleted)) break;
+
+        if (matchingRows.isNotEmpty) {
+          final primary = matchingRows.first;
+          // Remove any accidental duplicate local draft rows
+          for (int idx = 1; idx < matchingRows.length; idx++) {
+            await _localDb.deleteChecklist(matchingRows[idx].id);
+          }
+          await _localDb.updateChecklistItem(
+            primary.copyWith(
+              category: encoded,
+              isCompleted: false,
+              isSynced: false,
+              updatedAt: DateTime.now(),
+            ),
+          );
+        } else {
+          await _localDb.insertChecklist(
+            db.ChecklistsCompanion(
+              title: drift.Value(docId),
+              category: drift.Value(encoded),
+              isCompleted: const drift.Value(false),
+              isSynced: const drift.Value(false),
+            ),
+          );
+        }
+      } while (_pendingAutoDraftFlush && !_isFinalized);
     } catch (e) {
       debugPrint('Checklist auto-draft local DB save error: $e');
+    } finally {
+      _isFlushingAutoDraft = false;
     }
   }
 
@@ -3783,6 +3876,51 @@ class _ChecklistTabState extends State<_ChecklistTab>
     return false;
   }
 
+  Future<void> _upsertSingleLocalChecklist(
+    db.AppDatabase dbInstance,
+    String docId, {
+    required bool isCompleted,
+    required bool isSynced,
+  }) async {
+    final localChecklists = await dbInstance.getAllChecklists();
+    final matchingRows = localChecklists.where((c) => c.title == docId).toList();
+    final encodedAnswers = jsonEncode(_answers);
+
+    if (matchingRows.isNotEmpty) {
+      final primary = matchingRows.first;
+      for (int idx = 1; idx < matchingRows.length; idx++) {
+        await dbInstance.deleteChecklist(matchingRows[idx].id);
+      }
+      await dbInstance.updateChecklistItem(
+        primary.copyWith(
+          category: encodedAnswers,
+          isCompleted: isCompleted,
+          isSynced: isSynced,
+          updatedAt: DateTime.now(),
+        ),
+      );
+    } else {
+      await dbInstance.insertChecklist(
+        db.ChecklistsCompanion(
+          title: drift.Value(docId),
+          category: drift.Value(encodedAnswers),
+          isCompleted: drift.Value(isCompleted),
+          isSynced: drift.Value(isSynced),
+        ),
+      );
+    }
+  }
+
+  Future<bool> _hasChecklistInternet() async {
+    try {
+      final result = await InternetAddress.lookup('google.com')
+          .timeout(const Duration(seconds: 2));
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _save(bool isFinal) async {
     if (isFinal) {
       for (var q in _questions) {
@@ -3802,9 +3940,41 @@ class _ChecklistTabState extends State<_ChecklistTab>
       }
     }
 
+    _autoDraftTimer?.cancel();
+    _hasLocalDraftEdits = false;
     setState(() => _submitting = true);
     try {
       final user = FirebaseAuth.instance.currentUser;
+      final pu = _userProfile?['assignedPollingUnit'] ?? 'unknown_pu';
+      // Use the ID format confirmed in Firestore: observerId_electionId
+      final docId = '${user?.uid}_${widget.electionId}';
+      final dbInstance = context.read<db.AppDatabase>();
+
+      final isOnline = await _hasChecklistInternet();
+      if (!isOnline) {
+        await _upsertSingleLocalChecklist(
+          dbInstance,
+          docId,
+          isCompleted: isFinal,
+          isSynced: false,
+        );
+        if (mounted) {
+          setState(() {
+            _isFinalized = isFinal;
+            _hasSavedDraft = !isFinal;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(isFinal
+                  ? 'No internet connection. Finalized checklist saved offline and will sync automatically!'
+                  : 'No internet connection. Checklist saved locally to offline drafts!'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
       final payload = {
         'electionId': widget.electionId,
         'observerId': user?.uid,
@@ -3816,10 +3986,6 @@ class _ChecklistTabState extends State<_ChecklistTab>
         'status': isFinal ? 'submitted' : 'draft',
         'timestamp': FieldValue.serverTimestamp(),
       };
-
-      final pu = _userProfile?['assignedPollingUnit'] ?? 'unknown_pu';
-      // Use the ID format confirmed in Firestore: observerId_electionId
-      final docId = '${user?.uid}_${widget.electionId}';
 
       await FirebaseFirestore.instance
           .collection('observer_checklists')
@@ -3886,31 +4052,14 @@ class _ChecklistTabState extends State<_ChecklistTab>
             'Graceful: Failed to write checklist audit log to Firestore (rules constraint): $auditError');
       }
 
-      // Also ALWAYS store/update in local Drift database!
+      // Also ALWAYS store/update single clean copy in local Drift database!
       try {
-        final dbInstance = context.read<db.AppDatabase>();
-        final localChecklists = await dbInstance.getAllChecklists();
-        final matchIndex = localChecklists.indexWhere((c) => c.title == docId);
-
-        if (matchIndex != -1) {
-          final existing = localChecklists[matchIndex];
-          await dbInstance.updateChecklistItem(
-            existing.copyWith(
-              category: jsonEncode(_answers),
-              isCompleted: isFinal,
-              isSynced: true,
-              updatedAt: DateTime.now(),
-            ),
-          );
-        } else {
-          final checklistCompanion = db.ChecklistsCompanion(
-            title: drift.Value(docId),
-            category: drift.Value(jsonEncode(_answers)),
-            isCompleted: drift.Value(isFinal),
-            isSynced: const drift.Value(true),
-          );
-          await dbInstance.insertChecklist(checklistCompanion);
-        }
+        await _upsertSingleLocalChecklist(
+          dbInstance,
+          docId,
+          isCompleted: isFinal,
+          isSynced: true,
+        );
       } catch (localDbError) {
         debugPrint('Local DB Sync/Save failed: $localDbError');
       }
@@ -3942,31 +4091,13 @@ class _ChecklistTabState extends State<_ChecklistTab>
         try {
           final user = FirebaseAuth.instance.currentUser;
           final docId = '${user?.uid}_${widget.electionId}';
-
           final dbInstance = context.read<db.AppDatabase>();
-          final localChecklists = await dbInstance.getAllChecklists();
-          final matchIndex =
-              localChecklists.indexWhere((c) => c.title == docId);
-
-          if (matchIndex != -1) {
-            final existing = localChecklists[matchIndex];
-            await dbInstance.updateChecklistItem(
-              existing.copyWith(
-                category: jsonEncode(_answers),
-                isCompleted: isFinal,
-                isSynced: false,
-                updatedAt: DateTime.now(),
-              ),
-            );
-          } else {
-            final checklistCompanion = db.ChecklistsCompanion(
-              title: drift.Value(docId),
-              category: drift.Value(jsonEncode(_answers)),
-              isCompleted: drift.Value(isFinal),
-              isSynced: const drift.Value(false),
-            );
-            await dbInstance.insertChecklist(checklistCompanion);
-          }
+          await _upsertSingleLocalChecklist(
+            dbInstance,
+            docId,
+            isCompleted: isFinal,
+            isSynced: false,
+          );
 
           if (mounted) {
             _autoDraftTimer?.cancel();
@@ -5018,8 +5149,22 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
   bool _hasPromptedForRelatedImport = false;
   late final db.AppDatabase _localDb;
   Timer? _autoDraftTimer;
+  static const MethodChannel _recordingChannel =
+      MethodChannel('org.caritasnigeria.voteguard/background_recording');
+
   bool _isHydrated = false;
   bool _hasLocalDraftEdits = false;
+  bool _isFlushingIncidentDraft = false;
+  bool _pendingIncidentDraftFlush = false;
+  bool _isRecordingAudio = false;
+  bool _isRecordingVideo = false;
+  bool _isInitializingVideo = false;
+  bool _showVideoPreview = true;
+  DateTime? _audioRecordingStart;
+  DateTime? _videoRecordingStart;
+  Timer? _recordingTickTimer;
+  int _recordingElapsedSeconds = 0;
+  CameraController? _videoCameraController;
 
   final List<Map<String, String>> _types = [
     {'id': 'ballot_snatching', 'label': 'Ballot Snatching'},
@@ -5053,12 +5198,45 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       if (_isHydrated && _hasLocalDraftEdits) {
         _flushIncidentAutoDraft();
       }
+      // Intentionally do NOT stop active audio or video recording when minimized/paused
+    } else if (state == AppLifecycleState.resumed) {
+      if (_isRecordingAudio && _audioRecordingStart != null && mounted) {
+        setState(() {
+          _recordingElapsedSeconds =
+              DateTime.now().difference(_audioRecordingStart!).inSeconds;
+        });
+      }
+      if (_isRecordingVideo) {
+        if (_videoRecordingStart != null && mounted) {
+          setState(() {
+            _recordingElapsedSeconds =
+                DateTime.now().difference(_videoRecordingStart!).inSeconds;
+          });
+        }
+        try {
+          if (_videoCameraController != null &&
+              _videoCameraController!.value.isInitialized) {
+            _videoCameraController!.resumePreview();
+          }
+        } catch (_) {}
+      }
     }
   }
 
   @override
   void dispose() {
     _autoDraftTimer?.cancel();
+    _recordingTickTimer?.cancel();
+    if (_isRecordingAudio) {
+      _recordingChannel.invokeMethod('stopAudioRecording').catchError((_) {});
+    }
+    if (_isRecordingVideo) {
+      try {
+        _videoCameraController?.stopVideoRecording();
+      } catch (_) {}
+      _recordingChannel.invokeMethod('stopService').catchError((_) {});
+    }
+    _videoCameraController?.dispose();
     if (_isHydrated && _hasLocalDraftEdits) {
       _flushIncidentAutoDraft();
     }
@@ -5068,6 +5246,191 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     _clockTimer?.cancel();
     _descriptionController.dispose();
     super.dispose();
+  }
+
+  String _formatRecordingClock(int totalSec) {
+    final m = (totalSec ~/ 60).toString().padLeft(2, '0');
+    final s = (totalSec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  void _startRecordingTicker(DateTime startTime) {
+    _recordingTickTimer?.cancel();
+    _recordingTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        _recordingElapsedSeconds =
+            DateTime.now().difference(startTime).inSeconds;
+      });
+    });
+  }
+
+  Future<void> _startBackgroundAudioRecording() async {
+    if (_isRecordingAudio || _isRecordingVideo) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final outPath =
+          '${dir.path}/incident_audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recordingChannel.invokeMethod('startAudioRecording', {'path': outPath});
+      final startedAt = DateTime.now();
+      if (mounted) {
+        setState(() {
+          _isRecordingAudio = true;
+          _audioRecordingStart = startedAt;
+          _recordingElapsedSeconds = 0;
+        });
+      }
+      _startRecordingTicker(startedAt);
+    } catch (e) {
+      debugPrint('Background audio recording start failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not start voice recording: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _stopBackgroundAudioRecording({bool discard = false}) async {
+    _recordingTickTimer?.cancel();
+    String? savedPath;
+    try {
+      final res = await _recordingChannel.invokeMethod('stopAudioRecording');
+      savedPath = res?.toString();
+    } catch (e) {
+      debugPrint('Stop background audio warning: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        _isRecordingAudio = false;
+        _audioRecordingStart = null;
+        _recordingElapsedSeconds = 0;
+      });
+    }
+
+    if (!discard && savedPath != null && savedPath.isNotEmpty) {
+      final f = File(savedPath);
+      if (f.existsSync() && f.lengthSync() > 0) {
+        if (mounted) {
+          setState(() => _media.add({'type': 'audio', 'file': f}));
+          _scheduleIncidentAutoDraft(immediate: true);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Voice recording saved and attached!'),
+              backgroundColor: Color(0xFF10B981),
+            ),
+          );
+        }
+      }
+    } else if (discard && savedPath != null) {
+      try {
+        final f = File(savedPath);
+        if (f.existsSync()) await f.delete();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _startInAppVideoRecording() async {
+    if (_isRecordingVideo || _isRecordingAudio || _isInitializingVideo) return;
+    setState(() => _isInitializingVideo = true);
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        throw Exception('No camera available');
+      }
+      final backCam = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+
+      final controller = CameraController(
+        backCam,
+        ResolutionPreset.medium,
+        enableAudio: true,
+      );
+      await controller.initialize();
+      await _recordingChannel
+          .invokeMethod('startService', {'mode': 'video'}).catchError((_) {});
+      await controller.startVideoRecording();
+
+      final startedAt = DateTime.now();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _videoCameraController = controller;
+        _isRecordingVideo = true;
+        _showVideoPreview = true;
+        _videoRecordingStart = startedAt;
+        _recordingElapsedSeconds = 0;
+        _isInitializingVideo = false;
+      });
+      _startRecordingTicker(startedAt);
+    } catch (e) {
+      debugPrint('In-app background video fallback to system picker: $e');
+      if (mounted) setState(() => _isInitializingVideo = false);
+      await _recordingChannel.invokeMethod('stopService').catchError((_) {});
+      // Fallback to native camera picker if direct camera initialization fails
+      final picker = ImagePicker();
+      final xfile = await picker.pickVideo(source: ImageSource.camera);
+      if (xfile != null && mounted) {
+        setState(() => _media.add({'type': 'video', 'file': File(xfile.path)}));
+        _scheduleIncidentAutoDraft(immediate: true);
+      }
+    }
+  }
+
+  Future<void> _stopInAppVideoRecording({bool discard = false}) async {
+    _recordingTickTimer?.cancel();
+    final controller = _videoCameraController;
+    XFile? recordedFile;
+    if (controller != null) {
+      try {
+        if (controller.value.isRecordingVideo) {
+          recordedFile = await controller.stopVideoRecording();
+        }
+      } catch (e) {
+        debugPrint('Stop video recording warning: $e');
+      }
+      try {
+        await controller.dispose();
+      } catch (_) {}
+    }
+
+    await _recordingChannel.invokeMethod('stopService').catchError((_) {});
+
+    if (mounted) {
+      setState(() {
+        _videoCameraController = null;
+        _isRecordingVideo = false;
+        _videoRecordingStart = null;
+        _recordingElapsedSeconds = 0;
+      });
+    }
+
+    if (!discard && recordedFile != null) {
+      final f = File(recordedFile.path);
+      if (f.existsSync() && f.lengthSync() > 0 && mounted) {
+        setState(() => _media.add({'type': 'video', 'file': f}));
+        _scheduleIncidentAutoDraft(immediate: true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Video recording saved and attached!'),
+            backgroundColor: Color(0xFF10B981),
+          ),
+        );
+      }
+    } else if (discard && recordedFile != null) {
+      try {
+        final f = File(recordedFile.path);
+        if (f.existsSync()) await f.delete();
+      } catch (_) {}
+    }
   }
 
   void _onDescriptionChanged() {
@@ -5137,28 +5500,39 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
   Future<void> _flushIncidentAutoDraft(
       {bool isSynced = false, bool force = false}) async {
     if (!force && !_hasLocalDraftEdits) return;
+    if (_isFlushingIncidentDraft) {
+      _pendingIncidentDraftFlush = true;
+      return;
+    }
+    _isFlushingIncidentDraft = true;
     try {
-      if (_selectedType == null &&
-          _descriptionController.text.isEmpty &&
-          _media.isEmpty) {
-        await _clearLocalIncidentDraft();
-        return;
-      }
+      do {
+        _pendingIncidentDraftFlush = false;
+        if (!force && !_hasLocalDraftEdits) break;
+        if (_selectedType == null &&
+            _descriptionController.text.isEmpty &&
+            _media.isEmpty) {
+          await _clearLocalIncidentDraft();
+          break;
+        }
 
-      await _clearLocalIncidentDraft();
-      await _localDb.insertIncident(
-        db.IncidentsCompanion(
-          category: drift.Value(_selectedType ?? ''),
-          severity: drift.Value('draft_${widget.electionId}'),
-          description: drift.Value(_descriptionController.text),
-          latitude: drift.Value(_currentPosition?.latitude),
-          longitude: drift.Value(_currentPosition?.longitude),
-          mediaPathsJson: drift.Value(_encodeMediaForDraft()),
-          isSynced: drift.Value(isSynced),
-        ),
-      );
+        await _clearLocalIncidentDraft();
+        await _localDb.insertIncident(
+          db.IncidentsCompanion(
+            category: drift.Value(_selectedType ?? ''),
+            severity: drift.Value('draft_${widget.electionId}'),
+            description: drift.Value(_descriptionController.text),
+            latitude: drift.Value(_currentPosition?.latitude),
+            longitude: drift.Value(_currentPosition?.longitude),
+            mediaPathsJson: drift.Value(_encodeMediaForDraft()),
+            isSynced: drift.Value(isSynced),
+          ),
+        );
+      } while (_pendingIncidentDraftFlush);
     } catch (e) {
       debugPrint('IncidentAutoDraft: Save failed: $e');
+    } finally {
+      _isFlushingIncidentDraft = false;
     }
   }
 
@@ -5356,8 +5730,10 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
   Future<void> _pickMedia(String type,
       {ImageSource source = ImageSource.camera}) async {
     if (type == 'audio') {
-      // For audio, we use FilePicker.
-      // If source is 'camera' (Live), we try to use the system recorder if available via FilePicker
+      if (source == ImageSource.camera) {
+        await _startBackgroundAudioRecording();
+        return;
+      }
       final result = await FilePicker.platform.pickFiles(
         type: FileType.audio,
         allowMultiple: false,
@@ -5370,14 +5746,19 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       return;
     }
 
+    if (type == 'video' && source == ImageSource.camera) {
+      await _startInAppVideoRecording();
+      return;
+    }
+
     final picker = ImagePicker();
     XFile? file;
     if (type == 'photo') {
       file = await picker.pickImage(
-          source: source,
-          maxWidth: 1600,
-          maxHeight: 1600,
-          imageQuality: 70,
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 70,
       );
     } else if (type == 'video') {
       file = await picker.pickVideo(source: source);
@@ -5499,20 +5880,80 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     );
   }
 
+  Future<bool> _hasIncidentInternet() async {
+    try {
+      final result = await InternetAddress.lookup('google.com')
+          .timeout(const Duration(seconds: 2));
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _saveOfflineIncidentLocal(String clientIncidentId) async {
+    final incidentCompanion = db.IncidentsCompanion(
+      category: drift.Value(_selectedType ?? 'other'),
+      severity: drift.Value('reported_${widget.electionId}::$clientIncidentId'),
+      description: drift.Value(_descriptionController.text),
+      latitude: drift.Value(_currentPosition?.latitude),
+      longitude: drift.Value(_currentPosition?.longitude),
+      mediaPathsJson: drift.Value(jsonEncode(_media
+          .map((e) => e['file'] != null ? (e['file'] as File).path : e['url'] ?? '')
+          .toList())),
+      isSynced: const drift.Value(false),
+    );
+
+    await context.read<db.AppDatabase>().insertIncident(incidentCompanion);
+
+    _autoDraftTimer?.cancel();
+    _hasLocalDraftEdits = false;
+    await _clearLocalIncidentDraft();
+
+    if (mounted) {
+      _descriptionController.clear();
+      setState(() {
+        _selectedType = null;
+        _media.clear();
+        _uploadProgress = 1.0;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'No internet connection. Incident saved locally to offline reports!'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
   Future<void> _handleSubmit() async {
+    if (_submitting) return;
     if (_selectedType == null || _descriptionController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Please select a type and provide a description.'),
           backgroundColor: Colors.orange));
       return;
     }
+    _autoDraftTimer?.cancel();
+    _hasLocalDraftEdits = false;
     setState(() {
       _submitting = true;
       _uploadProgress = 0;
     });
 
+    final user = FirebaseAuth.instance.currentUser;
+    final clientIncidentId =
+        '${widget.electionId}_${user?.uid ?? 'obs'}_${DateTime.now().millisecondsSinceEpoch}';
+
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      // Check real internet BEFORE touching Firebase Storage / Firestore so offline mode
+      // never queues a duplicate write inside Firestore's local cache!
+      final isOnline = await _hasIncidentInternet();
+      if (!isOnline) {
+        await _saveOfflineIncidentLocal(clientIncidentId);
+        return;
+      }
+
       final List<Map<String, String>> mediaItems = [];
 
       for (int i = 0; i < _media.length; i++) {
@@ -5545,6 +5986,8 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
           .toList();
 
       final payload = {
+        'id': clientIncidentId,
+        'clientIncidentId': clientIncidentId,
         'electionId': widget.electionId,
         'observerId': user?.uid,
         'submittedBy': user?.uid,
@@ -5567,7 +6010,8 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 
       await FirebaseFirestore.instance
           .collection('incident_reports')
-          .add(payload)
+          .doc(clientIncidentId)
+          .set(payload, SetOptions(merge: true))
           .timeout(const Duration(seconds: 10));
 
       // Dual-Persistence: Save to NEON PostgreSQL Database
@@ -5663,40 +6107,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 
       if (isNetworkError) {
         try {
-          final incidentCompanion = db.IncidentsCompanion(
-            category: drift.Value(_selectedType ?? 'other'),
-            severity: drift.Value('reported_${widget.electionId}'),
-            description: drift.Value(_descriptionController.text),
-            latitude: drift.Value(_currentPosition?.latitude),
-            longitude: drift.Value(_currentPosition?.longitude),
-            mediaPathsJson: drift.Value(jsonEncode(
-                _media.map((e) => e['file'] != null ? (e['file'] as File).path : e['url'] ?? '').toList())),
-            isSynced: const drift.Value(false),
-          );
-
-          await context
-              .read<db.AppDatabase>()
-              .insertIncident(incidentCompanion);
-
-          _autoDraftTimer?.cancel();
-          _hasLocalDraftEdits = false;
-          await _clearLocalIncidentDraft();
-
-          if (mounted) {
-            _descriptionController.clear();
-            setState(() {
-              _selectedType = null;
-              _media.clear();
-              _uploadProgress = 1.0;
-            });
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                    'No internet connection. Incident saved locally to offline reports!'),
-                backgroundColor: Colors.orange,
-              ),
-            );
-          }
+          await _saveOfflineIncidentLocal(clientIncidentId);
           return;
         } catch (localDbError) {
           debugPrint('Local DB Save failed: $localDbError');
@@ -5764,6 +6175,163 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     }
   }
 
+  Widget _buildActiveRecordingBanner() {
+    if (!_isRecordingAudio && !_isRecordingVideo && !_isInitializingVideo) {
+      return const SizedBox.shrink();
+    }
+
+    if (_isInitializingVideo) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 24),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Color(0xFF10B981),
+              ),
+            ),
+            const SizedBox(width: 14),
+            Text(
+              'Starting camera for background recording...',
+              style: GoogleFonts.outfit(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final isVideo = _isRecordingVideo;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: const BoxDecoration(
+                    color: Color(0xFFEF4444), shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isVideo
+                          ? 'RECORDING VIDEO • ${_formatRecordingClock(_recordingElapsedSeconds)}'
+                          : 'RECORDING VOICE • ${_formatRecordingClock(_recordingElapsedSeconds)}',
+                      style: GoogleFonts.outfit(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.5),
+                    ),
+                    Text(
+                      'Continues recording when minimized or switching apps',
+                      style: GoogleFonts.outfit(
+                          color: const Color(0xFF10B981),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+              if (isVideo)
+                TextButton(
+                  onPressed: () =>
+                      setState(() => _showVideoPreview = !_showVideoPreview),
+                  child: Text(
+                    _showVideoPreview ? 'HIDE' : 'SHOW',
+                    style: GoogleFonts.outfit(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800),
+                  ),
+                ),
+            ],
+          ),
+          if (isVideo &&
+              _showVideoPreview &&
+              _videoCameraController != null &&
+              _videoCameraController!.value.isInitialized) ...[
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: AspectRatio(
+                aspectRatio: _videoCameraController!.value.aspectRatio > 0
+                    ? _videoCameraController!.value.aspectRatio
+                    : 16 / 9,
+                child: CameraPreview(_videoCameraController!),
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => isVideo
+                      ? _stopInAppVideoRecording(discard: true)
+                      : _stopBackgroundAudioRecording(discard: true),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: Text('CANCEL',
+                      style: GoogleFonts.outfit(
+                          fontSize: 12, fontWeight: FontWeight.w800)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 2,
+                child: ElevatedButton.icon(
+                  onPressed: () => isVideo
+                      ? _stopInAppVideoRecording()
+                      : _stopBackgroundAudioRecording(),
+                  icon: const Icon(LucideIcons.square, size: 14),
+                  label: Text('STOP & ATTACH',
+                      style: GoogleFonts.outfit(
+                          fontSize: 12, fontWeight: FontWeight.w800)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFEF4444),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -5771,6 +6339,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       children: [
         _buildHeader(),
         const SizedBox(height: 32),
+        _buildActiveRecordingBanner(),
         _buildIssueDetailsCard(),
         const SizedBox(height: 24),
         _buildEvidenceCard(),
@@ -6843,6 +7412,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   Timer? _autoDraftTimer;
   bool _isHydrated = false;
   bool _hasLocalDraftEdits = false;
+  bool _isFlushingResultsDraft = false;
+  bool _pendingResultsDraftFlush = false;
   String _cachedPuKey = '';
 
   @override
@@ -6912,62 +7483,77 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Future<void> _flushResultsAutoDraft() async {
     if (!_hasLocalDraftEdits || _isFinal) return;
+    if (_isFlushingResultsDraft) {
+      _pendingResultsDraftFlush = true;
+      return;
+    }
+    _isFlushingResultsDraft = true;
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+      do {
+        _pendingResultsDraftFlush = false;
+        if (!_hasLocalDraftEdits || _isFinal) break;
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null) break;
 
-      final state = _userProfile?['assignedState'] ?? '';
-      final lga = _userProfile?['assignedLga'] ?? '';
-      final ward = _userProfile?['assignedWard'] ?? '';
-      final pu = _userProfile?['assignedPollingUnit'] ?? '';
-      final puKey = _cachedPuKey.isNotEmpty
-          ? _cachedPuKey
-          : _sanitizeId('${state}_${lga}_${ward}_$pu');
-      final pollingUnitId = '${widget.electionId}_$puKey';
+        final state = _userProfile?['assignedState'] ?? '';
+        final lga = _userProfile?['assignedLga'] ?? '';
+        final ward = _userProfile?['assignedWard'] ?? '';
+        final pu = _userProfile?['assignedPollingUnit'] ?? '';
+        final puKey = _cachedPuKey.isNotEmpty
+            ? _cachedPuKey
+            : _sanitizeId('${state}_${lga}_${ward}_$pu');
+        final pollingUnitId = '${widget.electionId}_$puKey';
 
-      final existingRows = await _localDb.getAllResults();
-      for (final row in existingRows) {
-        if (row.observerId != user.uid) continue;
-        final matchesExact = row.pollingUnitId == pollingUnitId;
-        final matchesElectionOffline = puKey == '___' &&
-            row.pollingUnitId.startsWith('${widget.electionId}_');
-        if (matchesExact || matchesElectionOffline) {
-          bool rowIsFinal = false;
-          try {
-            final statsMap =
-                jsonDecode(row.ballotStatsJson) as Map<String, dynamic>;
-            rowIsFinal = statsMap['isFinal'] == true;
-          } catch (_) {}
-          if (!rowIsFinal) {
-            await _localDb.deleteResult(row.id);
+        final existingRows = await _localDb.getAllResults();
+        bool alreadyFinalInLocalDb = false;
+        for (final row in existingRows) {
+          if (row.observerId != user.uid) continue;
+          final matchesExact = row.pollingUnitId == pollingUnitId;
+          final matchesElectionOffline = puKey == '___' &&
+              row.pollingUnitId.startsWith('${widget.electionId}_');
+          if (matchesExact || matchesElectionOffline) {
+            bool rowIsFinal = false;
+            try {
+              final statsMap =
+                  jsonDecode(row.ballotStatsJson) as Map<String, dynamic>;
+              rowIsFinal = statsMap['isFinal'] == true;
+            } catch (_) {}
+            if (rowIsFinal) {
+              alreadyFinalInLocalDb = true;
+            } else {
+              await _localDb.deleteResult(row.id);
+            }
           }
         }
-      }
+        if (alreadyFinalInLocalDb) break;
 
-      await _localDb.insertResult(
-        db.ResultsCompanion(
-          observerId: drift.Value(user.uid),
-          pollingUnitId: drift.Value(pollingUnitId),
-          partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
-          ballotStatsJson: drift.Value(jsonEncode({
-            ..._stats,
-            'electionId': widget.electionId,
-            'state': state,
-            'lga': lga,
-            'ward': ward,
-            'pollingUnit': pu,
-            'totalValidVotes': _totalValidVotes,
-            'totalUsedBallots': _totalUsedBallots,
-            'isFinal': false,
-            'isAutoDraft': true,
-            'updatedAt': DateTime.now().toIso8601String(),
-          })),
-          imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
-          isSynced: const drift.Value(false),
-        ),
-      );
+        await _localDb.insertResult(
+          db.ResultsCompanion(
+            observerId: drift.Value(user.uid),
+            pollingUnitId: drift.Value(pollingUnitId),
+            partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+            ballotStatsJson: drift.Value(jsonEncode({
+              ..._stats,
+              'electionId': widget.electionId,
+              'state': state,
+              'lga': lga,
+              'ward': ward,
+              'pollingUnit': pu,
+              'totalValidVotes': _totalValidVotes,
+              'totalUsedBallots': _totalUsedBallots,
+              'isFinal': false,
+              'isAutoDraft': true,
+              'updatedAt': DateTime.now().toIso8601String(),
+            })),
+            imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
+            isSynced: const drift.Value(false),
+          ),
+        );
+      } while (_pendingResultsDraftFlush && !_isFinal);
     } catch (e) {
       debugPrint('EC8A AutoDraft: Save failed: $e');
+    } finally {
+      _isFlushingResultsDraft = false;
     }
   }
 
@@ -8191,7 +8777,78 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     }
   }
 
+  Future<bool> _hasResultsInternet() async {
+    try {
+      final result = await InternetAddress.lookup('google.com')
+          .timeout(const Duration(seconds: 2));
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _saveResultsOfflineLocal(bool isFinal) async {
+    _autoDraftTimer?.cancel();
+    _hasLocalDraftEdits = false;
+    final user = FirebaseAuth.instance.currentUser;
+    final state = _userProfile?['assignedState'] ?? '';
+    final lga = _userProfile?['assignedLga'] ?? '';
+    final ward = _userProfile?['assignedWard'] ?? '';
+    final pu = _userProfile?['assignedPollingUnit'] ?? '';
+    final puKey = _cachedPuKey.isNotEmpty
+        ? _cachedPuKey
+        : _sanitizeId('${state}_${lga}_${ward}_$pu');
+
+    final dbInstance = _localDb;
+    final localResults = await dbInstance.getAllResults();
+    for (final existing in localResults) {
+      if (existing.observerId == user?.uid &&
+          (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
+              (puKey == '___' &&
+                  existing.pollingUnitId.startsWith('${widget.electionId}_')))) {
+        await dbInstance.deleteResult(existing.id);
+      }
+    }
+
+    final resultCompanion = db.ResultsCompanion(
+      observerId: drift.Value(user?.uid ?? ''),
+      pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
+      partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+      ballotStatsJson: drift.Value(jsonEncode({
+        ..._stats,
+        'electionId': widget.electionId,
+        'state': state,
+        'lga': lga,
+        'ward': ward,
+        'pollingUnit': pu,
+        'totalValidVotes': _totalValidVotes,
+        'totalUsedBallots': _totalUsedBallots,
+        'isFinal': isFinal,
+        'updatedAt': DateTime.now().toIso8601String(),
+      })),
+      imagePath: drift.Value(_evidenceFile?.path ?? _evidenceUrl),
+      isSynced: const drift.Value(false),
+    );
+
+    await dbInstance.insertResult(resultCompanion);
+    await _loadData();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('No internet connection. Saved locally to offline drafts!'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      if (isFinal) {
+        setState(() => _isFinal = true);
+        DefaultTabController.maybeOf(context)?.animateTo(0);
+      }
+    }
+  }
+
   Future<void> _submit(bool isFinal) async {
+    if (_submitting) return;
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
     if (isFinal && !isPrimaries && _validationErrors.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -8199,8 +8856,16 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       return;
     }
 
+    _autoDraftTimer?.cancel();
+    _hasLocalDraftEdits = false;
     setState(() => _submitting = true);
     try {
+      final isOnline = await _hasResultsInternet();
+      if (!isOnline) {
+        await _saveResultsOfflineLocal(isFinal);
+        return;
+      }
+
       final user = FirebaseAuth.instance.currentUser;
       String? evidenceUrl;
 
