@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:voteguard/features/auth/bloc/auth_bloc.dart';
 import 'package:voteguard/features/auth/ui/password_reset_screen.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
@@ -533,60 +534,100 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
 
                     const SizedBox(height: 24),
-                    // const Text(
-                    //   'PUBLIC OBSERVATION DASHBOARD',
-                    //   style: TextStyle(
-                    //       color: Color(0xFF475569),
-                    //       fontSize: 9,
-                    //       fontWeight: FontWeight.bold),
-                    // ),
-                    // const SizedBox(height: 12),
-
-                    // // Public Results Hub
-                    // GestureDetector(
-                    //   onTap: () {
-                    //     Navigator.pushNamed(context, '/public-results');
-                    //   },
-                    //   child: Container(
-                    //     padding: const EdgeInsets.all(16),
-                    //     decoration: BoxDecoration(
-                    //       color: const Color(0xFFF1F5F9).withOpacity(0.8),
-                    //       borderRadius: BorderRadius.circular(16),
-                    //     ),
-                    //     child: Row(
-                    //       children: [
-                    //         Container(
-                    //           padding: const EdgeInsets.all(8),
-                    //           decoration: BoxDecoration(
-                    //             color: Colors.white,
-                    //             borderRadius: BorderRadius.circular(8),
-                    //           ),
-                    //           child: const Icon(LucideIcons.activity,
-                    //               color: Color(0xFF991B1B), size: 20),
-                    //         ),
-                    //         const SizedBox(width: 12),
-                    //         const Expanded(
-                    //           child: Column(
-                    //             crossAxisAlignment: CrossAxisAlignment.start,
-                    //             children: [
-                    //               Text('PUBLIC RESULTS DASHBOARD',
-                    //                   style: TextStyle(
-                    //                       fontSize: 10,
-                    //                       fontWeight: FontWeight.bold,
-                    //                       color: Color(0xFF1E293B))),
-                    //               Text('LIVE RESULTS & SITUATION ROOM',
-                    //                   style: TextStyle(
-                    //                       fontSize: 8,
-                    //                       color: Color(0xFF64748B))),
-                    //             ],
-                    //           ),
-                    //         ),
-                    //         const Icon(LucideIcons.arrowRight,
-                    //             size: 16, color: Color(0xFF64748B)),
-                    //       ],
-                    //     ),
-                    //   ),
-                    // ),
+                    // Public Results Dashboard Card
+                    Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: _launchPublicResultsHub,
+                        borderRadius: BorderRadius.circular(18),
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.9),
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: const Color(0xFF8B1A1A).withValues(alpha: 0.12),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.03),
+                                blurRadius: 16,
+                                offset: const Offset(0, 6),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF8B1A1A).withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  LucideIcons.activity,
+                                  color: Color(0xFF8B1A1A),
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'PUBLIC RESULTS DASHBOARD',
+                                      style: GoogleFonts.outfit(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w900,
+                                        color: const Color(0xFF0F172A),
+                                        letterSpacing: 0.8,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'LIVE RESULTS & SITUATION ROOM',
+                                      style: GoogleFonts.outfit(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w700,
+                                        color: const Color(0xFF64748B),
+                                        letterSpacing: 0.8,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF8B1A1A).withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  'LIVE',
+                                  style: GoogleFonts.outfit(
+                                    fontSize: 8.5,
+                                    fontWeight: FontWeight.w900,
+                                    color: const Color(0xFF8B1A1A),
+                                    letterSpacing: 1.0,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Icon(
+                                LucideIcons.arrowRight,
+                                size: 16,
+                                color: Color(0xFF8B1A1A),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
 
                     const SizedBox(height: 32),
                     Text(
@@ -716,5 +757,41 @@ class _LoginScreenState extends State<LoginScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _launchPublicResultsHub() async {
+    const url = 'https://voteguard.com.ng/public-results';
+    try {
+      final uri = Uri.parse(url);
+      bool launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched) {
+        launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      }
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open Public Results Dashboard ($url)'),
+            backgroundColor: Color(0xFF8B1A1A),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Failed to launch Public Results URL: $e');
+      if (mounted) {
+        try {
+          final uri = Uri.parse(url);
+          final fallback = await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+          if (fallback) return;
+        } catch (_) {}
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unable to launch browser for $url'),
+            backgroundColor: Color(0xFF8B1A1A),
+          ),
+        );
+      }
+    }
   }
 }

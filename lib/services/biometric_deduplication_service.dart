@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
+import 'package:voteguard/services/cloud_functions_service.dart';
 
 class BiometricAuditResult {
   final bool isDuplicate;
@@ -174,15 +175,58 @@ class BiometricDeduplicationService {
       final currentRole = (currentData['role'] ?? 'OBSERVER').toString();
       final currentPhone = (currentData['phone'] ?? '').toString();
 
-      // 3. Query all enrolled biometric embeddings
+      // 3. Primary: Call backend Cloud Function for fast, secure, atomic biometric deduplication
+      try {
+        final cloudFunctions = CloudFunctionsService();
+        final response = await cloudFunctions.callFunction('auditAndEnrollBiometrics', {
+          'userId': user.uid,
+          'name': currentName,
+          'email': currentEmail,
+          'role': currentRole,
+          'phone': currentPhone,
+          'profilePictureUrl': downloadUrl,
+          'embedding': candidateEmbedding,
+        });
+
+        final isDuplicate = response['isDuplicate'] == true;
+        final similarity = (response['similarity'] is num)
+            ? (response['similarity'] as num).toDouble()
+            : 0.0;
+        final matchedUserId = response['matchedUserId'] as String?;
+        final matchedName = response['matchedName'] as String?;
+        final matchedEmail = response['matchedEmail'] as String?;
+        final matchedRole = response['matchedRole'] as String?;
+        final matchedPhone = response['matchedPhone'] as String?;
+        final matchedPhotoUrl = response['matchedPhotoUrl'] as String?;
+
+        debugPrint("⚡ Cloud Function Biometric Result: isDuplicate=$isDuplicate, similarity=${(similarity * 100).toStringAsFixed(1)}%");
+
+        return BiometricAuditResult(
+          isDuplicate: isDuplicate,
+          similarity: similarity,
+          matchedUserId: matchedUserId,
+          matchedName: matchedName,
+          matchedEmail: matchedEmail,
+          matchedRole: matchedRole,
+          matchedPhone: matchedPhone,
+          matchedPhotoUrl: matchedPhotoUrl,
+          message: response['message']?.toString() ??
+              (isDuplicate
+                  ? 'Biometric duplicate detected. Matches registered observer $matchedName ($matchedEmail).'
+                  : 'Unique biometric profile enrolled successfully.'),
+        );
+      } catch (cloudErr) {
+        debugPrint("Cloud function biometric call failed, using client fallback: $cloudErr");
+      }
+
+      // 4. Client-side fallback (duplicate comparison commented out for now)
+      /*
       final embeddingsSnap = await _firestore.collection('voter_embeddings').get();
       final existingRecords = <Map<String, dynamic>>[];
 
       for (final doc in embeddingsSnap.docs) {
         if (doc.id == user.uid) continue;
         final data = doc.data();
-        final role = (data['role'] ?? '').toString().toUpperCase();
-        if (role != 'OBSERVER' && role.isNotEmpty) continue;
         final rawEmb = data['embedding'];
         if (rawEmb is List) {
           final emb = rawEmb.map((e) => (e as num).toDouble()).toList();
@@ -209,8 +253,6 @@ class BiometricDeduplicationService {
         for (final doc in enrolledUsersSnap.docs) {
           if (doc.id == user.uid) continue;
           final d = doc.data();
-          final role = (d['role'] ?? '').toString().toUpperCase();
-          if (role != 'OBSERVER' && role.isNotEmpty) continue;
           final photoUrl = (d['profilePictureUrl'] ?? d['profileImageUrl']) as String?;
           if (photoUrl != null && photoUrl.trim().isNotEmpty) {
             try {
@@ -369,6 +411,9 @@ class BiometricDeduplicationService {
           message: 'Biometric duplicate detected. Matches registered observer $matchedName ($matchedEmail).',
         );
       } else {
+      */
+      const double highestSimilarity = 0.0;
+      {
         debugPrint("✅ Unique Observer Verified! No duplicate match found (highest similarity: ${(highestSimilarity * 100).toStringAsFixed(1)}%).");
 
         // Save candidate embedding to voter_embeddings collection

@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:camera/camera.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -5149,22 +5148,11 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
   bool _hasPromptedForRelatedImport = false;
   late final db.AppDatabase _localDb;
   Timer? _autoDraftTimer;
-  static const MethodChannel _recordingChannel =
-      MethodChannel('org.caritasnigeria.voteguard/background_recording');
 
   bool _isHydrated = false;
   bool _hasLocalDraftEdits = false;
   bool _isFlushingIncidentDraft = false;
   bool _pendingIncidentDraftFlush = false;
-  bool _isRecordingAudio = false;
-  bool _isRecordingVideo = false;
-  bool _isInitializingVideo = false;
-  bool _showVideoPreview = true;
-  DateTime? _audioRecordingStart;
-  DateTime? _videoRecordingStart;
-  Timer? _recordingTickTimer;
-  int _recordingElapsedSeconds = 0;
-  CameraController? _videoCameraController;
 
   final List<Map<String, String>> _types = [
     {'id': 'ballot_snatching', 'label': 'Ballot Snatching'},
@@ -5198,45 +5186,12 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       if (_isHydrated && _hasLocalDraftEdits) {
         _flushIncidentAutoDraft();
       }
-      // Intentionally do NOT stop active audio or video recording when minimized/paused
-    } else if (state == AppLifecycleState.resumed) {
-      if (_isRecordingAudio && _audioRecordingStart != null && mounted) {
-        setState(() {
-          _recordingElapsedSeconds =
-              DateTime.now().difference(_audioRecordingStart!).inSeconds;
-        });
-      }
-      if (_isRecordingVideo) {
-        if (_videoRecordingStart != null && mounted) {
-          setState(() {
-            _recordingElapsedSeconds =
-                DateTime.now().difference(_videoRecordingStart!).inSeconds;
-          });
-        }
-        try {
-          if (_videoCameraController != null &&
-              _videoCameraController!.value.isInitialized) {
-            _videoCameraController!.resumePreview();
-          }
-        } catch (_) {}
-      }
     }
   }
 
   @override
   void dispose() {
     _autoDraftTimer?.cancel();
-    _recordingTickTimer?.cancel();
-    if (_isRecordingAudio) {
-      _recordingChannel.invokeMethod('stopAudioRecording').catchError((_) {});
-    }
-    if (_isRecordingVideo) {
-      try {
-        _videoCameraController?.stopVideoRecording();
-      } catch (_) {}
-      _recordingChannel.invokeMethod('stopService').catchError((_) {});
-    }
-    _videoCameraController?.dispose();
     if (_isHydrated && _hasLocalDraftEdits) {
       _flushIncidentAutoDraft();
     }
@@ -5246,191 +5201,6 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     _clockTimer?.cancel();
     _descriptionController.dispose();
     super.dispose();
-  }
-
-  String _formatRecordingClock(int totalSec) {
-    final m = (totalSec ~/ 60).toString().padLeft(2, '0');
-    final s = (totalSec % 60).toString().padLeft(2, '0');
-    return '$m:$s';
-  }
-
-  void _startRecordingTicker(DateTime startTime) {
-    _recordingTickTimer?.cancel();
-    _recordingTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      setState(() {
-        _recordingElapsedSeconds =
-            DateTime.now().difference(startTime).inSeconds;
-      });
-    });
-  }
-
-  Future<void> _startBackgroundAudioRecording() async {
-    if (_isRecordingAudio || _isRecordingVideo) return;
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final outPath =
-          '${dir.path}/incident_audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
-      await _recordingChannel.invokeMethod('startAudioRecording', {'path': outPath});
-      final startedAt = DateTime.now();
-      if (mounted) {
-        setState(() {
-          _isRecordingAudio = true;
-          _audioRecordingStart = startedAt;
-          _recordingElapsedSeconds = 0;
-        });
-      }
-      _startRecordingTicker(startedAt);
-    } catch (e) {
-      debugPrint('Background audio recording start failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not start voice recording: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _stopBackgroundAudioRecording({bool discard = false}) async {
-    _recordingTickTimer?.cancel();
-    String? savedPath;
-    try {
-      final res = await _recordingChannel.invokeMethod('stopAudioRecording');
-      savedPath = res?.toString();
-    } catch (e) {
-      debugPrint('Stop background audio warning: $e');
-    }
-
-    if (mounted) {
-      setState(() {
-        _isRecordingAudio = false;
-        _audioRecordingStart = null;
-        _recordingElapsedSeconds = 0;
-      });
-    }
-
-    if (!discard && savedPath != null && savedPath.isNotEmpty) {
-      final f = File(savedPath);
-      if (f.existsSync() && f.lengthSync() > 0) {
-        if (mounted) {
-          setState(() => _media.add({'type': 'audio', 'file': f}));
-          _scheduleIncidentAutoDraft(immediate: true);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Voice recording saved and attached!'),
-              backgroundColor: Color(0xFF10B981),
-            ),
-          );
-        }
-      }
-    } else if (discard && savedPath != null) {
-      try {
-        final f = File(savedPath);
-        if (f.existsSync()) await f.delete();
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _startInAppVideoRecording() async {
-    if (_isRecordingVideo || _isRecordingAudio || _isInitializingVideo) return;
-    setState(() => _isInitializingVideo = true);
-    try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        throw Exception('No camera available');
-      }
-      final backCam = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
-
-      final controller = CameraController(
-        backCam,
-        ResolutionPreset.medium,
-        enableAudio: true,
-      );
-      await controller.initialize();
-      await _recordingChannel
-          .invokeMethod('startService', {'mode': 'video'}).catchError((_) {});
-      await controller.startVideoRecording();
-
-      final startedAt = DateTime.now();
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
-      setState(() {
-        _videoCameraController = controller;
-        _isRecordingVideo = true;
-        _showVideoPreview = true;
-        _videoRecordingStart = startedAt;
-        _recordingElapsedSeconds = 0;
-        _isInitializingVideo = false;
-      });
-      _startRecordingTicker(startedAt);
-    } catch (e) {
-      debugPrint('In-app background video fallback to system picker: $e');
-      if (mounted) setState(() => _isInitializingVideo = false);
-      await _recordingChannel.invokeMethod('stopService').catchError((_) {});
-      // Fallback to native camera picker if direct camera initialization fails
-      final picker = ImagePicker();
-      final xfile = await picker.pickVideo(source: ImageSource.camera);
-      if (xfile != null && mounted) {
-        setState(() => _media.add({'type': 'video', 'file': File(xfile.path)}));
-        _scheduleIncidentAutoDraft(immediate: true);
-      }
-    }
-  }
-
-  Future<void> _stopInAppVideoRecording({bool discard = false}) async {
-    _recordingTickTimer?.cancel();
-    final controller = _videoCameraController;
-    XFile? recordedFile;
-    if (controller != null) {
-      try {
-        if (controller.value.isRecordingVideo) {
-          recordedFile = await controller.stopVideoRecording();
-        }
-      } catch (e) {
-        debugPrint('Stop video recording warning: $e');
-      }
-      try {
-        await controller.dispose();
-      } catch (_) {}
-    }
-
-    await _recordingChannel.invokeMethod('stopService').catchError((_) {});
-
-    if (mounted) {
-      setState(() {
-        _videoCameraController = null;
-        _isRecordingVideo = false;
-        _videoRecordingStart = null;
-        _recordingElapsedSeconds = 0;
-      });
-    }
-
-    if (!discard && recordedFile != null) {
-      final f = File(recordedFile.path);
-      if (f.existsSync() && f.lengthSync() > 0 && mounted) {
-        setState(() => _media.add({'type': 'video', 'file': f}));
-        _scheduleIncidentAutoDraft(immediate: true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Video recording saved and attached!'),
-            backgroundColor: Color(0xFF10B981),
-          ),
-        );
-      }
-    } else if (discard && recordedFile != null) {
-      try {
-        final f = File(recordedFile.path);
-        if (f.existsSync()) await f.delete();
-      } catch (_) {}
-    }
   }
 
   void _onDescriptionChanged() {
@@ -5727,13 +5497,34 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     return await Geolocator.getCurrentPosition();
   }
 
+  Future<File?> _showForegroundAudioRecorderSheet() async {
+    return showModalBottomSheet<File>(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _ForegroundAudioRecorderSheet(),
+    );
+  }
+
   Future<void> _pickMedia(String type,
       {ImageSource source = ImageSource.camera}) async {
     if (type == 'audio') {
       if (source == ImageSource.camera) {
-        await _startBackgroundAudioRecording();
+        final recordedFile = await _showForegroundAudioRecorderSheet();
+        if (recordedFile != null && mounted) {
+          setState(() => _media.add({'type': 'audio', 'file': recordedFile}));
+          _scheduleIncidentAutoDraft(immediate: true);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Voice recording saved and attached!'),
+              backgroundColor: Color(0xFF10B981),
+            ),
+          );
+        }
         return;
       }
+
       final result = await FilePicker.platform.pickFiles(
         type: FileType.audio,
         allowMultiple: false,
@@ -5743,11 +5534,6 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             .add({'type': type, 'file': File(result.files.single.path!)}));
         _scheduleIncidentAutoDraft(immediate: true);
       }
-      return;
-    }
-
-    if (type == 'video' && source == ImageSource.camera) {
-      await _startInAppVideoRecording();
       return;
     }
 
@@ -5942,8 +5728,20 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     });
 
     final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      setState(() => _submitting = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Session expired. Please log out and sign in again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
     final clientIncidentId =
-        '${widget.electionId}_${user?.uid ?? 'obs'}_${DateTime.now().millisecondsSinceEpoch}';
+        '${widget.electionId}_${user.uid}_${DateTime.now().millisecondsSinceEpoch}';
 
     try {
       // Check real internet BEFORE touching Firebase Storage / Firestore so offline mode
@@ -6175,163 +5973,6 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     }
   }
 
-  Widget _buildActiveRecordingBanner() {
-    if (!_isRecordingAudio && !_isRecordingVideo && !_isInitializingVideo) {
-      return const SizedBox.shrink();
-    }
-
-    if (_isInitializingVideo) {
-      return Container(
-        margin: const EdgeInsets.only(bottom: 24),
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0F172A),
-          borderRadius: BorderRadius.circular(24),
-        ),
-        child: Row(
-          children: [
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Color(0xFF10B981),
-              ),
-            ),
-            const SizedBox(width: 14),
-            Text(
-              'Starting camera for background recording...',
-              style: GoogleFonts.outfit(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final isVideo = _isRecordingVideo;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 24),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: const BoxDecoration(
-                    color: Color(0xFFEF4444), shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isVideo
-                          ? 'RECORDING VIDEO • ${_formatRecordingClock(_recordingElapsedSeconds)}'
-                          : 'RECORDING VOICE • ${_formatRecordingClock(_recordingElapsedSeconds)}',
-                      style: GoogleFonts.outfit(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 0.5),
-                    ),
-                    Text(
-                      'Continues recording when minimized or switching apps',
-                      style: GoogleFonts.outfit(
-                          color: const Color(0xFF10B981),
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-              if (isVideo)
-                TextButton(
-                  onPressed: () =>
-                      setState(() => _showVideoPreview = !_showVideoPreview),
-                  child: Text(
-                    _showVideoPreview ? 'HIDE' : 'SHOW',
-                    style: GoogleFonts.outfit(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800),
-                  ),
-                ),
-            ],
-          ),
-          if (isVideo &&
-              _showVideoPreview &&
-              _videoCameraController != null &&
-              _videoCameraController!.value.isInitialized) ...[
-            const SizedBox(height: 16),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: AspectRatio(
-                aspectRatio: _videoCameraController!.value.aspectRatio > 0
-                    ? _videoCameraController!.value.aspectRatio
-                    : 16 / 9,
-                child: CameraPreview(_videoCameraController!),
-              ),
-            ),
-          ],
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => isVideo
-                      ? _stopInAppVideoRecording(discard: true)
-                      : _stopBackgroundAudioRecording(discard: true),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white70,
-                    side: const BorderSide(color: Colors.white24),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                  child: Text('CANCEL',
-                      style: GoogleFonts.outfit(
-                          fontSize: 12, fontWeight: FontWeight.w800)),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                flex: 2,
-                child: ElevatedButton.icon(
-                  onPressed: () => isVideo
-                      ? _stopInAppVideoRecording()
-                      : _stopBackgroundAudioRecording(),
-                  icon: const Icon(LucideIcons.square, size: 14),
-                  label: Text('STOP & ATTACH',
-                      style: GoogleFonts.outfit(
-                          fontSize: 12, fontWeight: FontWeight.w800)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFEF4444),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -6339,7 +5980,6 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       children: [
         _buildHeader(),
         const SizedBox(height: 32),
-        _buildActiveRecordingBanner(),
         _buildIssueDetailsCard(),
         const SizedBox(height: 24),
         _buildEvidenceCard(),
@@ -8213,17 +7853,18 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     );
     if (img == null) return;
 
-    if (_lastScanTime != null) {
-      final diff = DateTime.now().difference(_lastScanTime!).inSeconds;
-      if (diff < 65) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              'Rate Limit: Please wait ${65 - diff}s before scanning again.'),
-          backgroundColor: Colors.orange,
-        ));
-        return;
-      }
-    }
+    // Rate limit disabled so snapping and scanning can run consecutively without delay.
+    // if (_lastScanTime != null) {
+    //   final diff = DateTime.now().difference(_lastScanTime!).inSeconds;
+    //   if (diff < 65) {
+    //     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    //       content: Text(
+    //           'Rate Limit: Please wait ${65 - diff}s before scanning again.'),
+    //       backgroundColor: Colors.orange,
+    //     ));
+    //     return;
+    //   }
+    // }
 
     // Apply Watermark Before Saving to State
     File evidenceFile = File(img.path);
@@ -8425,12 +8066,17 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         String _normalizeType(String? raw) {
           if (raw == null) return '';
           final t = raw.toUpperCase().replaceAll('_', ' ').trim();
+          if (t.isEmpty || t == 'UNKNOWN' || t == 'NULL' || t == '0') return '';
+          if (t.contains('PRESIDENTIAL') || t.contains('PRESIDENT'))
+            return 'PRESIDENTIAL';
           if (t.contains('COUNCILLOR') || t.contains('COUNCILLORSHIP'))
             return 'COUNCILLOR';
-          if (t.contains('CHAIRMAN') ||
+          if (t.contains('LOCAL GOVERNMENT') ||
+              t.contains('CHAIRMAN') ||
               t.contains('CHAIRMANSHIP') ||
-              t.contains('COUNCIL') ||
-              t.contains('MUNICIPAL')) return 'LOCAL GOVERNMENT';
+              t.contains('AREA COUNCIL') ||
+              t.contains('MUNICIPAL') ||
+              t == 'LGA') return 'LOCAL GOVERNMENT';
           if (t.contains('GOVERNOR') || t.contains('GUBERNATORIAL'))
             return 'GUBERNATORIAL';
           if (t.contains('SENATE') || t.contains('SENATORIAL'))
@@ -8439,6 +8085,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             return 'HOUSE OF REPRESENTATIVES';
           if (t.contains('STATE HOUSE OF ASSEMBLY') ||
               t.contains('STATE ASSEMBLY') ||
+              t.contains('HOUSE OF ASSEMBLY') ||
               t.contains('STATE CONSTITUENCY'))
             return 'STATE HOUSE OF ASSEMBLY';
           return t;
@@ -12154,6 +11801,293 @@ class _ChatWidgetState extends State<_ChatWidget> {
             const SizedBox(height: 10),
             AudioPlayerWidget(url: audioUrl),
             const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ForegroundAudioRecorderSheet extends StatefulWidget {
+  const _ForegroundAudioRecorderSheet();
+
+  @override
+  State<_ForegroundAudioRecorderSheet> createState() =>
+      _ForegroundAudioRecorderSheetState();
+}
+
+class _ForegroundAudioRecorderSheetState
+    extends State<_ForegroundAudioRecorderSheet> with WidgetsBindingObserver {
+  static const MethodChannel _audioChannel =
+      MethodChannel('org.caritasnigeria.voteguard/foreground_audio');
+
+  bool _isRecording = false;
+  bool _isStarting = false;
+  bool _isStopping = false;
+  int _elapsedSeconds = 0;
+  Timer? _timer;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Strictly foreground-only: stop & attach if user backgrounds the app while recording.
+    if (state == AppLifecycleState.paused && _isRecording && !_isStopping) {
+      _stopRecording(discard: false);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _timer?.cancel();
+    if (_isRecording && !_isStopping) {
+      _audioChannel.invokeMethod('stopAudioRecording').catchError((_) {});
+    }
+    super.dispose();
+  }
+
+  String _formatDuration(int sec) {
+    final m = (sec ~/ 60).toString().padLeft(2, '0');
+    final s = (sec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Future<void> _startRecording() async {
+    if (_isRecording || _isStarting) return;
+    setState(() {
+      _isStarting = true;
+      _errorText = null;
+    });
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final outPath =
+          '${dir.path}/incident_audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _audioChannel
+          .invokeMethod('startAudioRecording', {'path': outPath});
+      if (!mounted) {
+        await _audioChannel.invokeMethod('stopAudioRecording').catchError((_) {});
+        return;
+      }
+      setState(() {
+        _isStarting = false;
+        _isRecording = true;
+        _elapsedSeconds = 0;
+      });
+      _timer?.cancel();
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _elapsedSeconds++);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isStarting = false;
+        _errorText = 'Could not start recording: $e';
+      });
+    }
+  }
+
+  Future<void> _stopRecording({bool discard = false}) async {
+    if (_isStopping) return;
+    _timer?.cancel();
+
+    if (!_isRecording) {
+      if (mounted) Navigator.pop(context, null);
+      return;
+    }
+
+    setState(() => _isStopping = true);
+    String? savedPath;
+    try {
+      final res = await _audioChannel.invokeMethod('stopAudioRecording');
+      savedPath = res?.toString();
+    } catch (e) {
+      debugPrint('Stop foreground audio warning: $e');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isRecording = false;
+      _isStopping = false;
+    });
+
+    if (discard) {
+      if (savedPath != null && savedPath.isNotEmpty) {
+        try {
+          final f = File(savedPath);
+          if (f.existsSync()) await f.delete();
+        } catch (_) {}
+      }
+      if (mounted) Navigator.pop(context, null);
+      return;
+    }
+
+    if (savedPath != null && savedPath.isNotEmpty) {
+      final f = File(savedPath);
+      if (f.existsSync() && f.lengthSync() > 0) {
+        Navigator.pop(context, f);
+        return;
+      }
+    }
+    Navigator.pop(context, null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_isRecording,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(28, 20, 28, 36),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE2E8F0),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: _isRecording
+                    ? const Color(0xFFFEE2E2)
+                    : const Color(0xFFECFDF5),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: _isRecording
+                      ? const Color(0xFFEF4444).withValues(alpha: 0.35)
+                      : const Color(0xFF10B981).withValues(alpha: 0.35),
+                  width: 2,
+                ),
+              ),
+              child: Icon(
+                LucideIcons.mic,
+                size: 32,
+                color: _isRecording
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF059669),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              _isRecording ? 'RECORDING VOICE EVIDENCE' : 'LIVE AUDIO RECORDER',
+              style: GoogleFonts.outfit(
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                color: const Color(0xFF0F172A),
+                letterSpacing: 0.4,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _isRecording
+                  ? _formatDuration(_elapsedSeconds)
+                  : 'Tap Record below to capture voice evidence',
+              style: GoogleFonts.outfit(
+                fontSize: _isRecording ? 24 : 12,
+                fontWeight: _isRecording ? FontWeight.w900 : FontWeight.w600,
+                color: _isRecording
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF64748B),
+              ),
+            ),
+            if (_errorText != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _errorText!,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.outfit(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFFEF4444),
+                ),
+              ),
+            ],
+            const SizedBox(height: 28),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _isStarting || _isStopping
+                        ? null
+                        : () => _stopRecording(discard: true),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF475569),
+                      side: const BorderSide(color: Color(0xFFE2E8F0)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text(
+                      'CANCEL',
+                      style: GoogleFonts.outfit(
+                          fontSize: 12, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: _isRecording
+                      ? ElevatedButton.icon(
+                          onPressed: _isStopping
+                              ? null
+                              : () => _stopRecording(discard: false),
+                          icon: const Icon(LucideIcons.square, size: 15),
+                          label: Text(
+                            'STOP & ATTACH',
+                            style: GoogleFonts.outfit(
+                                fontSize: 12, fontWeight: FontWeight.w800),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFEF4444),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16)),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        )
+                      : ElevatedButton.icon(
+                          onPressed: _isStarting ? null : _startRecording,
+                          icon: _isStarting
+                              ? const SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(LucideIcons.mic, size: 16),
+                          label: Text(
+                            _isStarting ? 'STARTING...' : 'RECORD',
+                            style: GoogleFonts.outfit(
+                                fontSize: 12, fontWeight: FontWeight.w800),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF059669),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16)),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                ),
+              ],
+            ),
           ],
         ),
       ),

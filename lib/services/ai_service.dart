@@ -80,7 +80,7 @@ class AIService with ChangeNotifier {
       '   - spoiledBallots (Total Spoiled Ballots) '
       '   - rejectedBallots (Total Rejected Ballots) '
       '   - electionYear (The year of the election written on the form) '
-      '   - electionType (Detect type using keywords: "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman" -> LOCAL GOVERNMENT, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "Reps" -> HOUSE OF REPS) '
+      '   - electionType (Identify the election type from the form header/title, ignoring the "LOCAL GOVERNMENT AREA" address field. Return one of: PRESIDENTIAL, GUBERNATORIAL, SENATORIAL, HOUSE OF REPS, STATE ASSEMBLY, LOCAL GOVERNMENT, COUNCILLOR. Use keywords: "Presidential" -> PRESIDENTIAL, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "House of Representatives/Reps" -> HOUSE OF REPS, "House of Assembly/State Assembly" -> STATE ASSEMBLY, "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman/Area Council" -> LOCAL GOVERNMENT. Return "" if unclear.) '
       'Return ONLY a valid JSON object. If a value is missing, use 0.';
 
   Future<AIResult> processEC8A(File imageFile, [List<String>? partyAbbreviations]) async {
@@ -177,7 +177,7 @@ class AIService with ChangeNotifier {
       '   - spoiledBallots (Total Spoiled Ballots) '
       '   - rejectedBallots (Total Rejected Ballots) '
       '   - electionYear (The year of the election written on the form) '
-      '   - electionType (Detect type using keywords: "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman" -> LOCAL GOVERNMENT, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "Reps" -> HOUSE OF REPS) '
+      '   - electionType (Identify the election type from the form header/title, ignoring the "LOCAL GOVERNMENT AREA" address field. Return one of: PRESIDENTIAL, GUBERNATORIAL, SENATORIAL, HOUSE OF REPS, STATE ASSEMBLY, LOCAL GOVERNMENT, COUNCILLOR. Use keywords: "Presidential" -> PRESIDENTIAL, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "House of Representatives/Reps" -> HOUSE OF REPS, "House of Assembly/State Assembly" -> STATE ASSEMBLY, "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman/Area Council" -> LOCAL GOVERNMENT. Return "" if unclear.) '
       'Return ONLY a valid JSON object. All extracted party votes MUST be grouped inside a nested "partyVotes" map (e.g. {"partyVotes": {"APC": 86, "PDP": 2, ...}, "votersInRegister": 1615, ...}). '
       'Use the exact party abbreviations as the keys inside the "partyVotes" map. If a value is missing or not detected, use 0.';
 
@@ -305,12 +305,24 @@ class AIService with ChangeNotifier {
   }
 
   String _detectTypeOffline(String text) {
-    if (text.contains('COUNCILLOR') || text.contains('COUNCILLORSHIP')) return 'COUNCILLOR';
-    if (text.contains('CHAIRMAN') || text.contains('CHAIRMANSHIP') || text.contains('COUNCIL')) return 'LOCAL GOVERNMENT';
-    if (text.contains('GOVERNOR') || text.contains('GUBERNATORIAL')) return 'GUBERNATORIAL';
-    if (text.contains('SENATE') || text.contains('SENATORIAL')) return 'SENATORIAL';
-    if (text.contains('REPS') || text.contains('HOUSE OF REPS')) return 'HOUSE OF REPS';
-    return 'LOCAL GOVERNMENT';
+    // Strip the polling-unit address label so it cannot falsely trigger LGA election type.
+    final cleaned = text.replaceAll('LOCAL GOVERNMENT AREA', '');
+    if (cleaned.contains('PRESIDENTIAL') || cleaned.contains('PRESIDENT')) return 'PRESIDENTIAL';
+    if (cleaned.contains('GOVERNOR') || cleaned.contains('GUBERNATORIAL')) return 'GUBERNATORIAL';
+    if (cleaned.contains('SENATE') || cleaned.contains('SENATORIAL')) return 'SENATORIAL';
+    if (cleaned.contains('HOUSE OF REPRESENTATIVES') ||
+        cleaned.contains('HOUSE OF REPS') ||
+        cleaned.contains('REPRESENTATIVES') ||
+        cleaned.contains('REPS')) return 'HOUSE OF REPS';
+    if (cleaned.contains('STATE HOUSE OF ASSEMBLY') ||
+        cleaned.contains('STATE ASSEMBLY') ||
+        cleaned.contains('HOUSE OF ASSEMBLY')) return 'STATE HOUSE OF ASSEMBLY';
+    if (cleaned.contains('COUNCILLOR') || cleaned.contains('COUNCILLORSHIP')) return 'COUNCILLOR';
+    if (cleaned.contains('CHAIRMAN') ||
+        cleaned.contains('CHAIRMANSHIP') ||
+        cleaned.contains('AREA COUNCIL') ||
+        cleaned.contains('LOCAL GOVERNMENT ELECTION')) return 'LOCAL GOVERNMENT';
+    return '';
   }
 
   int _extractYear(String text) {

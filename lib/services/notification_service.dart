@@ -1,6 +1,7 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:voteguard/services/cloud_functions_service.dart';
 
@@ -75,6 +76,12 @@ class NotificationService {
     // 4. Register Foreground Message Handlers
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       debugPrint("Foreground message received: ${message.notification?.title}");
+      final targetUserId = message.data['targetUserId']?.toString();
+      final currentUid = FirebaseAuth.instance.currentUser?.uid;
+      if (targetUserId != null && targetUserId.isNotEmpty && currentUid != null && targetUserId != currentUid) {
+        debugPrint("Skipping push notification targeted to user $targetUserId (current logged in user is $currentUid)");
+        return;
+      }
       _showLocalNotification(message);
     });
 

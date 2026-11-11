@@ -1,3 +1,40 @@
+// ===============================================================
+// Assumed Data Model (Incident Reports)
+// ===============================================================
+//
+// Collection: incident_reports
+// Document ID: {clientIncidentId} | {electionId}_{uid}_draft | auto-generated
+// Fields:
+//   - id: string (optional, <= 200 chars)
+//   - clientIncidentId: string (optional, <= 200 chars)
+//   - electionId: string | number (optional, string <= 128 chars)
+//   - observerId: string | null (optional, <= 128 chars, protected against non-admin reassignment)
+//   - submittedBy: string | null (optional, <= 128 chars, protected against non-admin reassignment)
+//   - incidentType: string | null (optional, <= 100 chars)
+//   - description: string | null (optional, <= 20000 chars)
+//   - mediaItems: list | null (optional, <= 50 items)
+//   - mediaUrls: list | null (optional, <= 50 items)
+//   - state: string | null (optional, <= 100 chars)
+//   - lga: string | null (optional, <= 100 chars)
+//   - ward: string | null (optional, <= 150 chars)
+//   - pollingUnit: string | null (optional, <= 300 chars)
+//   - latitude: number | null (optional)
+//   - longitude: number | null (optional)
+//   - deviceId: string | null (optional, <= 200 chars)
+//   - status: string | null (optional, <= 50 chars; observers limited to draft/reported/pending)
+//   - severity: string | null (optional, <= 50 chars)
+//   - priority: string | null (optional, <= 50 chars)
+//   - isSynced: bool | null (optional)
+//   - observerName: string | null (optional, <= 200 chars)
+//   - observerPhone: string | null (optional, <= 50 chars)
+//   - importedFromElectionId: string | number | null (optional)
+//   - importedFromElectionName: string | null (optional, <= 200 chars)
+//   - createdAt: timestamp | string | null (optional)
+//   - updatedAt: timestamp | string | null (optional)
+//   - timestamp: timestamp | string | null (optional)
+//
+// ===============================================================
+
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -8,29 +45,149 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasTokenRole(roles) {
+      return isAuthenticated() &&
+        'role' in request.auth.token &&
+        request.auth.token.role in roles;
+    }
+
+    function hasUserDocRole(roles) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        'role' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in roles;
+    }
+
     function isAdmin() {
-      let tokenRole = request.auth.token.role;
-      let isTokenAdmin = isAuthenticated() &&
-        (tokenRole in ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE'] || 
-         request.auth.token.email == 'evegher@ccfng.org');
-         
-      return isTokenAdmin || (isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE']);
+      let adminRoles = ['super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE'];
+      return isAuthenticated() &&
+        (hasTokenRole(adminRoles) ||
+         hasUserDocRole(adminRoles) ||
+         ('email' in request.auth.token && request.auth.token.email == 'evegher@ccfng.org'));
     }
 
     function isCoordinator() {
-      let tokenRole = request.auth.token.role;
-      let isTokenCoord = isAuthenticated() &&
-        (tokenRole in [
-          'super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE',
-          'regional_coordinator', 'state_coordinator', 'lga_coordinator', 'ward_coordinator',
-          'REGIONAL_COORDINATOR', 'STATE_COORDINATOR', 'LGA_COORDINATOR', 'WARD_COORDINATOR'
-        ]);
-        
-      return isTokenCoord || (isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in [
-          'super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE',
-          'regional_coordinator', 'state_coordinator', 'lga_coordinator', 'ward_coordinator',
-          'REGIONAL_COORDINATOR', 'STATE_COORDINATOR', 'LGA_COORDINATOR', 'WARD_COORDINATOR'
-      ]);
+      let coordinatorRoles = [
+        'super_admin', 'admin', 'national_executive', 'SUPER_ADMIN', 'ADMIN', 'NATIONAL_EXECUTIVE',
+        'regional_coordinator', 'state_coordinator', 'lga_coordinator', 'ward_coordinator',
+        'REGIONAL_COORDINATOR', 'STATE_COORDINATOR', 'LGA_COORDINATOR', 'WARD_COORDINATOR',
+        'provincial_director', 'provincial_project_manager', 'provincial_secretary', 'arch_bishop', 'bishop',
+        'diocesan_coordinator', 'diocesan_cordinator', 'diocesan_director', 'diocesan_project_manager',
+        'PROVINCIAL_DIRECTOR', 'PROVINCIAL_PROJECT_MANAGER', 'PROVINCIAL_SECRETARY', 'ARCH_BISHOP', 'BISHOP',
+        'DIOCESAN_COORDINATOR', 'DIOCESAN_CORDINATOR', 'DIOCESAN_DIRECTOR', 'DIOCESAN_PROJECT_MANAGER'
+      ];
+      return isAuthenticated() &&
+        (hasTokenRole(coordinatorRoles) || hasUserDocRole(coordinatorRoles));
+    }
+
+    function isOptionalStringOrNull(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptionalIdOrNull(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string && data[field].size() <= maxLen) ||
+        data[field] is number;
+    }
+
+    function isOptionalNumberOrNull(data, field) {
+      return !(field in data) ||
+        data[field] == null ||
+        data[field] is number;
+    }
+
+    function isOptionalBoolOrNull(data, field) {
+      return !(field in data) ||
+        data[field] == null ||
+        data[field] is bool;
+    }
+
+    function isOptionalTimestampOrString(data, field) {
+      return !(field in data) ||
+        data[field] == null ||
+        data[field] is timestamp ||
+        (data[field] is string && data[field].size() <= 64);
+    }
+
+    function isOptionalListOrNull(data, field, maxSize) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is list && data[field].size() <= maxSize);
+    }
+
+    function isValidIncidentReport(data) {
+      return data is map &&
+        data.keys().size() <= 40 &&
+        isOptionalStringOrNull(data, 'id', 200) &&
+        isOptionalStringOrNull(data, 'clientIncidentId', 200) &&
+        isOptionalIdOrNull(data, 'electionId', 128) &&
+        isOptionalIdOrNull(data, 'importedFromElectionId', 128) &&
+        isOptionalStringOrNull(data, 'importedFromElectionName', 200) &&
+        isOptionalStringOrNull(data, 'observerId', 128) &&
+        isOptionalStringOrNull(data, 'submittedBy', 128) &&
+        isOptionalStringOrNull(data, 'incidentType', 100) &&
+        isOptionalStringOrNull(data, 'description', 20000) &&
+        isOptionalListOrNull(data, 'mediaItems', 50) &&
+        isOptionalListOrNull(data, 'mediaUrls', 50) &&
+        isOptionalStringOrNull(data, 'state', 100) &&
+        isOptionalStringOrNull(data, 'lga', 100) &&
+        isOptionalStringOrNull(data, 'ward', 150) &&
+        isOptionalStringOrNull(data, 'pollingUnit', 300) &&
+        isOptionalNumberOrNull(data, 'latitude') &&
+        isOptionalNumberOrNull(data, 'longitude') &&
+        isOptionalStringOrNull(data, 'deviceId', 200) &&
+        isOptionalStringOrNull(data, 'status', 50) &&
+        isOptionalStringOrNull(data, 'severity', 50) &&
+        isOptionalStringOrNull(data, 'priority', 50) &&
+        isOptionalBoolOrNull(data, 'isSynced') &&
+        isOptionalStringOrNull(data, 'observerName', 200) &&
+        isOptionalStringOrNull(data, 'observerPhone', 50) &&
+        isOptionalTimestampOrString(data, 'createdAt') &&
+        isOptionalTimestampOrString(data, 'updatedAt') &&
+        isOptionalTimestampOrString(data, 'timestamp');
+    }
+
+    function isIncidentResourceOwner(data) {
+      return isAuthenticated() &&
+        (('observerId' in data && data.observerId == request.auth.uid) ||
+         ('submittedBy' in data && data.submittedBy == request.auth.uid));
+    }
+
+    function isUnclaimedIncident(data) {
+      return (!('observerId' in data) || data.observerId == null || data.observerId == '') &&
+        (!('submittedBy' in data) || data.submittedBy == null || data.submittedBy == '');
+    }
+
+    function isValidNonAdminIncidentCreator(data) {
+      return isIncidentResourceOwner(data) &&
+        (!('observerId' in data) || data.observerId == null || data.observerId == request.auth.uid) &&
+        (!('submittedBy' in data) || data.submittedBy == null || data.submittedBy == request.auth.uid);
+    }
+
+    function isValidNonAdminIncidentOwnershipUpdate() {
+      return (!('observerId' in request.resource.data) || request.resource.data.observerId == null || request.resource.data.observerId == request.auth.uid) &&
+        (!('observerId' in resource.data) || resource.data.observerId == null || resource.data.observerId == '' || ('observerId' in request.resource.data && request.resource.data.observerId == request.auth.uid)) &&
+        (!('submittedBy' in request.resource.data) || request.resource.data.submittedBy == null || request.resource.data.submittedBy == request.auth.uid) &&
+        (!('submittedBy' in resource.data) || resource.data.submittedBy == null || resource.data.submittedBy == '' || ('submittedBy' in request.resource.data && request.resource.data.submittedBy == request.auth.uid));
+    }
+
+    function isValidObserverIncidentStatusOnCreate(data) {
+      return !('status' in data) ||
+        data.status == null ||
+        data.status in ['draft', 'reported', 'pending'];
+    }
+
+    function isValidObserverIncidentStatusOnUpdate() {
+      return !('status' in request.resource.data) ||
+        request.resource.data.status == null ||
+        (('status' in resource.data) && request.resource.data.status == resource.data.status) ||
+        (
+          (!('status' in resource.data) || resource.data.status == null || resource.data.status in ['draft', 'reported', 'pending']) &&
+          request.resource.data.status in ['draft', 'reported', 'pending']
+        );
     }
 
     // ─── USERS ──────────────────────────────────────────────────────────────
@@ -62,8 +219,36 @@ service cloud.firestore {
     // ─── INCIDENT REPORTS ─────────────────────────────────────────────────────
     match /incident_reports/{incidentId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update, delete: if isAdmin() || (isAuthenticated() && resource.data.observerId == request.auth.uid);
+      allow create: if isAuthenticated() &&
+        isValidIncidentReport(request.resource.data) &&
+        (
+          isAdmin() ||
+          isCoordinator() ||
+          (
+            isValidNonAdminIncidentCreator(request.resource.data) &&
+            isValidObserverIncidentStatusOnCreate(request.resource.data)
+          )
+        );
+      allow update: if isAuthenticated() &&
+        isValidIncidentReport(request.resource.data) &&
+        (
+          isAdmin() ||
+          isCoordinator() ||
+          (
+            isIncidentResourceOwner(resource.data) &&
+            isValidNonAdminIncidentOwnershipUpdate() &&
+            isValidObserverIncidentStatusOnUpdate()
+          ) ||
+          (
+            isUnclaimedIncident(resource.data) &&
+            'observerId' in request.resource.data &&
+            request.resource.data.observerId == request.auth.uid &&
+            isValidNonAdminIncidentOwnershipUpdate() &&
+            isValidObserverIncidentStatusOnUpdate()
+          )
+        );
+      allow delete: if isAdmin() ||
+        (isAuthenticated() && isIncidentResourceOwner(resource.data));
     }
     
     match /incidents/{incidentId} {

@@ -116,6 +116,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
 
   void _listenNotifications() {
     _notificationsSubscription?.cancel();
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
     _notificationsSubscription = FirebaseFirestore.instance
         .collection('push_notifications')
         .where('triggered', isEqualTo: true)
@@ -124,13 +125,18 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
       (snapshot) {
         if (mounted) {
           setState(() {
-            _notifications = snapshot.docs.map((doc) {
-              final data = doc.data();
-              return {
-                'id': doc.id,
-                ...data,
-              };
-            }).toList();
+            _notifications = snapshot.docs
+                .map((doc) => {'id': doc.id, ...doc.data()})
+                .where((n) {
+                  // If notification has targetUserId, only display to that exact targeted user
+                  final target = n['targetUserId']?.toString();
+                  if (target != null && target.isNotEmpty) {
+                    return target == currentUserId;
+                  }
+                  // General/system announcements remain visible to all
+                  return true;
+                })
+                .toList();
           });
         }
       },

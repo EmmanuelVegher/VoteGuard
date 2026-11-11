@@ -1,8 +1,8 @@
 package org.caritasnigeria.voteguard
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import androidx.core.app.ActivityCompat
@@ -11,9 +11,12 @@ import androidx.core.view.WindowCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterFragmentActivity() {
-    private val recordingChannel = "org.caritasnigeria.voteguard/background_recording"
+    private val audioChannel = "org.caritasnigeria.voteguard/foreground_audio"
+    private var audioRecorder: MediaRecorder? = null
+    private var currentAudioPath: String? = null
     private var pendingAudioResult: MethodChannel.Result? = null
     private var pendingAudioPath: String? = null
     private val audioPermRequestCode = 9102
@@ -26,29 +29,9 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, recordingChannel)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, audioChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startService" -> {
-                        val mode = call.argument<String>("mode") ?: "video"
-                        val intent = Intent(this, RecordingForegroundService::class.java).apply {
-                            action = RecordingForegroundService.ACTION_START_KEEPALIVE
-                            putExtra(RecordingForegroundService.EXTRA_MODE, mode)
-                        }
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            startForegroundService(intent)
-                        } else {
-                            startService(intent)
-                        }
-                        result.success(true)
-                    }
-                    "stopService" -> {
-                        val intent = Intent(this, RecordingForegroundService::class.java).apply {
-                            action = RecordingForegroundService.ACTION_STOP_ALL
-                        }
-                        startService(intent)
-                        result.success(true)
-                    }
                     "startAudioRecording" -> {
                         val path = call.argument<String>("path")
                         if (path.isNullOrBlank()) {
@@ -69,15 +52,16 @@ class MainActivity : FlutterFragmentActivity() {
                             )
                             return@setMethodCallHandler
                         }
-                        startAudioService(path)
-                        result.success(true)
+                        try {
+                            startForegroundMediaRecorder(path)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            stopForegroundMediaRecorder()
+                            result.error("RECORDER_ERROR", e.message, null)
+                        }
                     }
                     "stopAudioRecording" -> {
-                        val savedPath = RecordingForegroundService.stopActiveAudioRecorder()
-                        val intent = Intent(this, RecordingForegroundService::class.java).apply {
-                            action = RecordingForegroundService.ACTION_STOP_AUDIO
-                        }
-                        startService(intent)
+                        val savedPath = stopForegroundMediaRecorder()
                         result.success(savedPath)
                     }
                     else -> result.notImplemented()
@@ -85,17 +69,49 @@ class MainActivity : FlutterFragmentActivity() {
             }
     }
 
-    private fun startAudioService(path: String) {
-        val intent = Intent(this, RecordingForegroundService::class.java).apply {
-            action = RecordingForegroundService.ACTION_START_AUDIO
-            putExtra(RecordingForegroundService.EXTRA_PATH, path)
-            putExtra(RecordingForegroundService.EXTRA_MODE, "audio")
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
+    private fun startForegroundMediaRecorder(outputPath: String) {
+        stopForegroundMediaRecorder()
+        val outFile = File(outputPath)
+        outFile.parentFile?.mkdirs()
+
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(this)
         } else {
-            startService(intent)
+            @Suppress("DEPRECATION")
+            MediaRecorder()
         }
+        recorder.apply {
+            setAudioSource(MediaRecorder.AudioSource.MIC)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            setAudioEncodingBitRate(128000)
+            setAudioSamplingRate(44100)
+            setOutputFile(outputPath)
+            prepare()
+            start()
+        }
+        audioRecorder = recorder
+        currentAudioPath = outputPath
+    }
+
+    private fun stopForegroundMediaRecorder(): String? {
+        val savedPath = currentAudioPath
+        try {
+            audioRecorder?.apply {
+                stop()
+                reset()
+                release()
+            }
+        } catch (_: Exception) {
+            try {
+                audioRecorder?.reset()
+                audioRecorder?.release()
+            } catch (_: Exception) {}
+        } finally {
+            audioRecorder = null
+            currentAudioPath = null
+        }
+        return savedPath
     }
 
     override fun onRequestPermissionsResult(
@@ -112,12 +128,22 @@ class MainActivity : FlutterFragmentActivity() {
             if (res != null) {
                 val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
                 if (granted && !path.isNullOrBlank()) {
-                    startAudioService(path)
-                    res.success(true)
+                    try {
+                        startForegroundMediaRecorder(path)
+                        res.success(true)
+                    } catch (e: Exception) {
+                        stopForegroundMediaRecorder()
+                        res.error("RECORDER_ERROR", e.message, null)
+                    }
                 } else {
                     res.error("PERMISSION_DENIED", "Microphone permission denied", null)
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        stopForegroundMediaRecorder()
+        super.onDestroy()
     }
 }

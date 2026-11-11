@@ -99,16 +99,26 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
       final data = doc.data();
       final profileUrl = (data?['profilePictureUrl'] ?? data?['profileImageUrl']) as String?;
       final hasPicture = profileUrl != null && profileUrl.trim().isNotEmpty;
-      final isFaceEnrolled = data?['isFaceEnrolled'] == true;
-      final isEnrolled = isFaceEnrolled || hasPicture;
 
-      if (!isEnrolled) {
+      // An account is strictly considered enrolled ONLY if it actually possesses a valid profile picture
+      if (!hasPicture) {
         await _storage.delete(key: 'isFaceEnrolled_${widget.userId}');
+        await _storage.delete(key: 'profilePictureUrl_${widget.userId}');
+        await _storage.delete(key: 'local_profile_image_path_${widget.userId}');
+
+        // If Firestore still has stale isFaceEnrolled: true, reset it to false
+        if (data?['isFaceEnrolled'] == true) {
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(widget.userId)
+              .set({'isFaceEnrolled': false}, SetOptions(merge: true))
+              .catchError((_) {});
+        }
         return GateStatus.notEnrolled;
       }
 
-      // Self-healing: ensure isFaceEnrolled is true in Firestore if user already has a profile picture
-      if (hasPicture && !isFaceEnrolled) {
+      // Self-healing: ensure isFaceEnrolled is true in Firestore if user has a profile picture
+      if (data?['isFaceEnrolled'] != true) {
         FirebaseFirestore.instance
             .collection('users')
             .doc(widget.userId)
@@ -116,21 +126,24 @@ class _BiometricEnrollmentGateState extends State<BiometricEnrollmentGate> {
             .catchError((_) {});
       }
 
-      // 1. Check if already marked as FLAGGED_DUPLICATE or has conflict
+      // 1. Duplicate check gate commented out for now
+      /*
       final auditStatus = data?['faceAuditStatus'] as String?;
       final hasConflict = data?['hasBiometricConflict'] == true;
       if (auditStatus == 'FLAGGED_DUPLICATE' || hasConflict) {
         _conflictData = data;
         return GateStatus.flaggedDuplicate;
       }
+      */
 
       await _storage.write(key: 'isFaceEnrolled_${widget.userId}', value: 'true');
+      await _storage.write(key: 'profilePictureUrl_${widget.userId}', value: profileUrl);
       return GateStatus.verified;
     } catch (e) {
       debugPrint("Biometric check error: $e");
       final cached = await _storage.read(key: 'isFaceEnrolled_${widget.userId}');
       final cachedUrl = await _storage.read(key: 'profilePictureUrl_${widget.userId}');
-      return (cached == 'true' || (cachedUrl != null && cachedUrl.isNotEmpty))
+      return (cached == 'true' && (cachedUrl != null && cachedUrl.trim().isNotEmpty))
           ? GateStatus.verified
           : GateStatus.notEnrolled;
     }

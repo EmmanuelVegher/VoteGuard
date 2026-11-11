@@ -15,20 +15,12 @@ import UIKit
 
     if let controller = window?.rootViewController as? FlutterViewController {
       let channel = FlutterMethodChannel(
-        name: "org.caritasnigeria.voteguard/background_recording",
+        name: "org.caritasnigeria.voteguard/foreground_audio",
         binaryMessenger: controller.binaryMessenger
       )
       channel.setMethodCallHandler { [weak self] call, result in
         guard let self = self else { return }
         switch call.method {
-        case "startService":
-          self.configureAudioSession(active: true)
-          result(true)
-        case "stopService":
-          if self.audioRecorder == nil {
-            self.configureAudioSession(active: false)
-          }
-          result(true)
         case "startAudioRecording":
           guard let args = call.arguments as? [String: Any],
                 let path = args["path"] as? String else {
@@ -52,11 +44,7 @@ import UIKit
     let session = AVAudioSession.sharedInstance()
     do {
       if active {
-        try session.setCategory(
-          .playAndRecord,
-          mode: .default,
-          options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
-        )
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
         try session.setActive(true)
       } else {
         try session.setActive(false, options: .notifyOthersOnDeactivation)
