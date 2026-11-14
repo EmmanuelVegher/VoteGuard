@@ -50,7 +50,10 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   bool _cameraUnavailable = false;
 
   DateTime _stepStartTime = DateTime.now();
-  int _stableFrames = 0;
+  DateTime? _lastInferenceTime;
+  DateTime? _stateHoldStartTime;
+  bool _isLaggingDevice = false;
+  final List<int> _inferenceDurations = [];
 
   LivenessStep _step = LivenessStep.initializing;
   String _instruction = "Initializing HD Face Detector...";
@@ -87,7 +90,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       _errorMessage = null;
       _step = LivenessStep.initializing;
       _instruction = "Initializing front camera...";
-      _subInstruction = "Connecting to high-definition video stream";
+      _subInstruction = "Connecting to video stream";
     });
 
     try {
@@ -104,7 +107,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
       _cameraController = CameraController(
         frontCamera,
-        ResolutionPreset.veryHigh,
+        ResolutionPreset.medium, // 480p preview for smooth ML Kit processing on low-end devices
         enableAudio: false,
         imageFormatGroup: Platform.isAndroid
             ? ImageFormatGroup.nv21
@@ -129,7 +132,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         _stepIcon = Icons.face_rounded;
         _progress = 0.15;
         _stepStartTime = DateTime.now();
-        _stableFrames = 0;
+        _stateHoldStartTime = null;
       });
     } catch (e) {
       debugPrint("Camera init error: $e");
@@ -151,6 +154,13 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         _step == LivenessStep.completed) {
       return;
     }
+
+    final now = DateTime.now();
+    // Inference Throttling: Cap to ~12-15 FPS (minimum 75ms frame interval)
+    if (_lastInferenceTime != null && now.difference(_lastInferenceTime!).inMilliseconds < 75) {
+      return;
+    }
+    _lastInferenceTime = now;
     _isProcessingFrame = true;
 
     try {
@@ -164,8 +174,25 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
       if (inputImage == null) return;
 
+      final stopwatch = Stopwatch()..start();
       final faces = await _faceDetector.processImage(inputImage);
+      stopwatch.stop();
+
+      // Lag detector: track inference execution duration
+      final durationMs = stopwatch.elapsedMilliseconds;
+      _inferenceDurations.add(durationMs);
+      if (_inferenceDurations.length > 6) {
+        _inferenceDurations.removeAt(0);
+        final avgMs = _inferenceDurations.reduce((a, b) => a + b) / _inferenceDurations.length;
+        if (avgMs > 180 && !_isLaggingDevice && mounted) {
+          setState(() {
+            _isLaggingDevice = true;
+          });
+        }
+      }
+
       if (faces.isEmpty) {
+        _stateHoldStartTime = null;
         if (_step != LivenessStep.initializing && mounted) {
           _updateInstruction(
             "Position your face inside the frame",
@@ -178,6 +205,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       }
 
       if (faces.length > 1) {
+        _stateHoldStartTime = null;
         if (mounted) {
           _updateInstruction(
             "Multiple faces detected",
@@ -198,7 +226,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     }
   }
 
-  /// State Machine: Smoothly progresses through verification without inverted turn contradictions
+  /// State Machine: Time-based dwell progression & adaptive thresholds for slow devices
   void _handleStepProgression(Face face) async {
     if (_isEvaluating) return;
 
@@ -210,12 +238,18 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
     final now = DateTime.now();
 
+    final holdMs = _isLaggingDevice ? 380 : 550;
+    final yawLimit = _isLaggingDevice ? 12.0 : 8.0;
+    final pitchLimit = _isLaggingDevice ? 16.0 : 12.0;
+    final turnYawThreshold = _isLaggingDevice ? 10.0 : 15.0;
+
     switch (_step) {
       case LivenessStep.positionFace:
-        if (yaw.abs() < 8.0 && pitch.abs() < 12.0) {
-          _stableFrames++;
-          if (_stableFrames >= 3) {
-            _stableFrames = 0;
+        if (yaw.abs() < yawLimit && pitch.abs() < pitchLimit) {
+          _stateHoldStartTime ??= now;
+          final elapsed = now.difference(_stateHoldStartTime!).inMilliseconds;
+          if (elapsed >= holdMs) {
+            _stateHoldStartTime = null;
             _stepStartTime = now;
             _firstTurnYaw = null;
             HapticFeedback.selectionClick();
@@ -228,28 +262,25 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             });
           }
         } else {
-          _stableFrames = 0;
+          _stateHoldStartTime = null;
         }
         break;
 
       case LivenessStep.turnLeft:
-        // Enforce at least 500ms dwell time so user can read instruction and begin turning
-        if (now.difference(_stepStartTime).inMilliseconds < 500) {
-          _stableFrames = 0;
+        if (now.difference(_stepStartTime).inMilliseconds < (_isLaggingDevice ? 250 : 450)) {
           return;
         }
 
         // Standard Google ML Kit front-camera coordinate:
-        // Turning to subject's left is negative yaw (yaw < -15.0).
-        // Resilient fallback: If an inverted vendor camera driver is in use, allow positive yaw after 3.5s of attempting.
-        final isStandardLeft = yaw < -15.0;
-        final isInvertedLeft = now.difference(_stepStartTime).inMilliseconds > 3500 && yaw > 15.0;
+        // Turning to subject's left is negative yaw (yaw < -turnYawThreshold).
+        final isStandardLeft = yaw < -turnYawThreshold;
+        final isInvertedLeft = now.difference(_stepStartTime).inMilliseconds > 2500 && yaw > turnYawThreshold;
 
         if (isStandardLeft || isInvertedLeft) {
-          _stableFrames++;
-          if (_stableFrames >= 3) {
+          _stateHoldStartTime ??= now;
+          if (now.difference(_stateHoldStartTime!).inMilliseconds >= (_isLaggingDevice ? 180 : 300)) {
             _firstTurnYaw = yaw;
-            _stableFrames = 0;
+            _stateHoldStartTime = null;
             _stepStartTime = now;
             HapticFeedback.lightImpact();
             setState(() {
@@ -261,20 +292,19 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             });
           }
         } else {
-          _stableFrames = 0;
+          _stateHoldStartTime = null;
         }
         break;
 
       case LivenessStep.center1:
-        if (now.difference(_stepStartTime).inMilliseconds < 450) {
-          _stableFrames = 0;
+        if (now.difference(_stepStartTime).inMilliseconds < (_isLaggingDevice ? 250 : 400)) {
           return;
         }
 
-        if (yaw.abs() < 8.0 && pitch.abs() < 12.0) {
-          _stableFrames++;
-          if (_stableFrames >= 3) {
-            _stableFrames = 0;
+        if (yaw.abs() < yawLimit && pitch.abs() < pitchLimit) {
+          _stateHoldStartTime ??= now;
+          if (now.difference(_stateHoldStartTime!).inMilliseconds >= holdMs) {
+            _stateHoldStartTime = null;
             _stepStartTime = now;
             HapticFeedback.selectionClick();
             setState(() {
@@ -286,24 +316,23 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             });
           }
         } else {
-          _stableFrames = 0;
+          _stateHoldStartTime = null;
         }
         break;
 
       case LivenessStep.turnRight:
-        if (now.difference(_stepStartTime).inMilliseconds < 500) {
-          _stableFrames = 0;
+        if (now.difference(_stepStartTime).inMilliseconds < (_isLaggingDevice ? 250 : 450)) {
           return;
         }
 
         // Must turn opposite to the left turn
-        final isStandardRight = _firstTurnYaw != null && _firstTurnYaw! < 0 ? yaw > 15.0 : yaw > 15.0;
-        final isInvertedRight = _firstTurnYaw != null && _firstTurnYaw! > 0 && yaw < -15.0;
+        final isStandardRight = _firstTurnYaw != null && _firstTurnYaw! < 0 ? yaw > turnYawThreshold : yaw > turnYawThreshold;
+        final isInvertedRight = _firstTurnYaw != null && _firstTurnYaw! > 0 && yaw < -turnYawThreshold;
 
         if (isStandardRight || isInvertedRight) {
-          _stableFrames++;
-          if (_stableFrames >= 3) {
-            _stableFrames = 0;
+          _stateHoldStartTime ??= now;
+          if (now.difference(_stateHoldStartTime!).inMilliseconds >= (_isLaggingDevice ? 180 : 300)) {
+            _stateHoldStartTime = null;
             _stepStartTime = now;
             HapticFeedback.lightImpact();
             setState(() {
@@ -315,20 +344,19 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             });
           }
         } else {
-          _stableFrames = 0;
+          _stateHoldStartTime = null;
         }
         break;
 
       case LivenessStep.center2:
-        if (now.difference(_stepStartTime).inMilliseconds < 450) {
-          _stableFrames = 0;
+        if (now.difference(_stepStartTime).inMilliseconds < (_isLaggingDevice ? 250 : 400)) {
           return;
         }
 
-        if (yaw.abs() < 8.0 && pitch.abs() < 12.0) {
-          _stableFrames++;
-          if (_stableFrames >= 3) {
-            _stableFrames = 0;
+        if (yaw.abs() < yawLimit && pitch.abs() < pitchLimit) {
+          _stateHoldStartTime ??= now;
+          if (now.difference(_stateHoldStartTime!).inMilliseconds >= holdMs) {
+            _stateHoldStartTime = null;
             _eyesClosedOnce = false;
             _stepStartTime = now;
             HapticFeedback.selectionClick();
@@ -341,17 +369,17 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             });
           }
         } else {
-          _stableFrames = 0;
+          _stateHoldStartTime = null;
         }
         break;
 
       case LivenessStep.blink:
-        if (now.difference(_stepStartTime).inMilliseconds < 400) return;
+        if (now.difference(_stepStartTime).inMilliseconds < 300) return;
 
-        if (leftEye < 0.28 && rightEye < 0.28) {
+        if (leftEye < 0.32 && rightEye < 0.32) {
           _eyesClosedOnce = true;
-        } else if (_eyesClosedOnce && leftEye > 0.60 && rightEye > 0.60) {
-          _stableFrames = 0;
+        } else if (_eyesClosedOnce && leftEye > 0.55 && rightEye > 0.55) {
+          _stateHoldStartTime = null;
           _stepStartTime = now;
           HapticFeedback.lightImpact();
           setState(() {
@@ -361,16 +389,37 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             _stepIcon = Icons.sentiment_very_satisfied_rounded;
             _progress = 0.95;
           });
+          return;
+        }
+
+        // Adaptive slow-device fallback for blink:
+        // On slow devices (or if user struggles for > 3.0s), allow natural smile or steady face
+        final timeOnBlink = now.difference(_stepStartTime).inMilliseconds;
+        if (_isLaggingDevice || timeOnBlink > 3000) {
+          if (smile > 0.25 || (yaw.abs() < yawLimit && timeOnBlink > 4000)) {
+            _stateHoldStartTime = null;
+            _stepStartTime = now;
+            HapticFeedback.lightImpact();
+            setState(() {
+              _step = LivenessStep.smile;
+              _instruction = "Smile for your profile! 😊";
+              _subInstruction = "Give a clear, natural smile looking straight";
+              _stepIcon = Icons.sentiment_very_satisfied_rounded;
+              _progress = 0.95;
+            });
+          }
         }
         break;
 
       case LivenessStep.smile:
-        if (now.difference(_stepStartTime).inMilliseconds < 400) return;
+        if (now.difference(_stepStartTime).inMilliseconds < 300) return;
 
-        if (smile > 0.38 && yaw.abs() < 10.0 && pitch.abs() < 12.0) {
-          _stableFrames++;
-          if (_stableFrames >= 3) {
+        final smileThreshold = _isLaggingDevice ? 0.25 : 0.38;
+        if (smile > smileThreshold && yaw.abs() < (yawLimit + 2) && pitch.abs() < pitchLimit) {
+          _stateHoldStartTime ??= now;
+          if (now.difference(_stateHoldStartTime!).inMilliseconds >= (_isLaggingDevice ? 200 : 350)) {
             _isEvaluating = true;
+            _stateHoldStartTime = null;
             HapticFeedback.mediumImpact();
             setState(() {
               _step = LivenessStep.capturing;
@@ -379,17 +428,37 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
               _stepIcon = Icons.camera_rounded;
               _progress = 1.0;
             });
-            await Future.delayed(const Duration(milliseconds: 500));
+            await Future.delayed(const Duration(milliseconds: 400));
             await _captureAndEnroll();
           }
         } else {
-          _stableFrames = 0;
+          _stateHoldStartTime = null;
         }
         break;
 
       default:
         break;
     }
+  }
+
+  Future<void> _handleManualInstantCapture() async {
+    if (_isEvaluating ||
+        _step == LivenessStep.capturing ||
+        _step == LivenessStep.uploading ||
+        _step == LivenessStep.completed) {
+      return;
+    }
+    _isEvaluating = true;
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _step = LivenessStep.capturing;
+      _instruction = "Hold still! Capturing portrait...";
+      _subInstruction = "Processing official observer photo";
+      _stepIcon = Icons.camera_rounded;
+      _progress = 1.0;
+    });
+    await Future.delayed(const Duration(milliseconds: 200));
+    await _captureAndEnroll();
   }
 
   void _updateInstruction(String main, String sub, IconData icon, double prog) {
@@ -1113,6 +1182,74 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             ],
           ),
         ),
+
+        // Instant Capture Button & Adaptive Slow-Device Action
+        if (!isCapturingOrDone && _step != LivenessStep.uploading) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Column(
+              children: [
+                if (_isLaggingDevice)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.bolt_rounded, size: 16, color: Color(0xFFF59E0B)),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            "Slow device detected • Adaptive mode active or tap below to capture",
+                            style: TextStyle(color: Color(0xFFF59E0B), fontSize: 11, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: _handleManualInstantCapture,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0D9488),
+                      foregroundColor: Colors.white,
+                      elevation: 4,
+                      shadowColor: const Color(0xFF0D9488).withValues(alpha: 0.5),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: _isLaggingDevice
+                            ? const BorderSide(color: Color(0xFFF59E0B), width: 1.5)
+                            : BorderSide.none,
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.camera_alt_rounded, size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          "CAPTURE PHOTO & VERIFY NOW",
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.8,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
 
         // Bottom Action Row: Security Beacon
         Padding(
