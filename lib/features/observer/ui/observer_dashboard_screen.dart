@@ -3329,6 +3329,27 @@ class _ChecklistTabState extends State<_ChecklistTab>
     });
   }
 
+  bool _isValidChecklistQuestion(dynamic q) {
+    if (q is! Map) return false;
+    final text = (q['text'] ?? '').toString().trim();
+    if (text.isEmpty) return false;
+    // Filter out commented out questions
+    if (text.startsWith('//') || text.startsWith('/*')) return false;
+    // Filter out disabled / inactive questions
+    if (q['disabled'] == true || q['active'] == false) return false;
+    // Filter out media attachment questions (photos/videos) which were commented out
+    final type = (q['type'] ?? 'text').toString();
+    if (type == 'media') return false;
+    final textLower = text.toLowerCase();
+    if (textLower.contains('pictures & videos') ||
+        textLower.contains('picture & videos') ||
+        textLower.contains('pictures, videos, audio') ||
+        (textLower.contains('any incidents') && textLower.contains('video'))) {
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _loadQuestions(String? templateId) async {
     List<dynamic> questionsData = [];
     if (templateId != null) {
@@ -3339,7 +3360,9 @@ class _ChecklistTabState extends State<_ChecklistTab>
             .get()
             .timeout(const Duration(seconds: 10));
         final data = templateDoc.data();
-        questionsData = (data?['questions'] as List<dynamic>?) ?? [];
+        questionsData = ((data?['questions'] as List<dynamic>?) ?? [])
+            .where(_isValidChecklistQuestion)
+            .toList();
         questionsData.sort((a, b) {
           final aOrder = (a is Map ? a['order'] : null) as num? ?? 0;
           final bOrder = (b is Map ? b['order'] : null) as num? ?? 0;
@@ -3358,6 +3381,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                   'order': q.order,
                   'category': q.category,
                 })
+            .where(_isValidChecklistQuestion)
             .toList();
       }
     } else {
@@ -3376,6 +3400,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                   'order': q.order,
                   'category': q.category,
                 })
+            .where(_isValidChecklistQuestion)
             .toList();
       }
     }
@@ -3396,7 +3421,9 @@ class _ChecklistTabState extends State<_ChecklistTab>
           .listen((snapshot) {
         if (snapshot.exists && mounted) {
           final data = snapshot.data();
-          final updatedQuestions = (data?['questions'] as List<dynamic>?) ?? [];
+          final updatedQuestions = ((data?['questions'] as List<dynamic>?) ?? [])
+              .where(_isValidChecklistQuestion)
+              .toList();
           setState(() {
             _questions = updatedQuestions;
           });
@@ -3705,15 +3732,20 @@ class _ChecklistTabState extends State<_ChecklistTab>
     int visibleCount = 0;
     int answeredCount = 0;
     for (var q in _questions) {
-      if (!_isQuestionVisible(q)) continue;
+      if (!_isValidChecklistQuestion(q)) continue;
+      final qMap = Map<String, dynamic>.from(q as Map);
+      if (!_isQuestionVisible(qMap)) continue;
+      if (qMap['type'] == 'media') continue;
       visibleCount++;
-      if (_answers[q['id']] != null && _answers[q['id']].toString().isNotEmpty)
+      if (_answers[qMap['id']] != null && _answers[qMap['id']].toString().isNotEmpty)
         answeredCount++;
     }
     return visibleCount == 0 ? 0 : answeredCount / visibleCount;
   }
 
   bool _isQuestionVisible(Map<String, dynamic> q) {
+    if (!_isValidChecklistQuestion(q)) return false;
+
     final textLower = (q['text'] ?? '').toString().trim().toLowerCase();
 
     bool _answerIsYes(dynamic answer) =>
@@ -3923,12 +3955,14 @@ class _ChecklistTabState extends State<_ChecklistTab>
   Future<void> _save(bool isFinal) async {
     if (isFinal) {
       for (var q in _questions) {
-        if (_isQuestionVisible(q) &&
-            q['required'] == true &&
-            !_isQuestionDependent(q) &&
-            q['type'] != 'media') {
-          if (_answers[q['id']] == null ||
-              _answers[q['id']].toString().isEmpty) {
+        if (!_isValidChecklistQuestion(q)) continue;
+        final qMap = Map<String, dynamic>.from(q as Map);
+        if (_isQuestionVisible(qMap) &&
+            qMap['required'] == true &&
+            !_isQuestionDependent(qMap) &&
+            qMap['type'] != 'media') {
+          if (_answers[qMap['id']] == null ||
+              _answers[qMap['id']].toString().isEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text(
                     'Please answer all required questions before submitting.'),
@@ -4360,6 +4394,13 @@ class _ChecklistTabState extends State<_ChecklistTab>
   }
 
   Widget _buildSection(String title, List<dynamic> questions) {
+    final visibleQuestions = questions.where((q) {
+      if (!_isValidChecklistQuestion(q)) return false;
+      return _isQuestionVisible(Map<String, dynamic>.from(q as Map));
+    }).toList();
+
+    if (visibleQuestions.isEmpty) return const SizedBox.shrink();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -4371,9 +4412,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                 color: const Color(0xFF94A3B8),
                 letterSpacing: 1)),
         const SizedBox(height: 16),
-        ...questions.map((q) => _isQuestionVisible(q)
-            ? _buildQuestionCard(q)
-            : const SizedBox.shrink()),
+        ...visibleQuestions.map((q) => _buildQuestionCard(Map<String, dynamic>.from(q as Map))),
       ],
     );
   }

@@ -54,20 +54,51 @@ class SyncService {
           updatedAt: Value((tData['updatedAt'] as Timestamp?)?.toDate()),
         ));
 
-        // Sync Questions for this template
-        final qDocs = await _firestore.collection('checklist_templates').doc(tDoc.id).collection('questions').get();
-        if (qDocs.docs.isNotEmpty) {
+        // Sync Questions for this template (prefer top-level 'questions' array, fallback to subcollection)
+        List<Map<String, dynamic>> rawQuestions = [];
+        if (tData['questions'] is List && (tData['questions'] as List).isNotEmpty) {
+          rawQuestions = (tData['questions'] as List)
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+        } else {
+          final qDocs = await _firestore
+              .collection('checklist_templates')
+              .doc(tDoc.id)
+              .collection('questions')
+              .get();
+          rawQuestions = qDocs.docs.map((d) => d.data()).toList();
+        }
+
+        if (rawQuestions.isNotEmpty) {
           await _db.clearTemplateQuestions(tDoc.id);
-          for (var qDoc in qDocs.docs) {
-            final qData = qDoc.data();
+          for (var qData in rawQuestions) {
+            final text = (qData['text'] ?? '').toString().trim();
+            final type = (qData['type'] ?? 'text').toString();
+            final textLower = text.toLowerCase();
+
+            // Filter out commented-out questions, disabled questions, and media/attachment questions
+            if (text.startsWith('//') || text.startsWith('/*')) continue;
+            if (qData['disabled'] == true || qData['active'] == false) continue;
+            if (type == 'media') continue;
+            if (textLower.contains('pictures & videos') ||
+                textLower.contains('picture & videos') ||
+                textLower.contains('pictures, videos, audio') ||
+                (textLower.contains('any incidents') && textLower.contains('video'))) {
+              continue;
+            }
+
+            final qId = (qData['id'] ?? '').toString();
+            if (qId.isEmpty) continue;
+
             await _db.upsertChecklistQuestion(ChecklistQuestionsCompanion(
-              id: Value(qDoc.id),
+              id: Value(qId),
               templateId: Value(tDoc.id),
-              questionText: Value(qData['text'] ?? ''),
-              type: Value(qData['type'] ?? 'text'),
-              order: Value(qData['order'] ?? 0),
-              category: Value(qData['category']),
-              metadataJson: Value(qData['options']?.toString()), // Options or other metadata
+              questionText: Value(text),
+              type: Value(type),
+              order: Value((qData['order'] as num?)?.toInt() ?? 0),
+              category: Value(qData['category']?.toString()),
+              metadataJson: Value(qData['options']?.toString()),
             ));
           }
         }
