@@ -79,7 +79,7 @@ class AIService with ChangeNotifier {
       '   - unusedBallots (Total Unused Ballots) '
       '   - spoiledBallots (Total Spoiled Ballots) '
       '   - rejectedBallots (Total Rejected Ballots) '
-      '   - electionYear (The year of the election written on the form) '
+      '   - electionYear (Extract the year printed directly next to or above the election type in the form title/header, e.g. from "2026 PRESIDENTIAL ELECTION" the year is 2026. DO NOT use the date from the presiding/polling officer signature, stamp, or certification at the bottom of the form.) '
       '   - electionType (Identify the election type from the form header/title, ignoring the "LOCAL GOVERNMENT AREA" address field. Return one of: PRESIDENTIAL, GUBERNATORIAL, SENATORIAL, HOUSE OF REPS, STATE ASSEMBLY, LOCAL GOVERNMENT, COUNCILLOR. Use keywords: "Presidential" -> PRESIDENTIAL, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "House of Representatives/Reps" -> HOUSE OF REPS, "House of Assembly/State Assembly" -> STATE ASSEMBLY, "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman/Area Council" -> LOCAL GOVERNMENT. Return "" if unclear.) '
       'Return ONLY a valid JSON object. If a value is missing, use 0.';
 
@@ -176,7 +176,7 @@ class AIService with ChangeNotifier {
       '   - unusedBallots (Total Unused Ballots) '
       '   - spoiledBallots (Total Spoiled Ballots) '
       '   - rejectedBallots (Total Rejected Ballots) '
-      '   - electionYear (The year of the election written on the form) '
+      '   - electionYear (Extract the year printed directly next to or above the election type in the form title/header, e.g. from "2026 PRESIDENTIAL ELECTION" the year is 2026. DO NOT use the date from the presiding/polling officer signature, stamp, or certification at the bottom of the form.) '
       '   - electionType (Identify the election type from the form header/title, ignoring the "LOCAL GOVERNMENT AREA" address field. Return one of: PRESIDENTIAL, GUBERNATORIAL, SENATORIAL, HOUSE OF REPS, STATE ASSEMBLY, LOCAL GOVERNMENT, COUNCILLOR. Use keywords: "Presidential" -> PRESIDENTIAL, "Governorship/Gubernatorial" -> GUBERNATORIAL, "Senatorial/Senate" -> SENATORIAL, "House of Representatives/Reps" -> HOUSE OF REPS, "House of Assembly/State Assembly" -> STATE ASSEMBLY, "Councillor/Councillorship" -> COUNCILLOR, "Chairmanship/Chairman/Area Council" -> LOCAL GOVERNMENT. Return "" if unclear.) '
       'Return ONLY a valid JSON object. All extracted party votes MUST be grouped inside a nested "partyVotes" map (e.g. {"partyVotes": {"APC": 86, "PDP": 2, ...}, "votersInRegister": 1615, ...}). '
       'Use the exact party abbreviations as the keys inside the "partyVotes" map. If a value is missing or not detected, use 0.';
@@ -188,7 +188,9 @@ class AIService with ChangeNotifier {
       ])
     ];
 
-    final response = await model.generateContent(content);
+    final response = await model
+        .generateContent(content)
+        .timeout(const Duration(seconds: 15));
     final text = response.text;
     if (text == null) throw Exception('Empty response from AI');
     final cleanedText = text.replaceAll('```json', '').replaceAll('```', '').trim();
@@ -326,9 +328,88 @@ class AIService with ChangeNotifier {
   }
 
   int _extractYear(String text) {
-    final regExp = RegExp(r'202[0-9]');
-    final match = regExp.firstMatch(text);
-    return int.tryParse(match?.group(0) ?? '2026') ?? 2026;
+    final upperText = text.toUpperCase();
+    final lines = upperText.split('\n');
+
+    final electionKeywords = [
+      'PRESIDENTIAL',
+      'GUBERNATORIAL',
+      'GOVERNOR',
+      'SENATORIAL',
+      'SENATE',
+      'HOUSE OF REPS',
+      'REPRESENTATIVES',
+      'STATE ASSEMBLY',
+      'HOUSE OF ASSEMBLY',
+      'COUNCILLOR',
+      'CHAIRMAN',
+      'AREA COUNCIL',
+      'LOCAL GOVERNMENT',
+      'ELECTION',
+    ];
+
+    final yearRegex = RegExp(r'\b(20[2-3][0-9])\b');
+
+    // 1. Direct Regex for adjacent patterns: "[YEAR] [TYPE] ELECTION"
+    final adjacentPattern = RegExp(
+      r'\b(20[2-3][0-9])\s+(?:[A-Z\s]{0,25})?(?:PRESIDENTIAL|GUBERNATORIAL|GOVERNOR|SENATORIAL|SENATE|HOUSE OF REPS|REPRESENTATIVES|STATE ASSEMBLY|HOUSE OF ASSEMBLY|COUNCILLOR|CHAIRMAN|AREA COUNCIL|LOCAL GOVERNMENT|ELECTION)\b',
+    );
+    final adjMatch = adjacentPattern.firstMatch(upperText);
+    if (adjMatch != null) {
+      final year = int.tryParse(adjMatch.group(1)!);
+      if (year != null && year >= 2020 && year <= 2035) return year;
+    }
+
+    final reversePattern = RegExp(
+      r'\b(?:PRESIDENTIAL|GUBERNATORIAL|GOVERNOR|SENATORIAL|SENATE|HOUSE OF REPS|REPRESENTATIVES|STATE ASSEMBLY|HOUSE OF ASSEMBLY|COUNCILLOR|CHAIRMAN|AREA COUNCIL|LOCAL GOVERNMENT|ELECTION)\s+(?:[A-Z\s]{0,25})?\b(20[2-3][0-9])\b',
+    );
+    final revMatch = reversePattern.firstMatch(upperText);
+    if (revMatch != null) {
+      final year = int.tryParse(revMatch.group(1)!);
+      if (year != null && year >= 2020 && year <= 2035) return year;
+    }
+
+    // 2. Scan lines containing election keywords, strictly ignoring presiding/polling officer signature lines
+    for (final line in lines) {
+      if (line.contains('PRESIDING') ||
+          line.contains('POLLING OFFICER') ||
+          line.contains('SIGN') ||
+          line.contains('STAMP') ||
+          line.contains('CERTIFY')) {
+        continue;
+      }
+      final hasElectionKeyword = electionKeywords.any((kw) => line.contains(kw));
+      if (hasElectionKeyword) {
+        final match = yearRegex.firstMatch(line);
+        if (match != null) {
+          final year = int.tryParse(match.group(1)!);
+          if (year != null && year >= 2020 && year <= 2035) {
+            return year;
+          }
+        }
+      }
+    }
+
+    // 3. Header check: Look in the top 15 lines of the form, ignoring signature/date lines
+    for (int i = 0; i < lines.length && i < 15; i++) {
+      final line = lines[i];
+      if (line.contains('PRESIDING') ||
+          line.contains('POLLING OFFICER') ||
+          line.contains('SIGN') ||
+          line.contains('STAMP') ||
+          line.contains('CERTIFY')) {
+        continue;
+      }
+      final match = yearRegex.firstMatch(line);
+      if (match != null) {
+        final year = int.tryParse(match.group(1)!);
+        if (year != null && year >= 2020 && year <= 2035) return year;
+      }
+    }
+
+    // 4. Fallback: match any 2020-2035 year in the document
+    final match = yearRegex.firstMatch(text);
+    return int.tryParse(match?.group(1) ?? '2026') ?? 2026;
   }
 }
 

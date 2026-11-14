@@ -7103,6 +7103,27 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     _loadData();
     _startNetworkTimer();
     _listenForElectionChanges();
+    _checkLostData();
+  }
+
+  Future<void> _checkLostData() async {
+    try {
+      final picker = ImagePicker();
+      final LostDataResponse response = await picker.retrieveLostData();
+      if (response.isEmpty || response.file == null) return;
+      debugPrint("VoteGuard: Recovered camera capture after Android OS process kill.");
+      File evidenceFile = File(response.file!.path);
+      evidenceFile = await _addWatermark(evidenceFile);
+      if (mounted) {
+        setState(() {
+          _evidenceFile = evidenceFile;
+        });
+        _scheduleResultsAutoDraft(immediate: true);
+        _showPreScanValidation();
+      }
+    } catch (e) {
+      debugPrint("Error recovering lost camera photo: $e");
+    }
   }
 
   @override
@@ -7454,10 +7475,27 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               .map((e) => Map<String, dynamic>.from(e as Map))
               .toList();
         }
-        if (data['startDate'] != null) {
-          expectedYear = (data['startDate'] as Timestamp).toDate().year;
-          expectedType = data['type']?.toString().toUpperCase();
+        int? safeParseElectionYear(dynamic val) {
+          if (val == null) return null;
+          if (val is Timestamp) return val.toDate().year;
+          if (val is DateTime) return val.year;
+          if (val is int && val >= 1990 && val <= 2099) return val;
+          if (val is String) {
+            final dt = DateTime.tryParse(val);
+            if (dt != null) return dt.year;
+            final m = RegExp(r'\b(20[2-3][0-9])\b').firstMatch(val);
+            if (m != null) return int.tryParse(m.group(1)!);
+          }
+          return null;
         }
+
+        expectedYear = safeParseElectionYear(data['startDate']) ??
+            safeParseElectionYear(data['electionDate']) ??
+            safeParseElectionYear(data['date']) ??
+            safeParseElectionYear(data['year']) ??
+            safeParseElectionYear(data['name']) ??
+            safeParseElectionYear(data['title']);
+        expectedType = data['type']?.toString().toUpperCase();
         if (data['parties'] != null && data['parties'] is List) {
           allowedParties = (data['parties'] as List)
               .map((e) => e.toString().toUpperCase())
@@ -7473,9 +7511,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             final le = localElections[matchIndex];
             electionType = le.type;
             expectedType = le.type?.toUpperCase();
-            if (le.startDate != null) {
-              expectedYear = le.startDate!.year;
-            }
+            expectedYear = (le.startDate != null ? le.startDate!.year : null) ??
+                safeParseElectionYear(le.name) ??
+                safeParseElectionYear(le.type);
             if (le.metadataJson != null) {
               final meta = jsonDecode(le.metadataJson!);
               primaryElectionType = meta['primaryElectionType']?.toString();
@@ -7799,7 +7837,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   Future<File> _addWatermark(File imageFile) async {
     try {
       final Uint8List bytes = await imageFile.readAsBytes();
-      final ui.Codec codec = await ui.instantiateImageCodec(bytes);
+      final ui.Codec codec =
+          await ui.instantiateImageCodec(bytes, targetWidth: 1200);
       final ui.FrameInfo frameInfo = await codec.getNextFrame();
       final ui.Image image = frameInfo.image;
 
@@ -8055,20 +8094,16 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             _expectedYear != null &&
             detectedYear != _expectedYear &&
             detectedYear > 1900) {
-          // Clear the image to force re-upload
-          setState(() {
-            _evidenceFile = null;
-          });
-          showDialog(
+          final shouldProceed = await showDialog<bool>(
             context: context,
             barrierDismissible: false,
             builder: (ctx) => AlertDialog(
               backgroundColor: Colors.white,
               title: Row(
                 children: [
-                  const Icon(LucideIcons.triangleAlert, color: Colors.red),
+                  const Icon(LucideIcons.triangleAlert, color: Colors.orange),
                   const SizedBox(width: 8),
-                  Text('Election Year Mismatch!',
+                  Text('Election Year Mismatch',
                       style: GoogleFonts.outfit(
                           fontWeight: FontWeight.bold,
                           fontSize: 18,
@@ -8076,21 +8111,27 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 ],
               ),
               content: Text(
-                'Data Extraction Aborted.\n\nThe System detected the year $detectedYear on this result sheet, but you are assigned to observe the $_expectedYear election.\n\nPlease upload the correct EC8A image for the actual election.',
+                'The system detected the year $detectedYear on this result sheet, but your assigned election is $_expectedYear.\n\nIf this result sheet is valid for your election (e.g. pre-printed form or signature date difference), you can confirm to proceed with the extracted data, or upload a different image.',
                 style: GoogleFonts.outfit(
                     fontSize: 14,
-                    color: Colors.black,
-                    fontWeight: FontWeight.w600),
+                    color: Colors.black87,
+                    fontWeight: FontWeight.w500),
               ),
               actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('UPLOAD DIFFERENT FORM',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                ),
                 ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
+                  onPressed: () => Navigator.pop(ctx, true),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
+                    backgroundColor: const Color(0xFF0D5C3A),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8)),
                   ),
-                  child: Text('UPLOAD CORRECT FORM',
+                  child: Text('CONFIRM & PROCEED',
                       style: GoogleFonts.outfit(
                           fontWeight: FontWeight.bold, color: Colors.white)),
                 ),
@@ -8099,7 +8140,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   borderRadius: BorderRadius.circular(16)),
             ),
           );
-          return; // Abort extraction entirely
+
+          if (shouldProceed != true) {
+            setState(() {
+              _evidenceFile = null;
+            });
+            return; // Abort extraction entirely
+          }
         }
 
         String _normalizeType(String? raw) {
@@ -9713,29 +9760,63 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 ? Center(
                     child: TweenAnimationBuilder<double>(
                       tween: Tween<double>(begin: 0.0, end: 0.99),
-                      duration: const Duration(seconds: 12),
+                      duration: const Duration(seconds: 14),
                       builder: (context, value, _) {
+                        String statusLabel = 'Reading sheet...';
+                        if (value > 0.75) {
+                          statusLabel = 'Extracting figures...';
+                        } else if (value > 0.4) {
+                          statusLabel = 'Analyzing form...';
+                        }
+                        final displayPercent = (value * 100).toInt().clamp(0, 99);
+                        final isLateStage = value > 0.92;
+
                         return Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: const BoxDecoration(
-                              color: Colors.white, shape: BoxShape.circle),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              SizedBox(
-                                width: 64,
-                                height: 64,
-                                child: CircularProgressIndicator(
-                                    value: value,
-                                    strokeWidth: 6,
-                                    color: const Color(0xFF10B981),
-                                    backgroundColor: const Color(0xFFECFDF5)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 24, vertical: 18),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.12),
+                                blurRadius: 16,
+                                offset: const Offset(0, 4),
                               ),
-                              Text('${(value * 100).toInt()}%',
-                                  style: GoogleFonts.outfit(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w900,
-                                      color: const Color(0xFF065F46))),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Stack(
+                                alignment: Alignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 64,
+                                    height: 64,
+                                    child: CircularProgressIndicator(
+                                        value: isLateStage ? null : value,
+                                        strokeWidth: 5,
+                                        color: const Color(0xFF10B981),
+                                        backgroundColor:
+                                            const Color(0xFFECFDF5)),
+                                  ),
+                                  Text('$displayPercent%',
+                                      style: GoogleFonts.outfit(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w900,
+                                          color: const Color(0xFF065F46))),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                statusLabel,
+                                style: GoogleFonts.outfit(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: const Color(0xFF065F46),
+                                ),
+                              ),
                             ],
                           ),
                         );
