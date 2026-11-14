@@ -40,7 +40,7 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
       source: source,
       maxWidth: 1600,
       maxHeight: 1600,
-      imageQuality: 80,
+      imageQuality: 85,
     );
     if (pickedFile != null) {
       setState(() {
@@ -52,32 +52,55 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
       final aiService = context.read<AIService>();
       // Use the keys from _partyVotes as the abbreviations
       final abbs = _partyVotes.keys.toList();
-      final result = await aiService.processEC8A(_ec8aImage!, abbs);
+      try {
+        final result = await aiService.processEC8A(_ec8aImage!, abbs);
 
-      if (result.data != null) {
-        setState(() {
-          final data = result.data!;
-          // Fill party votes
-          data.forEach((key, value) {
-            if (_partyVotes.containsKey(key)) {
-              _partyVotes[key]!.text = value.toString();
+        if (result.data != null && mounted) {
+          setState(() {
+            final data = result.data!;
+            final dynamic rawPartyVotes = data['partyVotes'];
+            if (rawPartyVotes is Map) {
+              rawPartyVotes.forEach((key, value) {
+                final k = key.toString().trim();
+                if (_partyVotes.containsKey(k)) {
+                  _partyVotes[k]!.text = value.toString();
+                }
+              });
             }
+            // Fill party votes (flat keys)
+            data.forEach((key, value) {
+              if (_partyVotes.containsKey(key)) {
+                _partyVotes[key]!.text = value.toString();
+              }
+            });
+
+            // Fill stats (mapping flexible JSON keys to controllers)
+            _votersInRegister.text = (data['votersInRegister'] ?? data['voters_in_register'] ?? data['Voters in Register'] ?? '').toString();
+            _accreditedVoters.text = (data['accreditedVoters'] ?? data['accredited_voters'] ?? data['Accredited Voters'] ?? '').toString();
+            _ballotsIssued.text = (data['ballotsIssued'] ?? data['ballots_issued'] ?? data['Ballots Issued'] ?? '').toString();
+            _unusedBallots.text = (data['unusedBallots'] ?? data['unused_ballots'] ?? data['Unused Ballots'] ?? '').toString();
+            _spoiledBallots.text = (data['spoiledBallots'] ?? data['spoiled_ballots'] ?? data['Spoiled Ballots'] ?? '').toString();
+            _rejectedBallots.text = (data['rejectedBallots'] ?? data['rejected_ballots'] ?? data['Rejected Ballots'] ?? '').toString();
           });
-
-          // Fill stats (mapping flexible JSON keys to controllers)
-          _votersInRegister.text = (data['votersInRegister'] ?? data['voters_in_register'] ?? data['Voters in Register'] ?? '').toString();
-          _accreditedVoters.text = (data['accreditedVoters'] ?? data['accredited_voters'] ?? data['Accredited Voters'] ?? '').toString();
-          _ballotsIssued.text = (data['ballotsIssued'] ?? data['ballots_issued'] ?? data['Ballots Issued'] ?? '').toString();
-          _unusedBallots.text = (data['unusedBallots'] ?? data['unused_ballots'] ?? data['Unused Ballots'] ?? '').toString();
-          _spoiledBallots.text = (data['spoiledBallots'] ?? data['spoiled_ballots'] ?? data['Spoiled Ballots'] ?? '').toString();
-          _rejectedBallots.text = (data['rejectedBallots'] ?? data['rejected_ballots'] ?? data['Rejected Ballots'] ?? '').toString();
-        });
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Could not read figures automatically ($e). Your result sheet is attached; please enter values manually.'),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isProcessingAI = false;
+            _currentStep = 1; // Always move to verification step so image is attached & user enters values!
+          });
+        }
       }
-
-      setState(() {
-        _isProcessingAI = false;
-        _currentStep = 1; // Move to verification step
-      });
     }
   }
 

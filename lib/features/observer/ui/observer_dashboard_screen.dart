@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -31,6 +32,7 @@ import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/neon_api_service.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:drift/drift.dart' as drift;
+import 'package:voteguard/features/observer/ui/document_camera_screen.dart';
 
 Future<String> _getPublicIP() async {
   try {
@@ -42,6 +44,21 @@ Future<String> _getPublicIP() async {
     }
   } catch (_) {}
   return '192.168.1.1'; // fallback local IP
+}
+
+Uint8List _encodeWatermarkedRgbaToJpg(Map<String, dynamic> params) {
+  final Uint8List rgba = params['rgba'] as Uint8List;
+  final int width = params['width'] as int;
+  final int height = params['height'] as int;
+  final image = img.Image.fromBytes(
+    width: width,
+    height: height,
+    bytes: rgba.buffer,
+    bytesOffset: rgba.offsetInBytes,
+    numChannels: 4,
+    order: img.ChannelOrder.rgba,
+  );
+  return Uint8List.fromList(img.encodeJpg(image, quality: 86));
 }
 
 class ObserverDashboardScreen extends StatefulWidget {
@@ -5576,13 +5593,29 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       return;
     }
 
+    if (type == 'photo' && source == ImageSource.camera) {
+      try {
+        final captured = await Navigator.push<File>(
+          context,
+          MaterialPageRoute(builder: (context) => const DocumentCameraScreen()),
+        );
+        if (captured != null && mounted) {
+          setState(() => _media.add({'type': 'photo', 'file': captured}));
+          _scheduleIncidentAutoDraft(immediate: true);
+        }
+        return;
+      } catch (e) {
+        debugPrint('In-app camera failed in incidents, falling back to picker: $e');
+      }
+    }
+
     final picker = ImagePicker();
     XFile? file;
     if (type == 'photo') {
       file = await picker.pickImage(
         source: source,
-        maxWidth: 1600,
-        maxHeight: 1600,
+        maxWidth: 1280,
+        maxHeight: 1280,
         imageQuality: 70,
       );
     } else if (type == 'video') {
@@ -7342,6 +7375,20 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     });
   }
 
+  int? _safeParseElectionYear(dynamic val) {
+    if (val == null) return null;
+    if (val is Timestamp) return val.toDate().year;
+    if (val is DateTime) return val.year;
+    if (val is int && val >= 1990 && val <= 2099) return val;
+    if (val is String) {
+      final dt = DateTime.tryParse(val);
+      if (dt != null) return dt.year;
+      final m = RegExp(r'\b(20[2-3][0-9])\b').firstMatch(val);
+      if (m != null) return int.tryParse(m.group(1)!);
+    }
+    return null;
+  }
+
   Future<void> _loadData() async {
     _isHydrated = false;
     try {
@@ -7475,26 +7522,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               .map((e) => Map<String, dynamic>.from(e as Map))
               .toList();
         }
-        int? safeParseElectionYear(dynamic val) {
-          if (val == null) return null;
-          if (val is Timestamp) return val.toDate().year;
-          if (val is DateTime) return val.year;
-          if (val is int && val >= 1990 && val <= 2099) return val;
-          if (val is String) {
-            final dt = DateTime.tryParse(val);
-            if (dt != null) return dt.year;
-            final m = RegExp(r'\b(20[2-3][0-9])\b').firstMatch(val);
-            if (m != null) return int.tryParse(m.group(1)!);
-          }
-          return null;
-        }
-
-        expectedYear = safeParseElectionYear(data['startDate']) ??
-            safeParseElectionYear(data['electionDate']) ??
-            safeParseElectionYear(data['date']) ??
-            safeParseElectionYear(data['year']) ??
-            safeParseElectionYear(data['name']) ??
-            safeParseElectionYear(data['title']);
+        expectedYear = _safeParseElectionYear(data['startDate']) ??
+            _safeParseElectionYear(data['electionDate']) ??
+            _safeParseElectionYear(data['date']) ??
+            _safeParseElectionYear(data['year']) ??
+            _safeParseElectionYear(data['name']) ??
+            _safeParseElectionYear(data['title']);
         expectedType = data['type']?.toString().toUpperCase();
         if (data['parties'] != null && data['parties'] is List) {
           allowedParties = (data['parties'] as List)
@@ -7512,8 +7545,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             electionType = le.type;
             expectedType = le.type?.toUpperCase();
             expectedYear = (le.startDate != null ? le.startDate!.year : null) ??
-                safeParseElectionYear(le.name) ??
-                safeParseElectionYear(le.type);
+                _safeParseElectionYear(le.name) ??
+                _safeParseElectionYear(le.type);
             if (le.metadataJson != null) {
               final meta = jsonDecode(le.metadataJson!);
               primaryElectionType = meta['primaryElectionType']?.toString();
@@ -7838,9 +7871,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     try {
       final Uint8List bytes = await imageFile.readAsBytes();
       final ui.Codec codec =
-          await ui.instantiateImageCodec(bytes, targetWidth: 1200);
+          await ui.instantiateImageCodec(bytes, targetWidth: 1440);
       final ui.FrameInfo frameInfo = await codec.getNextFrame();
       final ui.Image image = frameInfo.image;
+      final int imgWidth = image.width;
+      final int imgHeight = image.height;
 
       final ui.PictureRecorder recorder = ui.PictureRecorder();
       final ui.Canvas canvas = ui.Canvas(recorder);
@@ -7849,7 +7884,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       canvas.drawImage(image, Offset.zero, Paint());
 
       // Top Left Watermark (Unobtrusive)
-      final double fontSize = image.width * 0.04;
+      final double fontSize = imgWidth * 0.032;
       final ui.TextStyle textStyle = ui.TextStyle(
         color: const Color.fromRGBO(255, 255, 255, 0.9),
         fontSize: fontSize,
@@ -7873,12 +7908,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         ..addText('VOTEGUARD OFFICIAL SCANNED RECORD');
 
       final ui.Paragraph topParagraph = topBuilder.build()
-        ..layout(ui.ParagraphConstraints(width: image.width.toDouble() - 40));
+        ..layout(ui.ParagraphConstraints(width: imgWidth.toDouble() - 40));
 
       canvas.drawParagraph(topParagraph, const Offset(20, 20));
 
       // Bottom right info watermark
-      final double smallFontSize = image.width * 0.03;
+      final double smallFontSize = imgWidth * 0.025;
       final ui.TextStyle smallTextStyle = ui.TextStyle(
         color: const Color.fromRGBO(255, 255, 255, 0.9),
         fontSize: smallFontSize,
@@ -7900,20 +7935,34 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         ..pushStyle(smallTextStyle)
         ..addText('Uploaded via VoteGuard System');
       final ui.Paragraph smallParagraph = smallBuilder.build()
-        ..layout(ui.ParagraphConstraints(width: image.width.toDouble() - 20));
+        ..layout(ui.ParagraphConstraints(width: imgWidth.toDouble() - 20));
 
       canvas.drawParagraph(smallParagraph,
-          Offset(0, image.height.toDouble() - smallParagraph.height - 20));
+          Offset(0, imgHeight.toDouble() - smallParagraph.height - 20));
 
       final ui.Picture picture = recorder.endRecording();
+      image.dispose();
       final ui.Image watermarkedImage =
-          await picture.toImage(image.width, image.height);
+          await picture.toImage(imgWidth, imgHeight);
+      picture.dispose();
       final ByteData? byteData =
-          await watermarkedImage.toByteData(format: ui.ImageByteFormat.png);
+          await watermarkedImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+      watermarkedImage.dispose();
 
       if (byteData != null) {
-        final watermarkedBytes = byteData.buffer.asUint8List();
-        await imageFile.writeAsBytes(watermarkedBytes);
+        final Uint8List rgbaBytes = byteData.buffer.asUint8List(
+          byteData.offsetInBytes,
+          byteData.lengthInBytes,
+        );
+        final Uint8List jpgBytes = await compute(
+          _encodeWatermarkedRgbaToJpg,
+          <String, dynamic>{
+            'rgba': rgbaBytes,
+            'width': imgWidth,
+            'height': imgHeight,
+          },
+        );
+        await imageFile.writeAsBytes(jpgBytes, flush: true);
       }
     } catch (e) {
       debugPrint("Error applying watermark: $e");
@@ -7922,31 +7971,43 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 
   Future<void> _handleOCR(ImageSource source) async {
-    final picker = ImagePicker();
-    final img = await picker.pickImage(
-        source: source,
+    File? rawFile;
+
+    if (source == ImageSource.camera) {
+      // Use in-app Document Camera to prevent OS kill on aggressive Android ROMs (Tecno HiOS, Infinix, Xiaomi)
+      try {
+        final captured = await Navigator.push<File>(
+          context,
+          MaterialPageRoute(builder: (context) => const DocumentCameraScreen()),
+        );
+        if (captured == null) return; // User dismissed or cancelled
+        rawFile = captured;
+      } catch (e) {
+        debugPrint('In-app document camera failed, falling back to picker: $e');
+        final picker = ImagePicker();
+        final img = await picker.pickImage(
+          source: ImageSource.camera,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 85,
+        );
+        if (img == null) return;
+        rawFile = File(img.path);
+      }
+    } else {
+      final picker = ImagePicker();
+      final img = await picker.pickImage(
+        source: ImageSource.gallery,
         maxWidth: 1600,
         maxHeight: 1600,
-        imageQuality: 80,
-    );
-    if (img == null) return;
-
-    // Rate limit disabled so snapping and scanning can run consecutively without delay.
-    // if (_lastScanTime != null) {
-    //   final diff = DateTime.now().difference(_lastScanTime!).inSeconds;
-    //   if (diff < 65) {
-    //     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-    //       content: Text(
-    //           'Rate Limit: Please wait ${65 - diff}s before scanning again.'),
-    //       backgroundColor: Colors.orange,
-    //     ));
-    //     return;
-    //   }
-    // }
+        imageQuality: 85,
+      );
+      if (img == null) return;
+      rawFile = File(img.path);
+    }
 
     // Apply Watermark Before Saving to State
-    File evidenceFile = File(img.path);
-    evidenceFile = await _addWatermark(evidenceFile);
+    File evidenceFile = await _addWatermark(rawFile);
 
     setState(() {
       _evidenceFile = evidenceFile;
@@ -7968,11 +8029,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           children: [
             const Icon(LucideIcons.shieldAlert, color: Colors.orange),
             const SizedBox(width: 8),
-            Text('Quality & Integrity Check',
-                style: GoogleFonts.outfit(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    color: Colors.black)),
+            Expanded(
+              child: Text('Quality & Integrity Check',
+                  style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      color: Colors.black)),
+            ),
           ],
         ),
         content: Column(
@@ -8068,14 +8131,26 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         result = aiResult.data;
         _lastUsedModel = aiResult.modelName;
       } catch (geminiError) {
-        debugPrint("Smart Optical T Scanner (online) failed, falling back to Smart Optical T Scanner (offline): $geminiError");
+        debugPrint("Cloud AI scanner failed ($geminiError), falling back to offline on-device scanner.");
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(
-                  'Smart Optical T Scanner (online) failed (falling back to Smart Optical T Scanner (offline): $geminiError'),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 5),
+              content: Row(
+                children: [
+                  const Icon(LucideIcons.zap, color: Colors.white, size: 18),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Slow network detected. Scanning offline on device...',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: const Color(0xFF0F766E),
+              duration: const Duration(seconds: 3),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
           );
         }
@@ -8103,11 +8178,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 children: [
                   const Icon(LucideIcons.triangleAlert, color: Colors.orange),
                   const SizedBox(width: 8),
-                  Text('Election Year Mismatch',
-                      style: GoogleFonts.outfit(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                          color: Colors.red)),
+                  Expanded(
+                    child: Text('Election Year Mismatch',
+                        style: GoogleFonts.outfit(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: Colors.red)),
+                  ),
                 ],
               ),
               content: Text(
@@ -8184,42 +8261,46 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         if (detectedType.isNotEmpty &&
             expectedType.isNotEmpty &&
             detectedType != expectedType) {
-          // Clear the image to force re-upload
-          setState(() {
-            _evidenceFile = null;
-          });
-          showDialog(
+          final shouldProceed = await showDialog<bool>(
             context: context,
             barrierDismissible: false,
             builder: (ctx) => AlertDialog(
               backgroundColor: Colors.white,
               title: Row(
                 children: [
-                  const Icon(LucideIcons.triangleAlert, color: Colors.red),
+                  const Icon(LucideIcons.triangleAlert, color: Colors.orange),
                   const SizedBox(width: 8),
-                  Text('Election Type Mismatch!',
-                      style: GoogleFonts.outfit(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                          color: Colors.red)),
+                  Expanded(
+                    child: Text('Election Type Mismatch',
+                        style: GoogleFonts.outfit(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: Colors.red)),
+                  ),
                 ],
               ),
               content: Text(
-                'Data Extraction Aborted.\n\nThe System detected this is a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nPlease upload the correct EC8A image for the actual election type.',
+                'The system detected this may be a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nIf this result sheet is correct for your unit, you can confirm to keep the sheet and enter or verify figures manually, or upload a different image.',
                 style: GoogleFonts.outfit(
                     fontSize: 14,
-                    color: Colors.black,
-                    fontWeight: FontWeight.w600),
+                    color: Colors.black87,
+                    fontWeight: FontWeight.w500),
               ),
               actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('UPLOAD DIFFERENT FORM',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                ),
                 ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
+                  onPressed: () => Navigator.pop(ctx, true),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
+                    backgroundColor: const Color(0xFF0D5C3A),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8)),
                   ),
-                  child: Text('UPLOAD CORRECT FORM',
+                  child: Text('CONFIRM & PROCEED',
                       style: GoogleFonts.outfit(
                           fontWeight: FontWeight.bold, color: Colors.white)),
                 ),
@@ -8228,46 +8309,103 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   borderRadius: BorderRadius.circular(16)),
             ),
           );
-          return; // Abort extraction entirely
+
+          if (shouldProceed != true) {
+            setState(() {
+              _evidenceFile = null;
+            });
+            return; // Abort extraction entirely
+          }
         }
 
         // Proceed to map data since year and type matches (or wasn't detected)
         setState(() {
+          int parseIntSafe(dynamic val) {
+            if (val == null) return 0;
+            if (val is int) return val < 0 ? 0 : val;
+            if (val is double) return val < 0 ? 0 : val.round();
+            final cleaned =
+                val.toString().replaceAll(',', '').replaceAll(' ', '').trim();
+            final parsed = int.tryParse(cleaned);
+            if (parsed != null) return parsed < 0 ? 0 : parsed;
+            return 0;
+          }
+
           // Robust mapping of party votes (handles nested "partyVotes" and flat keys)
           final dynamic rawPartyVotes = result?['partyVotes'];
           Map<String, dynamic> partyVotesMap = {};
           if (rawPartyVotes is Map) {
-            partyVotesMap = Map<String, dynamic>.from(rawPartyVotes);
+            rawPartyVotes.forEach((k, v) {
+              partyVotesMap[k.toString().trim()] = v;
+              partyVotesMap[k.toString().trim().toUpperCase()] = v;
+            });
           }
 
-          _parties.forEach((data) {
-            final key = data['abbreviation'] as String;
+          for (final data in _parties) {
+            final key = (data['abbreviation'] as String).trim();
+            final upperKey = key.toUpperCase();
+            _partyVotes[key] = 0;
             if (partyVotesMap.containsKey(key)) {
-              _partyVotes[key] =
-                  int.tryParse(partyVotesMap[key].toString()) ?? 0;
+              _partyVotes[key] = parseIntSafe(partyVotesMap[key]);
+            } else if (partyVotesMap.containsKey(upperKey)) {
+              _partyVotes[key] = parseIntSafe(partyVotesMap[upperKey]);
             } else if (result != null && result.containsKey(key)) {
-              _partyVotes[key] = int.tryParse(result[key].toString()) ?? 0;
+              _partyVotes[key] = parseIntSafe(result[key]);
+            } else if (result != null && result.containsKey(upperKey)) {
+              _partyVotes[key] = parseIntSafe(result[upperKey]);
             }
-          });
+          }
 
           // Map stats
-          _stats.keys.forEach((key) {
+          for (final key in _stats.keys.toList()) {
             if (result != null && result.containsKey(key)) {
-              _stats[key] = int.tryParse(result[key].toString()) ?? 0;
+              _stats[key] = parseIntSafe(result[key]);
             }
-          });
+          }
           _updateControllers();
         });
         _scheduleResultsAutoDraft(immediate: true);
 
         if (usedFallback) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Offline Scan Complete (Best Effort)'),
-              backgroundColor: Colors.orange));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(LucideIcons.circleCheck, color: Colors.white, size: 18),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Extracted offline on device. Please cross-check numbers.',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: const Color(0xFF0D5C3A),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          );
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('EC8A Sheet Scanned Successfully!'),
-              backgroundColor: Color(0xFF10B981)));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(LucideIcons.sparkles, color: Colors.white, size: 18),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'EC8A Sheet Scanned Successfully via Gemini AI!',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: const Color(0xFF10B981),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          );
         }
 
         showDialog(
@@ -8278,11 +8416,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               children: [
                 const Icon(LucideIcons.check, color: Colors.black),
                 const SizedBox(width: 8),
-                Text('Scan Complete',
-                    style: GoogleFonts.outfit(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                        color: Colors.black)),
+                Expanded(
+                  child: Text('Scan Complete',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: Colors.black)),
+                ),
               ],
             ),
             content: Text(
@@ -8306,6 +8446,46 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           ),
         );
+      } else if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: Colors.white,
+            title: Row(
+              children: [
+                const Icon(LucideIcons.fileSpreadsheet, color: Colors.orange),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('Manual Entry Ready',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: Colors.black)),
+                ),
+              ],
+            ),
+            content: Text(
+              'The scanner could not automatically parse the numbers from this image.\n\n'
+              'Don\'t worry! Your result sheet photo is safely attached. You can inspect the image above and enter the figures manually below.',
+              style: GoogleFonts.outfit(fontSize: 14, color: Colors.black87),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0D5C3A),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: Text('ENTER VALUES MANUALLY',
+                    style: GoogleFonts.outfit(
+                        fontWeight: FontWeight.bold, color: Colors.white)),
+              ),
+            ],
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -8315,22 +8495,33 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             backgroundColor: Colors.white,
             title: Row(
               children: [
-                const Icon(LucideIcons.triangleAlert, color: Colors.red),
+                const Icon(LucideIcons.fileSpreadsheet, color: Colors.orange),
                 const SizedBox(width: 8),
-                Text('Scanning Error',
-                    style: GoogleFonts.outfit(
-                        fontWeight: FontWeight.bold, fontSize: 18)),
+                Expanded(
+                  child: Text('Manual Entry Ready',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: Colors.black)),
+                ),
               ],
             ),
-            content: Text(e.toString().replaceAll('Exception: ', ''),
-                style: GoogleFonts.outfit(fontSize: 14)),
+            content: Text(
+              'Automatic scanning could not complete (${e.toString().replaceAll('Exception: ', '')}).\n\n'
+              'Your EC8A result sheet is safely attached! You can view the image above and enter the numbers manually below.',
+              style: GoogleFonts.outfit(fontSize: 14, color: Colors.black87),
+            ),
             actions: [
-              TextButton(
+              ElevatedButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: Text('OK',
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0D5C3A),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: Text('ENTER VALUES MANUALLY',
                     style: GoogleFonts.outfit(
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF0F172A))),
+                        fontWeight: FontWeight.bold, color: Colors.white)),
               ),
             ],
             shape:
@@ -8469,11 +8660,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             children: [
               const Icon(LucideIcons.image, color: Colors.orange),
               const SizedBox(width: 10),
-              Text('Missing EC8A Form',
-                  style: GoogleFonts.outfit(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                      color: Colors.black)),
+              Expanded(
+                child: Text('Missing EC8A Form',
+                    style: GoogleFonts.outfit(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        color: Colors.black)),
+              ),
             ],
           ),
           content: Text(
@@ -8607,8 +8800,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             .ref()
             .child('results/${widget.electionId}/${user?.uid}.jpg');
         await ref
-            .putFile(_evidenceFile!, SettableMetadata(contentType: 'image/png'))
-            .timeout(const Duration(seconds: 15));
+            .putFile(_evidenceFile!, SettableMetadata(contentType: 'image/jpeg'))
+            .timeout(const Duration(seconds: 45));
         evidenceUrl = await ref.getDownloadURL();
       }
 
