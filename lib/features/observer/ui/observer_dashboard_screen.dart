@@ -381,6 +381,17 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         submissionsList.add(newReport);
       }
 
+      String docStatus = isFinal ? 'verified' : 'draft';
+      if (docSnap.exists && docSnap.data() != null) {
+        final existingStatus =
+            (docSnap.data() as Map<String, dynamic>)['status']
+                ?.toString()
+                .toLowerCase();
+        if (existingStatus == 'disputed' || existingStatus == 'resolved') {
+          docStatus = existingStatus!;
+        }
+      }
+
       final isNewDoc = !docSnap.exists;
       final Map<String, dynamic> docPayload = {
         'electionId': electionId,
@@ -395,6 +406,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         'partyVotes': partyVotes,
         'results': partyVotes,
         if (evidenceUrl != null) 'evidenceUrl': evidenceUrl,
+        'status': docStatus,
+        'submissionCount': submissionsList.length,
         'submittedBy': user?.uid,
         'submittedByName': observerName,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -7056,7 +7069,10 @@ class _EC8AResultsTab extends StatefulWidget {
 }
 
 class _EC8AResultsTabState extends State<_EC8AResultsTab>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   final Map<String, int> _partyVotes = {};
   final Map<String, int> _stats = {
     'votersInRegister': 0,
@@ -7164,7 +7180,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      if (_isHydrated && _hasLocalDraftEdits && !_isFinal) {
+      if (_hasLocalDraftEdits && !_isFinal) {
         _flushResultsAutoDraft();
       }
     }
@@ -7175,6 +7191,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         .collection('elections')
         .doc(widget.electionId)
         .snapshots()
+        .skip(1)
         .listen((snapshot) {
       if (snapshot.exists && mounted) {
         // Just reload the data to sync parties array.
@@ -7186,7 +7203,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   @override
   void dispose() {
     _autoDraftTimer?.cancel();
-    if (_isHydrated && _hasLocalDraftEdits && !_isFinal) {
+    if (_hasLocalDraftEdits && !_isFinal) {
       _flushResultsAutoDraft();
     }
     WidgetsBinding.instance.removeObserver(this);
@@ -7202,9 +7219,116 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     super.dispose();
   }
 
+  void _syncStateFromControllers() {
+    for (final party in _parties) {
+      final abb = (party['abbreviation'] ?? '').toString();
+      if (abb.isEmpty) continue;
+      if (_partyControllers.containsKey(abb)) {
+        final text = _partyControllers[abb]!.text.replaceAll(',', '').trim();
+        _partyVotes[abb] = int.tryParse(text) ?? 0;
+      } else {
+        final existingVal = _partyVotes[abb] ??
+            _partyVotes[abb.toUpperCase()] ??
+            _partyVotes[abb.toLowerCase()] ??
+            0;
+        _partyVotes[abb] = existingVal;
+      }
+      if (abb.toUpperCase() != abb) {
+        _partyVotes.remove(abb.toUpperCase());
+      }
+      if (abb.toLowerCase() != abb) {
+        _partyVotes.remove(abb.toLowerCase());
+      }
+    }
+    for (final key in _stats.keys.toList()) {
+      if (_statControllers.containsKey(key)) {
+        final text = _statControllers[key]!.text.replaceAll(',', '').trim();
+        _stats[key] = int.tryParse(text) ?? 0;
+      }
+    }
+  }
+
+  Map<String, int> _buildOrderedPartyVotesMap([Map<String, dynamic>? source]) {
+    final Map<String, dynamic> raw = source ?? _partyVotes;
+    final Map<String, int> ordered = {};
+    final Map<String, int> caseInsensitiveLookup = {};
+    raw.forEach((k, v) {
+      final parsed = int.tryParse(v.toString().replaceAll(',', '').trim()) ?? 0;
+      final trimmed = k.toString().trim();
+      caseInsensitiveLookup[trimmed] = parsed;
+      caseInsensitiveLookup[trimmed.toUpperCase()] = parsed;
+      caseInsensitiveLookup[trimmed.toLowerCase()] = parsed;
+    });
+
+    if (_parties.isNotEmpty) {
+      for (final party in _parties) {
+        final abb = (party['abbreviation'] ?? '').toString().trim();
+        if (abb.isEmpty) continue;
+        final val = caseInsensitiveLookup[abb] ??
+            caseInsensitiveLookup[abb.toUpperCase()] ??
+            caseInsensitiveLookup[abb.toLowerCase()] ??
+            0;
+        ordered[abb] = val;
+      }
+    } else {
+      raw.forEach((k, v) {
+        ordered[k.toString().trim()] =
+            int.tryParse(v.toString().replaceAll(',', '').trim()) ?? 0;
+      });
+    }
+    return ordered;
+  }
+
+  void _syncLocalObserverIntoPuSubmissions({String? statusOverride}) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final orderedVotes = _buildOrderedPartyVotesMap();
+    final observerName = user.displayName ??
+        _userProfile?['fullName'] ??
+        _userProfile?['name'] ??
+        _userProfile?['displayName'] ??
+        'Observer';
+    final observerPhone =
+        _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A';
+    final effectiveStatus =
+        statusOverride ?? (_isFinal ? 'final' : 'draft');
+    final entry = <String, dynamic>{
+      'submittedBy': user.uid,
+      'submittedByName': observerName,
+      'phone': observerPhone,
+      'status': effectiveStatus,
+      'partyVotes': orderedVotes,
+      'results': orderedVotes,
+      'evidenceUrl': _evidenceUrl ?? '',
+    };
+
+    final updatedList = List<dynamic>.from(_puSubmissions);
+    final existingIdx =
+        updatedList.indexWhere((s) => s is Map && s['submittedBy'] == user.uid);
+    if (existingIdx != -1) {
+      final prev = Map<String, dynamic>.from(updatedList[existingIdx] as Map);
+      prev.addAll(entry);
+      if ((entry['evidenceUrl'] as String).isEmpty &&
+          (prev['evidenceUrl']?.toString().isNotEmpty ?? false)) {
+        // Keep existing remote evidenceUrl if any
+      }
+      updatedList[existingIdx] = prev;
+    } else {
+      updatedList.add(entry);
+    }
+    _puSubmissions = updatedList;
+
+    final currentStatusLower = _puResultStatus?.toLowerCase();
+    if (currentStatusLower != 'disputed' && currentStatusLower != 'resolved') {
+      _puResultStatus = effectiveStatus == 'final' ? 'Verified' : 'Draft';
+    }
+  }
+
   void _scheduleResultsAutoDraft({bool immediate = false}) {
-    if (!_isHydrated || _isFinal) return;
+    if (_isFinal) return;
     _hasLocalDraftEdits = true;
+    _syncStateFromControllers();
+    _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
     _autoDraftTimer?.cancel();
     if (immediate) {
       _flushResultsAutoDraft();
@@ -7228,6 +7352,14 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         final user = FirebaseAuth.instance.currentUser;
         if (user == null) break;
 
+        _syncStateFromControllers();
+        final orderedPartyVotes = _buildOrderedPartyVotesMap();
+        if (mounted) {
+          setState(() {
+            _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
+          });
+        }
+
         final state = _userProfile?['assignedState'] ?? '';
         final lga = _userProfile?['assignedLga'] ?? '';
         final ward = _userProfile?['assignedWard'] ?? '';
@@ -7238,33 +7370,20 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         final pollingUnitId = '${widget.electionId}_$puKey';
 
         final existingRows = await _localDb.getAllResults();
-        bool alreadyFinalInLocalDb = false;
         for (final row in existingRows) {
           if (row.observerId != user.uid) continue;
-          final matchesExact = row.pollingUnitId == pollingUnitId;
-          final matchesElectionOffline = puKey == '___' &&
+          final matchesElection = row.pollingUnitId == pollingUnitId ||
               row.pollingUnitId.startsWith('${widget.electionId}_');
-          if (matchesExact || matchesElectionOffline) {
-            bool rowIsFinal = false;
-            try {
-              final statsMap =
-                  jsonDecode(row.ballotStatsJson) as Map<String, dynamic>;
-              rowIsFinal = statsMap['isFinal'] == true;
-            } catch (_) {}
-            if (rowIsFinal) {
-              alreadyFinalInLocalDb = true;
-            } else {
-              await _localDb.deleteResult(row.id);
-            }
+          if (matchesElection) {
+            await _localDb.deleteResult(row.id);
           }
         }
-        if (alreadyFinalInLocalDb) break;
 
         await _localDb.insertResult(
           db.ResultsCompanion(
             observerId: drift.Value(user.uid),
             pollingUnitId: drift.Value(pollingUnitId),
-            partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+            partyVotesJson: drift.Value(jsonEncode(orderedPartyVotes)),
             ballotStatsJson: drift.Value(jsonEncode({
               ..._stats,
               'electionId': widget.electionId,
@@ -7282,6 +7401,93 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             isSynced: const drift.Value(false),
           ),
         );
+
+        // Also sync auto-draft to Firestore when online so remote draft & Polling Unit Submissions stay in sync
+        if (!_isOffline && puKey.isNotEmpty) {
+          try {
+            final docRef = FirebaseFirestore.instance
+                .collection('election_results')
+                .doc(pollingUnitId);
+            final docSnap =
+                await docRef.get().timeout(const Duration(seconds: 5));
+            List<dynamic> submissionsList = [];
+            String existingStatus = 'draft';
+            if (docSnap.exists && docSnap.data() != null) {
+              final data = docSnap.data() as Map<String, dynamic>;
+              submissionsList = List.from(data['submissions'] ?? []);
+              existingStatus = data['status']?.toString() ?? 'draft';
+            }
+            final observerName = user.displayName ??
+                _userProfile?['fullName'] ??
+                _userProfile?['name'] ??
+                _userProfile?['displayName'] ??
+                'Observer';
+            final draftReport = {
+              'submittedBy': user.uid,
+              'submittedByName': observerName,
+              'phone': _userProfile?['phone'] ??
+                  _userProfile?['phoneNumber'] ??
+                  'N/A',
+              'submittedAt': Timestamp.now(),
+              'updatedAt': Timestamp.now(),
+              'state': state,
+              'lga': lga,
+              'ward': ward,
+              'pollingUnit': pu,
+              'partyVotes': orderedPartyVotes,
+              'results': orderedPartyVotes,
+              'evidenceUrl': _evidenceUrl ?? '',
+              'status': 'draft',
+              if (_userSenatorialDistrict != null)
+                'senatorialDistrict': _userSenatorialDistrict,
+              ..._stats,
+              'totalValidVotes': _totalValidVotes,
+              'totalUsedBallots': _totalUsedBallots,
+            };
+            final idx = submissionsList
+                .indexWhere((sub) => sub is Map && sub['submittedBy'] == user.uid);
+            if (idx != -1) {
+              submissionsList[idx] = draftReport;
+            } else {
+              submissionsList.add(draftReport);
+            }
+            final isNewDoc = !docSnap.exists;
+            await docRef
+                .set({
+                  'electionId': widget.electionId,
+                  'electionType': _electionType ?? 'GENERAL',
+                  if (_primaryElectionType != null)
+                    'primaryElectionType': _primaryElectionType,
+                  if (_primaryParty != null) 'primaryParty': _primaryParty,
+                  'state': state,
+                  'lga': lga,
+                  'ward': ward,
+                  'pollingUnit': pu,
+                  'partyVotes': orderedPartyVotes,
+                  'results': orderedPartyVotes,
+                  if (_evidenceUrl != null) 'evidenceUrl': _evidenceUrl,
+                  'status': (existingStatus.toLowerCase() == 'disputed' ||
+                          existingStatus.toLowerCase() == 'resolved')
+                      ? existingStatus
+                      : 'draft',
+                  'submissionCount': submissionsList.length,
+                  'submittedBy': user.uid,
+                  'submittedByName': observerName,
+                  'updatedAt': FieldValue.serverTimestamp(),
+                  if (isNewDoc) 'createdAt': FieldValue.serverTimestamp(),
+                  if (_userSenatorialDistrict != null)
+                    'senatorialDistrict': _userSenatorialDistrict,
+                  ..._stats,
+                  'totalValidVotes': _totalValidVotes,
+                  'totalUsedBallots': _totalUsedBallots,
+                  'submissions': submissionsList,
+                }, SetOptions(merge: true))
+                .timeout(const Duration(seconds: 6));
+          } catch (remoteDraftErr) {
+            debugPrint(
+                'EC8A AutoDraft: Remote Firestore sync skipped (saved locally): $remoteDraftErr');
+          }
+        }
       } while (_pendingResultsDraftFlush && !_isFinal);
     } catch (e) {
       debugPrint('EC8A AutoDraft: Save failed: $e');
@@ -7363,14 +7569,41 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 
   void _updateControllers() {
+    for (final party in _parties) {
+      final abb = (party['abbreviation'] ?? '').toString();
+      if (abb.isEmpty) continue;
+      final val = _partyVotes[abb] ??
+          _partyVotes[abb.toUpperCase()] ??
+          _partyVotes[abb.toLowerCase()] ??
+          0;
+      _partyVotes[abb] = val;
+      if (abb.toUpperCase() != abb) {
+        _partyVotes.remove(abb.toUpperCase());
+      }
+      if (abb.toLowerCase() != abb) {
+        _partyVotes.remove(abb.toLowerCase());
+      }
+      if (_partyControllers.containsKey(abb)) {
+        final newText = val == 0 ? '' : val.toString();
+        if (_partyControllers[abb]!.text != newText) {
+          _partyControllers[abb]!.text = newText;
+        }
+      }
+    }
     _partyVotes.forEach((k, v) {
       if (_partyControllers.containsKey(k)) {
-        _partyControllers[k]!.text = v == 0 ? '' : v.toString();
+        final newText = v == 0 ? '' : v.toString();
+        if (_partyControllers[k]!.text != newText) {
+          _partyControllers[k]!.text = newText;
+        }
       }
     });
     _stats.forEach((k, v) {
       if (_statControllers.containsKey(k)) {
-        _statControllers[k]!.text = v == 0 ? '' : v.toString();
+        final newText = v == 0 ? '' : v.toString();
+        if (_statControllers[k]!.text != newText) {
+          _statControllers[k]!.text = newText;
+        }
       }
     });
   }
@@ -7390,7 +7623,6 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 
   Future<void> _loadData() async {
-    _isHydrated = false;
     try {
       final user = FirebaseAuth.instance.currentUser;
       try {
@@ -7399,7 +7631,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             .doc(user?.uid)
             .get()
             .timeout(const Duration(seconds: 4));
-        _userProfile = profileSnap.data();
+        if (profileSnap.data() != null) {
+          _userProfile = profileSnap.data();
+        }
       } catch (e) {
         debugPrint('EC8A: User profile fetch skipped offline: $e');
       }
@@ -7413,13 +7647,17 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         _fetchUserSenatorialDistrict(state, lga);
       }
 
-      final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
-      _cachedPuKey = puKey;
+      final computedPuKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+      final puKey = computedPuKey.isNotEmpty ? computedPuKey : _cachedPuKey;
+      if (puKey.isNotEmpty) {
+        _cachedPuKey = puKey;
+      }
       final webDocId = '${widget.electionId}_$puKey';
       final mobileDocId = '${widget.electionId}_${user?.uid}';
       final submissionId = '${widget.electionId}_${puKey}_${user?.uid}';
 
-      if (_resultsSubscription == null || _currentWebDocId != webDocId) {
+      if (puKey.isNotEmpty &&
+          (_resultsSubscription == null || _currentWebDocId != webDocId)) {
         _resultsSubscription?.cancel();
         _currentWebDocId = webDocId;
         _resultsSubscription = FirebaseFirestore.instance
@@ -7587,7 +7825,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       List<dynamic> localSubmissions = [];
       String? localStatus;
 
-      if (!_isOffline) {
+      if (!_isOffline && puKey.isNotEmpty) {
         try {
           final docSnap = await FirebaseFirestore.instance
               .collection('election_results')
@@ -7600,34 +7838,38 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             localSubmissions = data['submissions'] as List<dynamic>? ?? [];
 
             final sub = localSubmissions.firstWhere(
-              (s) => s['submittedBy'] == user?.uid,
+              (s) => s is Map && s['submittedBy'] == user?.uid,
               orElse: () => null,
             );
             if (sub != null) {
-              observerSubmission = Map<String, dynamic>.from(sub);
+              observerSubmission = Map<String, dynamic>.from(sub as Map);
               observerStats = observerSubmission;
             } else {
               // Not found in submissions array -> only wipe SYNCED local copy (never wipe unsynced local Auto-Drafts!)
               final localResults = await _localDb.getAllResults();
-              final matchIndex = localResults.indexWhere((r) =>
-                  r.pollingUnitId == '${widget.electionId}_$puKey' &&
-                  r.observerId == user?.uid);
-              if (matchIndex != -1 && localResults[matchIndex].isSynced) {
-                await _localDb.deleteResult(localResults[matchIndex].id);
-                debugPrint(
-                    'EC8A: Wiped synced local result because submission was deleted in Firestore submissions array');
+              for (final r in localResults) {
+                if (r.observerId == user?.uid &&
+                    (r.pollingUnitId == '${widget.electionId}_$puKey' ||
+                        r.pollingUnitId.startsWith('${widget.electionId}_')) &&
+                    r.isSynced) {
+                  await _localDb.deleteResult(r.id);
+                  debugPrint(
+                      'EC8A: Wiped synced local result because submission was deleted in Firestore submissions array');
+                }
               }
             }
           } else {
             // Entire document absent on Firestore -> only wipe SYNCED local copy
             final localResults = await _localDb.getAllResults();
-            final matchIndex = localResults.indexWhere((r) =>
-                r.pollingUnitId == '${widget.electionId}_$puKey' &&
-                r.observerId == user?.uid);
-            if (matchIndex != -1 && localResults[matchIndex].isSynced) {
-              await _localDb.deleteResult(localResults[matchIndex].id);
-              debugPrint(
-                  'EC8A: Wiped synced local result because Firestore document was deleted');
+            for (final r in localResults) {
+              if (r.observerId == user?.uid &&
+                  (r.pollingUnitId == '${widget.electionId}_$puKey' ||
+                      r.pollingUnitId.startsWith('${widget.electionId}_')) &&
+                  r.isSynced) {
+                await _localDb.deleteResult(r.id);
+                debugPrint(
+                    'EC8A: Wiped synced local result because Firestore document was deleted');
+              }
             }
           }
         } catch (e) {
@@ -7654,15 +7896,6 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 .timeout(const Duration(seconds: 4));
             if (legacyDoc.exists) {
               observerSubmission = legacyDoc.data();
-            } else {
-              legacyDoc = await FirebaseFirestore.instance
-                  .collection('election_results')
-                  .doc(webDocId)
-                  .get()
-                  .timeout(const Duration(seconds: 4));
-              if (legacyDoc.exists) {
-                observerSubmission = legacyDoc.data();
-              }
             }
           }
         } catch (e) {
@@ -7703,22 +7936,21 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         }
       }
 
-      // Check local Drift Auto-Draft / offline draft & restore if offline or newer than non-final server draft
+      // Check local Drift Auto-Draft / offline draft & restore if offline or unsynced or newer than non-final server draft
       try {
         final localResults = await _localDb.getAllResults();
         final matchingRows = localResults.where((r) =>
             r.observerId == user?.uid &&
             (r.pollingUnitId == '${widget.electionId}_$puKey' ||
-                (puKey == '___' &&
-                    r.pollingUnitId.startsWith('${widget.electionId}_'))));
+                r.pollingUnitId.startsWith('${widget.electionId}_')));
         if (matchingRows.isNotEmpty) {
           final match = matchingRows.last;
           final statsMap =
               jsonDecode(match.ballotStatsJson) as Map<String, dynamic>;
           final remoteIsFinal = observerSubmission?['status'] == 'final';
           DateTime? remoteUpdatedAt;
-          final rawRemoteTs =
-              observerSubmission?['updatedAt'] ?? observerSubmission?['submittedAt'];
+          final rawRemoteTs = observerSubmission?['updatedAt'] ??
+              observerSubmission?['submittedAt'];
           if (rawRemoteTs is Timestamp) {
             remoteUpdatedAt = rawRemoteTs.toDate();
           } else if (rawRemoteTs is String) {
@@ -7729,10 +7961,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   match.createdAt;
           final preferLocal = !remoteIsFinal &&
               (observerSubmission == null ||
-                  (!match.isSynced &&
-                      (remoteUpdatedAt == null ||
-                          localUpdatedAt.isAfter(remoteUpdatedAt) ||
-                          statsMap['isFinal'] == true)));
+                  !match.isSynced ||
+                  statsMap['isFinal'] == true ||
+                  remoteUpdatedAt == null ||
+                  localUpdatedAt.isAfter(remoteUpdatedAt));
 
           if (preferLocal) {
             final savedImage = match.imagePath;
@@ -7766,32 +7998,6 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           _primaryElectionType = primaryElectionType;
           _primaryParty = primaryParty;
           _parties = partiesData;
-          _puSubmissions = localSubmissions;
-          _puResultStatus = localStatus;
-
-          if (_puSubmissions.isEmpty && observerSubmission != null) {
-            final observerName =
-                FirebaseAuth.instance.currentUser?.displayName ??
-                    _userProfile?['fullName'] ??
-                    _userProfile?['name'] ??
-                    _userProfile?['displayName'] ??
-                    'Observer';
-            _puSubmissions = [
-              {
-                'submittedBy': user?.uid,
-                'submittedByName': observerName,
-                'phone': _userProfile?['phone'] ??
-                    _userProfile?['phoneNumber'] ??
-                    'N/A',
-                'status': observerSubmission!['status'],
-                'partyVotes': observerSubmission!['partyVotes'],
-                'evidenceUrl': observerSubmission!['evidenceUrl'] ?? '',
-              }
-            ];
-            _puResultStatus =
-                observerSubmission!['status'] == 'final' ? 'Verified' : 'Draft';
-          }
-
           if (electionType != 'PARTY_PRIMARIES' && allowedParties.isNotEmpty) {
             _parties = _parties
                 .where((p) => allowedParties
@@ -7814,14 +8020,19 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             }
           });
 
+          _puSubmissions = List<dynamic>.from(localSubmissions);
+          _puResultStatus = localStatus;
+
           if (!skipOverwriteActiveEdits) {
             // Hydrate Party Votes Draft Data
             if (observerSubmission != null) {
-              final votes =
-                  observerSubmission!['partyVotes'] as Map<String, dynamic>? ??
-                      {};
-              votes.forEach(
-                  (k, v) => _partyVotes[k] = int.tryParse(v.toString()) ?? 0);
+              final rawVotes = (observerSubmission!['partyVotes'] ??
+                      observerSubmission!['results']) as Map<String, dynamic>? ??
+                  {};
+              final normalizedVotes = _buildOrderedPartyVotesMap(rawVotes);
+              _partyVotes
+                ..clear()
+                ..addAll(normalizedVotes);
               _isFinal = observerSubmission!['status'] == 'final';
               _evidenceUrl = observerSubmission!['evidenceUrl'] as String?;
               if (restoredLocalEvidenceFile != null) {
@@ -7833,12 +8044,23 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             if (observerStats != null) {
               _stats.keys.forEach((key) {
                 if (observerStats!.containsKey(key)) {
-                  _stats[key] = int.tryParse(observerStats![key].toString()) ?? 0;
+                  _stats[key] =
+                      int.tryParse(observerStats![key].toString()) ?? 0;
                 }
               });
             }
             _updateControllers();
+          } else {
+            _syncStateFromControllers();
+            _updateControllers();
           }
+
+          if (observerSubmission != null || _hasLocalDraftEdits) {
+            _syncLocalObserverIntoPuSubmissions(
+              statusOverride: _isFinal ? 'final' : 'draft',
+            );
+          }
+
           _loading = false;
         });
       }
@@ -8338,21 +8560,28 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             rawPartyVotes.forEach((k, v) {
               partyVotesMap[k.toString().trim()] = v;
               partyVotesMap[k.toString().trim().toUpperCase()] = v;
+              partyVotesMap[k.toString().trim().toLowerCase()] = v;
             });
           }
 
+          _partyVotes.clear();
           for (final data in _parties) {
             final key = (data['abbreviation'] as String).trim();
             final upperKey = key.toUpperCase();
+            final lowerKey = key.toLowerCase();
             _partyVotes[key] = 0;
             if (partyVotesMap.containsKey(key)) {
               _partyVotes[key] = parseIntSafe(partyVotesMap[key]);
             } else if (partyVotesMap.containsKey(upperKey)) {
               _partyVotes[key] = parseIntSafe(partyVotesMap[upperKey]);
+            } else if (partyVotesMap.containsKey(lowerKey)) {
+              _partyVotes[key] = parseIntSafe(partyVotesMap[lowerKey]);
             } else if (result != null && result.containsKey(key)) {
               _partyVotes[key] = parseIntSafe(result[key]);
             } else if (result != null && result.containsKey(upperKey)) {
               _partyVotes[key] = parseIntSafe(result[upperKey]);
+            } else if (result != null && result.containsKey(lowerKey)) {
+              _partyVotes[key] = parseIntSafe(result[lowerKey]);
             }
           }
 
@@ -8363,6 +8592,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             }
           }
           _updateControllers();
+          _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
         });
         _scheduleResultsAutoDraft(immediate: true);
 
@@ -8566,21 +8796,25 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
                 final dbInstance = context.read<db.AppDatabase>();
                 final localResults = await dbInstance.getAllResults();
-                final matchIndex = localResults.indexWhere((r) =>
-                    r.pollingUnitId == '${widget.electionId}_$puKey' &&
-                    r.observerId == user?.uid);
-
-                if (matchIndex != -1) {
-                  await dbInstance.deleteResult(localResults[matchIndex].id);
+                for (final r in localResults) {
+                  if (r.observerId == user?.uid &&
+                      (r.pollingUnitId == '${widget.electionId}_$puKey' ||
+                          r.pollingUnitId
+                              .startsWith('${widget.electionId}_'))) {
+                    await dbInstance.deleteResult(r.id);
+                  }
                 }
 
                 if (mounted) {
                   setState(() {
                     _isFinal = false;
+                    _hasLocalDraftEdits = false;
                     _evidenceUrl = null;
                     _evidenceFile = null;
                     _partyVotes.clear();
                     _stats.keys.forEach((k) => _stats[k] = 0);
+                    _puSubmissions.removeWhere(
+                        (s) => s is Map && s['submittedBy'] == user?.uid);
                     _updateControllers();
                   });
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -8606,6 +8840,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 
   void _attemptSubmit(bool isFinal) {
+    _syncStateFromControllers();
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
     if (isPrimaries) {
       _submit(isFinal);
@@ -8716,6 +8951,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   Future<void> _saveResultsOfflineLocal(bool isFinal) async {
     _autoDraftTimer?.cancel();
     _hasLocalDraftEdits = false;
+    _syncStateFromControllers();
+    final orderedPartyVotes = _buildOrderedPartyVotesMap();
     final user = FirebaseAuth.instance.currentUser;
     final state = _userProfile?['assignedState'] ?? '';
     final lga = _userProfile?['assignedLga'] ?? '';
@@ -8730,8 +8967,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     for (final existing in localResults) {
       if (existing.observerId == user?.uid &&
           (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
-              (puKey == '___' &&
-                  existing.pollingUnitId.startsWith('${widget.electionId}_')))) {
+              existing.pollingUnitId.startsWith('${widget.electionId}_'))) {
         await dbInstance.deleteResult(existing.id);
       }
     }
@@ -8739,7 +8975,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     final resultCompanion = db.ResultsCompanion(
       observerId: drift.Value(user?.uid ?? ''),
       pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
-      partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+      partyVotesJson: drift.Value(jsonEncode(orderedPartyVotes)),
       ballotStatsJson: drift.Value(jsonEncode({
         ..._stats,
         'electionId': widget.electionId,
@@ -8757,6 +8993,14 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     );
 
     await dbInstance.insertResult(resultCompanion);
+    if (mounted) {
+      setState(() {
+        if (isFinal) _isFinal = true;
+        _syncLocalObserverIntoPuSubmissions(
+          statusOverride: isFinal ? 'final' : 'draft',
+        );
+      });
+    }
     await _loadData();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -8773,13 +9017,78 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     }
   }
 
-  Future<void> _submit(bool isFinal) async {
+  Future<void> _submit(bool isFinal, {bool ignoreValidation = false}) async {
     if (_submitting) return;
+    _syncStateFromControllers();
+    final orderedPartyVotes = _buildOrderedPartyVotesMap();
+    if (mounted) {
+      setState(() {
+        _syncLocalObserverIntoPuSubmissions(
+          statusOverride: isFinal ? 'final' : 'draft',
+        );
+      });
+    }
+
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
-    if (isFinal && !isPrimaries && _validationErrors.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(_validationErrors.first), backgroundColor: Colors.red));
-      return;
+    if (isFinal &&
+        !isPrimaries &&
+        !ignoreValidation &&
+        _validationErrors.isNotEmpty) {
+      // Save current figures to draft first so they are never lost
+      _scheduleResultsAutoDraft(immediate: true);
+      final proceedAnyway = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              const Icon(LucideIcons.triangleAlert, color: Colors.orange),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('Voter Statistics Discrepancy',
+                    style: GoogleFonts.outfit(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        color: Colors.red)),
+              ),
+            ],
+          ),
+          content: Text(
+            'The following discrepancy was detected:\n\n'
+            '• ${_validationErrors.join('\n• ')}\n\n'
+            'Please verify Voter Statistics (e.g. Voters in Register), or confirm if these exact figures match the physical EC8A sheet.',
+            style: GoogleFonts.outfit(
+                fontSize: 14,
+                color: Colors.black87,
+                fontWeight: FontWeight.w500),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('REVIEW FIGURES',
+                  style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold, color: Colors.grey[700])),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0D5C3A),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text('SUBMIT ANYWAY',
+                  style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold, color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      if (proceedAnyway != true) {
+        return;
+      }
     }
 
     _autoDraftTimer?.cancel();
@@ -8796,13 +9105,20 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       String? evidenceUrl;
 
       if (_evidenceFile != null) {
-        final ref = FirebaseStorage.instance
-            .ref()
-            .child('results/${widget.electionId}/${user?.uid}.jpg');
-        await ref
-            .putFile(_evidenceFile!, SettableMetadata(contentType: 'image/jpeg'))
-            .timeout(const Duration(seconds: 45));
-        evidenceUrl = await ref.getDownloadURL();
+        try {
+          final ref = FirebaseStorage.instance
+              .ref()
+              .child('results/${widget.electionId}/${user?.uid}.jpg');
+          await ref
+              .putFile(
+                  _evidenceFile!, SettableMetadata(contentType: 'image/jpeg'))
+              .timeout(const Duration(seconds: 45));
+          evidenceUrl = await ref.getDownloadURL();
+          _evidenceUrl = evidenceUrl;
+        } catch (storageErr) {
+          debugPrint(
+              'EC8A: Image upload failed/timed out during submit, proceeding with Firestore result submission: $storageErr');
+        }
       }
 
       // 1. Data Preparation (Both Modes)
@@ -8810,7 +9126,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       final lga = _userProfile?['assignedLga'] ?? '';
       final ward = _userProfile?['assignedWard'] ?? '';
       final pu = _userProfile?['assignedPollingUnit'] ?? '';
-      final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+      final computedPuKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+      final puKey = computedPuKey.isNotEmpty ? computedPuKey : _cachedPuKey;
+      if (puKey.isNotEmpty) {
+        _cachedPuKey = puKey;
+      }
 
       final docRef = FirebaseFirestore.instance
           .collection('election_results')
@@ -8917,12 +9237,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         'phone':
             _userProfile?['phone'] ?? _userProfile?['phoneNumber'] ?? 'N/A',
         'submittedAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
         'state': state,
         'lga': lga,
         'ward': ward,
         'pollingUnit': pu,
-        'partyVotes': _partyVotes,
-        'results': _partyVotes,
+        'partyVotes': orderedPartyVotes,
+        'results': orderedPartyVotes,
         'evidenceUrl': evidenceUrl ?? _evidenceUrl ?? '',
         'status': isFinal ? 'final' : 'draft',
         if (resolvedSenatorialDistrict != null)
@@ -8934,12 +9255,23 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         'totalUsedBallots': _totalUsedBallots,
       };
 
-      final index =
-          submissionsList.indexWhere((sub) => sub['submittedBy'] == user?.uid);
+      final index = submissionsList
+          .indexWhere((sub) => sub is Map && sub['submittedBy'] == user?.uid);
       if (index != -1) {
         submissionsList[index] = newReport;
       } else {
         submissionsList.add(newReport);
+      }
+
+      String docStatus = isFinal ? 'verified' : 'draft';
+      if (docSnap.exists && docSnap.data() != null) {
+        final existingStatus =
+            (docSnap.data() as Map<String, dynamic>)['status']
+                ?.toString()
+                .toLowerCase();
+        if (existingStatus == 'disputed' || existingStatus == 'resolved') {
+          docStatus = existingStatus!;
+        }
       }
 
       final isNewDoc = !docSnap.exists;
@@ -8953,10 +9285,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         'lga': lga,
         'ward': ward,
         'pollingUnit': pu,
-        'partyVotes': _partyVotes,
-        'results': _partyVotes,
+        'partyVotes': orderedPartyVotes,
+        'results': orderedPartyVotes,
         if (evidenceUrl != null || _evidenceUrl != null)
           'evidenceUrl': evidenceUrl ?? _evidenceUrl,
+        'status': docStatus,
+        'submissionCount': submissionsList.length,
         'submittedBy': user?.uid,
         'submittedByName': observerName,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -9015,9 +9349,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         for (final existing in localResults) {
           if (existing.observerId == user?.uid &&
               (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
-                  (puKey == '___' &&
-                      existing.pollingUnitId
-                          .startsWith('${widget.electionId}_')))) {
+                  existing.pollingUnitId.startsWith('${widget.electionId}_'))) {
             await dbInstance.deleteResult(existing.id);
           }
         }
@@ -9025,7 +9357,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         final resultCompanion = db.ResultsCompanion(
           observerId: drift.Value(user?.uid ?? ''),
           pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
-          partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+          partyVotesJson: drift.Value(jsonEncode(orderedPartyVotes)),
           ballotStatsJson: drift.Value(jsonEncode({
             ..._stats,
             'electionId': widget.electionId,
@@ -9050,6 +9382,20 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         debugPrint('Local DB Sync/Save failed: $localDbError');
       }
 
+      if (mounted) {
+        setState(() {
+          if (isFinal) _isFinal = true;
+          _puSubmissions = List<dynamic>.from(submissionsList);
+          _puResultStatus = docStatus == 'draft'
+              ? 'Draft'
+              : (docStatus == 'disputed'
+                  ? 'Disputed'
+                  : (docStatus == 'resolved' ? 'Resolved' : 'Verified'));
+          _syncLocalObserverIntoPuSubmissions(
+            statusOverride: isFinal ? 'final' : 'draft',
+          );
+        });
+      }
       await _loadData();
       if (mounted) {
         if (isFinal) {
@@ -9095,9 +9441,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           for (final existing in localResults) {
             if (existing.observerId == user?.uid &&
                 (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
-                    (puKey == '___' &&
-                        existing.pollingUnitId
-                            .startsWith('${widget.electionId}_')))) {
+                    existing.pollingUnitId
+                        .startsWith('${widget.electionId}_'))) {
               await dbInstance.deleteResult(existing.id);
             }
           }
@@ -9105,7 +9450,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           final resultCompanion = db.ResultsCompanion(
             observerId: drift.Value(user?.uid ?? ''),
             pollingUnitId: drift.Value('${widget.electionId}_$puKey'),
-            partyVotesJson: drift.Value(jsonEncode(_partyVotes)),
+            partyVotesJson: drift.Value(jsonEncode(orderedPartyVotes)),
             ballotStatsJson: drift.Value(jsonEncode({
               ..._stats,
               'electionId': widget.electionId,
@@ -9124,6 +9469,14 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
           await dbInstance.insertResult(resultCompanion);
 
+          if (mounted) {
+            setState(() {
+              if (isFinal) _isFinal = true;
+              _syncLocalObserverIntoPuSubmissions(
+                statusOverride: isFinal ? 'final' : 'draft',
+              );
+            });
+          }
           await _loadData();
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -9158,6 +9511,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     if (_loading)
       return const Center(
           child: CircularProgressIndicator(color: Color(0xFF065F46)));
@@ -9326,7 +9680,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               final observerName =
                   sub['submittedByName']?.toString() ?? 'Observer';
               final observerPhone = sub['phone']?.toString() ?? 'N/A';
-              final rawVotes = sub['partyVotes'] as Map<String, dynamic>? ?? {};
+              final isCurrentUserSub = sub['submittedBy'] != null &&
+                  sub['submittedBy'] == FirebaseAuth.instance.currentUser?.uid;
+              final rawVotes = (sub['partyVotes'] ?? sub['results'])
+                      as Map<String, dynamic>? ??
+                  {};
+              final displayVotes = isCurrentUserSub
+                  ? _buildOrderedPartyVotesMap(
+                      _partyVotes.isNotEmpty ? _partyVotes : rawVotes)
+                  : _buildOrderedPartyVotesMap(rawVotes);
               final evidence = sub['evidenceUrl']?.toString() ?? '';
 
               return Container(
@@ -9397,7 +9759,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
-                      children: rawVotes.entries.map((e) {
+                      children: displayVotes.entries.map((e) {
                         return Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 6),
@@ -9787,7 +10149,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     borderSide: BorderSide.none),
               ),
               onChanged: (v) {
-                setState(() => _partyVotes[abb] = int.tryParse(v) ?? 0);
+                setState(() {
+                  _partyVotes[abb] =
+                      int.tryParse(v.replaceAll(',', '').trim()) ?? 0;
+                  _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
+                });
                 _scheduleResultsAutoDraft();
               },
               controller: _partyControllers[abb],
@@ -9884,7 +10250,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     borderSide: BorderSide.none),
               ),
               onChanged: (v) {
-                setState(() => _partyVotes[abb] = int.tryParse(v) ?? 0);
+                setState(() {
+                  _partyVotes[abb] =
+                      int.tryParse(v.replaceAll(',', '').trim()) ?? 0;
+                  _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
+                });
                 _scheduleResultsAutoDraft();
               },
               controller: _partyControllers[abb],
