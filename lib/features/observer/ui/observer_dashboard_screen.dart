@@ -2527,7 +2527,10 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                     onImportFromRelated: _importIncidentFromRelatedElection),
                 _EC8AResultsTab(
                     electionId: widget.electionId,
-                    electionName: _election?.name),
+                    electionName: _election?.name,
+                    electionType: _election?.type,
+                    primaryElectionType: _election?.primaryElectionType,
+                    electionStartDate: _election?.startDate),
               ],
             ),
           ),
@@ -7062,7 +7065,16 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 class _EC8AResultsTab extends StatefulWidget {
   final String electionId;
   final String? electionName;
-  const _EC8AResultsTab({required this.electionId, this.electionName});
+  final String? electionType;
+  final String? primaryElectionType;
+  final DateTime? electionStartDate;
+  const _EC8AResultsTab({
+    required this.electionId,
+    this.electionName,
+    this.electionType,
+    this.primaryElectionType,
+    this.electionStartDate,
+  });
 
   @override
   State<_EC8AResultsTab> createState() => _EC8AResultsTabState();
@@ -7149,10 +7161,70 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _localDb = context.read<db.AppDatabase>();
+    _electionType = widget.electionType;
+    _primaryElectionType = widget.primaryElectionType;
+    _expectedType = _resolveExpectedElectionType(
+      rawType: widget.electionType,
+      primaryType: widget.primaryElectionType,
+      rawName: widget.electionName,
+    );
+    _expectedYear = _resolveExpectedElectionYear();
     _loadData();
     _startNetworkTimer();
     _listenForElectionChanges();
     _checkLostData();
+  }
+
+  String _resolveExpectedElectionType({
+    String? rawType,
+    String? primaryType,
+    String? rawName,
+    String? rawTitle,
+  }) {
+    final candidates = <String?>[
+      primaryType,
+      _primaryElectionType,
+      widget.primaryElectionType,
+      rawType,
+      _expectedType,
+      _electionType,
+      widget.electionType,
+      rawName,
+      rawTitle,
+      widget.electionName,
+      widget.electionId,
+    ];
+    for (final candidate in candidates) {
+      final normalized = AIService.normalizeElectionType(candidate);
+      if (normalized.isNotEmpty) {
+        return normalized;
+      }
+    }
+    return '';
+  }
+
+  int? _resolveExpectedElectionYear({
+    int? parsedYear,
+    String? rawName,
+    String? rawTitle,
+  }) {
+    if (parsedYear != null && parsedYear >= 1990 && parsedYear <= 2099) {
+      return parsedYear;
+    }
+    if (_expectedYear != null &&
+        _expectedYear! >= 1990 &&
+        _expectedYear! <= 2099) {
+      return _expectedYear;
+    }
+    if (widget.electionStartDate != null &&
+        widget.electionStartDate!.year >= 1990 &&
+        widget.electionStartDate!.year <= 2099) {
+      return widget.electionStartDate!.year;
+    }
+    return _safeParseElectionYear(rawName) ??
+        _safeParseElectionYear(rawTitle) ??
+        _safeParseElectionYear(widget.electionName) ??
+        _safeParseElectionYear(widget.electionId);
   }
 
   Future<void> _checkLostData() async {
@@ -7760,13 +7832,23 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               .map((e) => Map<String, dynamic>.from(e as Map))
               .toList();
         }
-        expectedYear = _safeParseElectionYear(data['startDate']) ??
+        final parsedYear = _safeParseElectionYear(data['startDate']) ??
             _safeParseElectionYear(data['electionDate']) ??
             _safeParseElectionYear(data['date']) ??
             _safeParseElectionYear(data['year']) ??
             _safeParseElectionYear(data['name']) ??
             _safeParseElectionYear(data['title']);
-        expectedType = data['type']?.toString().toUpperCase();
+        expectedYear = _resolveExpectedElectionYear(
+          parsedYear: parsedYear,
+          rawName: data['name']?.toString(),
+          rawTitle: data['title']?.toString(),
+        );
+        expectedType = _resolveExpectedElectionType(
+          rawType: data['type']?.toString(),
+          primaryType: primaryElectionType,
+          rawName: data['name']?.toString(),
+          rawTitle: data['title']?.toString(),
+        );
         if (data['parties'] != null && data['parties'] is List) {
           allowedParties = (data['parties'] as List)
               .map((e) => e.toString().toUpperCase())
@@ -7781,10 +7863,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           if (matchIndex != -1) {
             final le = localElections[matchIndex];
             electionType = le.type;
-            expectedType = le.type?.toUpperCase();
-            expectedYear = (le.startDate != null ? le.startDate!.year : null) ??
-                _safeParseElectionYear(le.name) ??
-                _safeParseElectionYear(le.type);
+            final parsedYear =
+                (le.startDate != null ? le.startDate!.year : null) ??
+                    _safeParseElectionYear(le.name) ??
+                    _safeParseElectionYear(le.type);
             if (le.metadataJson != null) {
               final meta = jsonDecode(le.metadataJson!);
               primaryElectionType = meta['primaryElectionType']?.toString();
@@ -7800,11 +7882,29 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     .toList();
               }
             }
+            expectedYear = _resolveExpectedElectionYear(
+              parsedYear: parsedYear,
+              rawName: le.name,
+            );
+            expectedType = _resolveExpectedElectionType(
+              rawType: le.type,
+              primaryType: primaryElectionType,
+              rawName: le.name,
+            );
           }
         } catch (_) {}
       }
 
-      electionType ??= 'GENERAL';
+      electionType ??= _electionType ?? widget.electionType ?? 'GENERAL';
+      primaryElectionType ??= _primaryElectionType ?? widget.primaryElectionType;
+      expectedYear ??= _resolveExpectedElectionYear();
+      final resolvedExpectedType = _resolveExpectedElectionType(
+        rawType: expectedType ?? electionType,
+        primaryType: primaryElectionType,
+      );
+      if (resolvedExpectedType.isNotEmpty) {
+        expectedType = resolvedExpectedType;
+      }
 
       if (electionType == 'PARTY_PRIMARIES') {
         partiesData = aspirants
@@ -8004,8 +8104,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     .contains(p['abbreviation'].toString().toUpperCase()))
                 .toList();
           }
-          _expectedYear = expectedYear;
-          _expectedType = expectedType;
+          if (expectedYear != null) {
+            _expectedYear = expectedYear;
+          }
+          if (expectedType != null && expectedType.isNotEmpty) {
+            _expectedType = expectedType;
+          }
 
           // Initialize controllers
           for (var data in _parties) {
@@ -8385,101 +8489,21 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       }
 
       if (result != null && mounted) {
-        int? detectedYear =
+        final String detectedType =
+            AIService.normalizeElectionType(result['electionType']?.toString());
+        final String expectedType = _resolveExpectedElectionType(
+          rawType: _expectedType ?? _electionType,
+          primaryType: _primaryElectionType,
+        );
+        final int? detectedYear =
             int.tryParse(result['electionYear']?.toString() ?? '');
-        if (detectedYear != null &&
-            _expectedYear != null &&
-            detectedYear != _expectedYear &&
-            detectedYear > 1900) {
-          final shouldProceed = await showDialog<bool>(
-            context: context,
-            barrierDismissible: false,
-            builder: (ctx) => AlertDialog(
-              backgroundColor: Colors.white,
-              title: Row(
-                children: [
-                  const Icon(LucideIcons.triangleAlert, color: Colors.orange),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text('Election Year Mismatch',
-                        style: GoogleFonts.outfit(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 18,
-                            color: Colors.red)),
-                  ),
-                ],
-              ),
-              content: Text(
-                'The system detected the year $detectedYear on this result sheet, but your assigned election is $_expectedYear.\n\nIf this result sheet is valid for your election (e.g. pre-printed form or signature date difference), you can confirm to proceed with the extracted data, or upload a different image.',
-                style: GoogleFonts.outfit(
-                    fontSize: 14,
-                    color: Colors.black87,
-                    fontWeight: FontWeight.w500),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: Text('UPLOAD DIFFERENT FORM',
-                      style: GoogleFonts.outfit(
-                          fontWeight: FontWeight.bold, color: Colors.grey[700])),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF0D5C3A),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: Text('CONFIRM & PROCEED',
-                      style: GoogleFonts.outfit(
-                          fontWeight: FontWeight.bold, color: Colors.white)),
-                ),
-              ],
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
-            ),
-          );
+        final int? expectedYear =
+            _expectedYear ?? _resolveExpectedElectionYear();
 
-          if (shouldProceed != true) {
-            setState(() {
-              _evidenceFile = null;
-            });
-            return; // Abort extraction entirely
-          }
-        }
+        debugPrint(
+            'EC8A Validation Check -> detectedType: "$detectedType", expectedType: "$expectedType", detectedYear: $detectedYear, expectedYear: $expectedYear');
 
-        String _normalizeType(String? raw) {
-          if (raw == null) return '';
-          final t = raw.toUpperCase().replaceAll('_', ' ').trim();
-          if (t.isEmpty || t == 'UNKNOWN' || t == 'NULL' || t == '0') return '';
-          if (t.contains('PRESIDENTIAL') || t.contains('PRESIDENT'))
-            return 'PRESIDENTIAL';
-          if (t.contains('COUNCILLOR') || t.contains('COUNCILLORSHIP'))
-            return 'COUNCILLOR';
-          if (t.contains('LOCAL GOVERNMENT') ||
-              t.contains('CHAIRMAN') ||
-              t.contains('CHAIRMANSHIP') ||
-              t.contains('AREA COUNCIL') ||
-              t.contains('MUNICIPAL') ||
-              t == 'LGA') return 'LOCAL GOVERNMENT';
-          if (t.contains('GOVERNOR') || t.contains('GUBERNATORIAL'))
-            return 'GUBERNATORIAL';
-          if (t.contains('SENATE') || t.contains('SENATORIAL'))
-            return 'SENATORIAL';
-          if (t.contains('REPS') || t.contains('REPRESENTATIVES'))
-            return 'HOUSE OF REPRESENTATIVES';
-          if (t.contains('STATE HOUSE OF ASSEMBLY') ||
-              t.contains('STATE ASSEMBLY') ||
-              t.contains('HOUSE OF ASSEMBLY') ||
-              t.contains('STATE CONSTITUENCY'))
-            return 'STATE HOUSE OF ASSEMBLY';
-          return t;
-        }
-
-        String detectedType =
-            _normalizeType(result['electionType']?.toString());
-        String expectedType = _normalizeType(_expectedType);
-
+        // 1. Election Type Mismatch Check (applies across ALL election types: Presidential, Governorship, Senatorial, House of Reps, State Assembly, LGA, Councillor)
         if (detectedType.isNotEmpty &&
             expectedType.isNotEmpty &&
             detectedType != expectedType) {
@@ -8502,7 +8526,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 ],
               ),
               content: Text(
-                'The system detected this may be a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nIf this result sheet is correct for your unit, you can confirm to keep the sheet and enter or verify figures manually, or upload a different image.',
+                'The system detected this is a $detectedType election result sheet, but you are assigned to observe the $expectedType election.\n\nIf this result sheet is correct for your unit, you can confirm to keep the sheet and enter or verify figures manually, or upload a different image.',
                 style: GoogleFonts.outfit(
                     fontSize: 14,
                     color: Colors.black87,
@@ -8536,6 +8560,70 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             setState(() {
               _evidenceFile = null;
             });
+            _scheduleResultsAutoDraft(immediate: true);
+            return; // Abort extraction entirely
+          }
+        }
+
+        // 2. Election Year Mismatch Check (applies across ALL election types)
+        if (detectedYear != null &&
+            expectedYear != null &&
+            detectedYear != expectedYear &&
+            detectedYear > 1900) {
+          final shouldProceed = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: Colors.white,
+              title: Row(
+                children: [
+                  const Icon(LucideIcons.triangleAlert, color: Colors.orange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Election Year Mismatch',
+                        style: GoogleFonts.outfit(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: Colors.red)),
+                  ),
+                ],
+              ),
+              content: Text(
+                'The system detected the year $detectedYear on this result sheet, but your assigned election is $expectedYear.\n\nIf this result sheet is valid for your election (e.g. pre-printed form or signature date difference), you can confirm to proceed with the extracted data, or upload a different image.',
+                style: GoogleFonts.outfit(
+                    fontSize: 14,
+                    color: Colors.black87,
+                    fontWeight: FontWeight.w500),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('UPLOAD DIFFERENT FORM',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0D5C3A),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: Text('CONFIRM & PROCEED',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.white)),
+                ),
+              ],
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+            ),
+          );
+
+          if (shouldProceed != true) {
+            setState(() {
+              _evidenceFile = null;
+            });
+            _scheduleResultsAutoDraft(immediate: true);
             return; // Abort extraction entirely
           }
         }

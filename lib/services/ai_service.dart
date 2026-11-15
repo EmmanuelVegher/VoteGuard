@@ -132,6 +132,57 @@ class AIService with ChangeNotifier {
     }
   }
 
+  static String normalizeElectionType(String? raw) {
+    if (raw == null) return '';
+    final t = raw
+        .toUpperCase()
+        .replaceAll('_', ' ')
+        .replaceAll('LOCAL GOVERNMENT AREA', '')
+        .replaceAll('INDEPENDENT NATIONAL ELECTORAL COMMISSION', '')
+        .trim();
+    if (t.isEmpty || t == 'UNKNOWN' || t == 'NULL' || t == '0') return '';
+    if (t.contains('PRESIDENTIAL') || t.contains('PRESIDENT')) {
+      return 'PRESIDENTIAL';
+    }
+    if (t.contains('GOVERNORSHIP') ||
+        t.contains('GUBERNATORIAL') ||
+        t.contains('GOVERNOR')) {
+      return 'GUBERNATORIAL';
+    }
+    if (t.contains('SENATORIAL') || t.contains('SENATE')) {
+      return 'SENATORIAL';
+    }
+    if (t.contains('HOUSE OF REPRESENTATIVES') ||
+        t.contains('HOUSE OF REPS') ||
+        t.contains('REPRESENTATIVES') ||
+        t.contains('REPRESENTATIVE') ||
+        t.contains('FEDERAL CONSTITUENCY') ||
+        RegExp(r'\bREPS\b').hasMatch(t)) {
+      return 'HOUSE OF REPRESENTATIVES';
+    }
+    if (t.contains('STATE HOUSE OF ASSEMBLY') ||
+        t.contains('STATE ASSEMBLY') ||
+        t.contains('HOUSE OF ASSEMBLY') ||
+        t.contains('STATE CONSTITUENCY') ||
+        t.contains('ASSEMBLY')) {
+      return 'STATE HOUSE OF ASSEMBLY';
+    }
+    if (t.contains('COUNCILLORSHIP') ||
+        t.contains('COUNCILLOR') ||
+        t.contains('COUNCILOR')) {
+      return 'COUNCILLOR';
+    }
+    if (t.contains('CHAIRMANSHIP') ||
+        t.contains('CHAIRMAN') ||
+        t.contains('AREA COUNCIL') ||
+        t.contains('LOCAL GOVERNMENT') ||
+        t.contains('MUNICIPAL') ||
+        RegExp(r'\bLGA\b').hasMatch(t)) {
+      return 'LOCAL GOVERNMENT';
+    }
+    return '';
+  }
+
   static String _buildEC8APrompt(List<String> partyAbbreviations) {
     final activePartyList = partyAbbreviations.join(', ');
     return '''
@@ -140,12 +191,12 @@ You are an expert INEC Form EC8A election result sheet reader for Nigeria.
 Examine the uploaded image carefully. If the image is slightly tilted or rotated, mentally orient it upright before reading.
 
 STEP 1 — Identify the election type printed on the form header/title.
-Look for text near the top of the form such as "PRESIDENTIAL ELECTION", "GOVERNORSHIP ELECTION", "SENATORIAL DISTRICT ELECTION", "HOUSE OF REPRESENTATIVES ELECTION", "STATE HOUSE OF ASSEMBLY ELECTION", "CHAIRMANSHIP ELECTION", "COUNCILLORSHIP ELECTION", etc.
+Read the bold title line near the very top of the form directly below "STATEMENT OF RESULT OF POLL FROM POLLING UNIT" (for example: "2026 PRESIDENTIAL ELECTION", "2026 ABIA STATE GOVERNORSHIP ELECTION", "2026 SENATORIAL DISTRICT ELECTION", "2026 HOUSE OF REPRESENTATIVES ELECTION", "2026 STATE HOUSE OF ASSEMBLY ELECTION", "2026 CHAIRMANSHIP ELECTION", "2026 COUNCILLORSHIP ELECTION").
 Ignore the "LOCAL GOVERNMENT AREA" address label in the polling unit location box.
-Return this as "electionType" using one of: PRESIDENTIAL, GUBERNATORIAL, SENATORIAL, HOUSE OF REPS, STATE ASSEMBLY, LOCAL GOVERNMENT, COUNCILLOR. (Return "" if unclear.)
+Return this as "electionType" using ONLY one of: PRESIDENTIAL, GUBERNATORIAL, SENATORIAL, HOUSE OF REPRESENTATIVES, STATE HOUSE OF ASSEMBLY, LOCAL GOVERNMENT, COUNCILLOR. (Return "" only if no title header is visible.)
 
 STEP 2 — Identify the election year printed on the form header/title.
-Extract the 4-digit year printed directly next to or above the election type in the form title/header, e.g. from "2026 PRESIDENTIAL ELECTION" the year is 2026.
+Extract the 4-digit year printed directly next to or above the election type in the form title/header, e.g. from "2026 ABIA STATE GOVERNORSHIP ELECTION" or "2023 PRESIDENTIAL ELECTION" the year is 2026 or 2023.
 DO NOT use the date from the presiding/polling officer signature, stamp, or certification at the bottom of the form.
 Return as "electionYear" (integer).
 
@@ -215,16 +266,22 @@ Return ONLY a valid JSON object in this exact structure:
       return processEC8ALocal(imageFile, activeParties);
     }
 
+    // Run lightweight on-device ML Kit header check in parallel so electionType
+    // and electionYear printed in the EC8A header are never missed even if an LLM omits them.
+    final Future<Map<String, dynamic>> localHeaderFuture =
+        _extractHeaderMetadataLocal(imageFile);
+
     if (await isNanoSupported()) {
       try {
         debugPrint(
             'High-end device detected. Attempting Gemini Nano (On-Device)...');
         final data = await _processWithNano(imageFile, activeParties);
         if (data != null) {
+          final normalized = _normalizeExtractedData(data, activeParties);
+          await _mergeHeaderMetadata(normalized, localHeaderFuture);
           _logUsage('GEMINI_NANO', true);
           return AIResult(
-              data: _normalizeExtractedData(data, activeParties),
-              modelName: 'Gemini Nano (On-Device)');
+              data: normalized, modelName: 'Gemini Nano (On-Device)');
         }
       } catch (nanoError) {
         debugPrint('Gemini Nano failed: $nanoError. Falling back to Cloud...');
@@ -290,6 +347,7 @@ Return ONLY a valid JSON object in this exact structure:
         }
 
         final normalized = _normalizeExtractedData(data, activeParties);
+        await _mergeHeaderMetadata(normalized, localHeaderFuture);
         _logUsage(modelName, true);
         return AIResult(data: normalized, modelName: modelName);
       } catch (e) {
@@ -596,12 +654,13 @@ Return ONLY a valid JSON object in this exact structure:
 
     final int electionYear = _parseIntSafe(
         raw['electionYear'] ?? raw['year'] ?? raw['metadata']?['electionYear']);
-    final String electionType = (raw['electionType'] ??
+    final String rawElectionType = (raw['electionType'] ??
             raw['type'] ??
             raw['metadata']?['electionType'] ??
             '')
         .toString()
         .trim();
+    final String electionType = normalizeElectionType(rawElectionType);
 
     return {
       'partyVotes': normalizedPartyVotes,
@@ -619,6 +678,59 @@ Return ONLY a valid JSON object in this exact structure:
         'electionYear': electionYear,
       'electionType': electionType,
     };
+  }
+
+  /// Fast on-device ML Kit pass focused strictly on the printed EC8A header
+  /// so electionType and electionYear are always extracted even if an LLM omits them.
+  Future<Map<String, dynamic>> _extractHeaderMetadataLocal(
+      File imageFile) async {
+    final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    try {
+      final inputImage = InputImage.fromFile(imageFile);
+      final recognizedText = await textRecognizer
+          .processImage(inputImage)
+          .timeout(const Duration(seconds: 4));
+      final fullText = recognizedText.text.toUpperCase();
+      final headerType = _detectTypeOffline(fullText);
+      final headerYear = _extractYearOrNull(fullText);
+      return {
+        if (headerType.isNotEmpty) 'electionType': headerType,
+        if (headerYear != null) 'electionYear': headerYear,
+      };
+    } catch (_) {
+      return {};
+    } finally {
+      try {
+        textRecognizer.close();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _mergeHeaderMetadata(Map<String, dynamic> normalized,
+      Future<Map<String, dynamic>> localHeaderFuture) async {
+    try {
+      final localHeader = await localHeaderFuture;
+      final currentType =
+          normalizeElectionType(normalized['electionType']?.toString());
+      final localType =
+          normalizeElectionType(localHeader['electionType']?.toString());
+      if (currentType.isEmpty && localType.isNotEmpty) {
+        normalized['electionType'] = localType;
+      } else if (currentType.isNotEmpty) {
+        normalized['electionType'] = currentType;
+      }
+
+      final currentYear =
+          int.tryParse(normalized['electionYear']?.toString() ?? '');
+      final localYear =
+          int.tryParse(localHeader['electionYear']?.toString() ?? '');
+      if ((currentYear == null || currentYear < 1990) &&
+          localYear != null &&
+          localYear >= 1990 &&
+          localYear <= 2099) {
+        normalized['electionYear'] = localYear;
+      }
+    } catch (_) {}
   }
 
   Future<Map<String, dynamic>?> _processWithNano(
@@ -808,41 +920,37 @@ Return ONLY a valid JSON object in this exact structure:
   }
 
   String _detectTypeOffline(String text) {
-    // Strip the polling-unit address label so it cannot falsely trigger LGA election type.
-    final cleaned = text.replaceAll('LOCAL GOVERNMENT AREA', '');
-    if (cleaned.contains('PRESIDENTIAL') || cleaned.contains('PRESIDENT')) {
-      return 'PRESIDENTIAL';
+    final cleaned = text
+        .toUpperCase()
+        .replaceAll('LOCAL GOVERNMENT AREA', '')
+        .replaceAll('INDEPENDENT NATIONAL ELECTORAL COMMISSION', '');
+    final lines = cleaned.split('\n');
+
+    // 1. Prioritize lines explicitly containing ELECTION or STATEMENT OF RESULT
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.contains('ELECTION') || line.contains('STATEMENT OF RESULT')) {
+        final combined =
+            i + 1 < lines.length ? '$line ${lines[i + 1]}' : line;
+        final detected = normalizeElectionType(combined);
+        if (detected.isNotEmpty) return detected;
+      }
     }
-    if (cleaned.contains('GOVERNOR') || cleaned.contains('GUBERNATORIAL')) {
-      return 'GUBERNATORIAL';
-    }
-    if (cleaned.contains('SENATE') || cleaned.contains('SENATORIAL')) {
-      return 'SENATORIAL';
-    }
-    if (cleaned.contains('HOUSE OF REPRESENTATIVES') ||
-        cleaned.contains('HOUSE OF REPS') ||
-        cleaned.contains('REPRESENTATIVES') ||
-        cleaned.contains('REPS')) {
-      return 'HOUSE OF REPS';
-    }
-    if (cleaned.contains('STATE HOUSE OF ASSEMBLY') ||
-        cleaned.contains('STATE ASSEMBLY') ||
-        cleaned.contains('HOUSE OF ASSEMBLY')) {
-      return 'STATE HOUSE OF ASSEMBLY';
-    }
-    if (cleaned.contains('COUNCILLOR') || cleaned.contains('COUNCILLORSHIP')) {
-      return 'COUNCILLOR';
-    }
-    if (cleaned.contains('CHAIRMAN') ||
-        cleaned.contains('CHAIRMANSHIP') ||
-        cleaned.contains('AREA COUNCIL') ||
-        cleaned.contains('LOCAL GOVERNMENT ELECTION')) {
-      return 'LOCAL GOVERNMENT';
-    }
-    return '';
+
+    // 2. Check the top 15 header lines of the form
+    final headerBlock = lines.take(15).join('\n');
+    final headerDetected = normalizeElectionType(headerBlock);
+    if (headerDetected.isNotEmpty) return headerDetected;
+
+    // 3. Fallback to full cleaned text
+    return normalizeElectionType(cleaned);
   }
 
   int _extractYear(String text) {
+    return _extractYearOrNull(text) ?? DateTime.now().year;
+  }
+
+  int? _extractYearOrNull(String text) {
     final upperText = text.toUpperCase();
     final lines = upperText.split('\n');
 
@@ -924,9 +1032,7 @@ Return ONLY a valid JSON object in this exact structure:
       }
     }
 
-    // 4. Fallback: match any 2020-2035 year in the document
-    final match = yearRegex.firstMatch(text);
-    return int.tryParse(match?.group(1) ?? '2026') ?? 2026;
+    return null;
   }
 }
 
