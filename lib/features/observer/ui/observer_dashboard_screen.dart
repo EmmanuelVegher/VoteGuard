@@ -4355,6 +4355,48 @@ class _ChecklistTabState extends State<_ChecklistTab>
                   ),
                 ],
               ),
+            )
+          else if (_hasSavedDraft || _hasLocalDraftEdits)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFFDE68A)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(LucideIcons.clock,
+                        color: Color(0xFFD97706), size: 16),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('AUTO-DRAFT SAVED — NOT YET FINALLY SUBMITTED',
+                            style: GoogleFonts.outfit(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900,
+                                color: const Color(0xFF92400E),
+                                letterSpacing: 0.5)),
+                        const SizedBox(height: 2),
+                        Text(
+                            'Your checklist answers are saved as a draft. Please tap "FINAL SUBMIT" at the bottom when complete.',
+                            style: GoogleFonts.outfit(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFFB45309))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           _buildProgressHUD(),
           Expanded(
@@ -6061,13 +6103,60 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     }
   }
 
+  bool get _hasIncidentDraftData =>
+      (_selectedType != null && _selectedType!.trim().isNotEmpty) ||
+      _descriptionController.text.trim().isNotEmpty ||
+      _media.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
         _buildHeader(),
-        const SizedBox(height: 32),
+        if (_hasIncidentDraftData && !_submitting) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFBEB),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFFDE68A)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Icon(LucideIcons.clock,
+                      color: Color(0xFFD97706), size: 16),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('AUTO-DRAFT SAVED — NOT YET SUBMITTED',
+                          style: GoogleFonts.outfit(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                              color: const Color(0xFF92400E),
+                              letterSpacing: 0.5)),
+                      const SizedBox(height: 2),
+                      Text(
+                          'Your incident report is currently saved as an auto-draft. Tap "SUBMIT REPORT" below to officially submit it.',
+                          style: GoogleFonts.outfit(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFFB45309))),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 24),
         _buildIssueDetailsCard(),
         const SizedBox(height: 24),
         _buildEvidenceCard(),
@@ -9896,6 +9985,89 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       children: [
         _buildHeader(),
+        if (_isFinal) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFECFDF5),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFA7F3D0)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Icon(LucideIcons.shieldCheck,
+                      color: Color(0xFF059669), size: 16),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('FINAL SUBMISSION COMPLETED',
+                          style: GoogleFonts.outfit(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                              color: const Color(0xFF065F46),
+                              letterSpacing: 0.5)),
+                      const SizedBox(height: 2),
+                      Text(
+                          'Your observed election result has been officially submitted and locked.',
+                          style: GoogleFonts.outfit(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF047857))),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ] else if (_hasAnyResultData) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFBEB),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFFDE68A)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Icon(LucideIcons.clock,
+                      color: Color(0xFFD97706), size: 16),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('AUTO-DRAFT SAVED — NOT YET FINALLY SUBMITTED',
+                          style: GoogleFonts.outfit(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                              color: const Color(0xFF92400E),
+                              letterSpacing: 0.5)),
+                      const SizedBox(height: 2),
+                      Text(
+                          'Your result figures are saved as an auto-draft. You have not finally submitted yet — tap "FINAL SUBMISSION" at the bottom when ready.',
+                          style: GoogleFonts.outfit(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFFB45309))),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         if (_validationErrors.isNotEmpty && !isPrimaries) ...[
           const SizedBox(height: 16),
           _buildValidationBanner(),
