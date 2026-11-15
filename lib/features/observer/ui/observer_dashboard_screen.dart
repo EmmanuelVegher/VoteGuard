@@ -2508,6 +2508,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       ),
       body: Column(
         children: [
+          if (_election != null)
+            _ElectionTypeMarqueeBanner(election: _election!),
           _buildOfflineSyncBanner(),
           Expanded(
             child: TabBarView(
@@ -2572,6 +2574,194 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         userId: user.uid,
         userName: fullName,
         role: data['role'] ?? 'OBSERVER',
+      ),
+    );
+  }
+}
+
+class _ElectionTypeMarqueeBanner extends StatefulWidget {
+  final Election election;
+
+  const _ElectionTypeMarqueeBanner({required this.election});
+
+  @override
+  State<_ElectionTypeMarqueeBanner> createState() =>
+      _ElectionTypeMarqueeBannerState();
+}
+
+class _ElectionTypeMarqueeBannerState
+    extends State<_ElectionTypeMarqueeBanner> {
+  final ScrollController _scrollController = ScrollController();
+  Timer? _scrollTimer;
+
+  static String formatElectionCategory(Election election) {
+    final rawPrimary = (election.primaryElectionType ?? '').trim().toUpperCase();
+    final rawType = election.type.trim().toUpperCase();
+    final rawName = election.name.trim().toUpperCase();
+    final combined = '$rawPrimary $rawType $rawName';
+
+    if (combined.contains('PRESIDENTIAL') || combined.contains('PRESIDENT')) {
+      return rawType == 'PARTY_PRIMARIES'
+          ? 'PRESIDENTIAL PRIMARY ELECTION'
+          : 'PRESIDENTIAL ELECTION';
+    }
+    if (combined.contains('SENATORIAL') || combined.contains('SENATE')) {
+      return rawType == 'PARTY_PRIMARIES'
+          ? 'SENATORIAL PRIMARY ELECTION'
+          : 'SENATORIAL ELECTION';
+    }
+    if (combined.contains('GOVERNORSHIP') ||
+        combined.contains('GUBERNATORIAL') ||
+        combined.contains('GOVERNOR')) {
+      return rawType == 'PARTY_PRIMARIES'
+          ? 'GOVERNORSHIP PRIMARY ELECTION'
+          : 'GOVERNORSHIP ELECTION';
+    }
+    if (combined.contains('HOUSE_OF_REPS') ||
+        combined.contains('HOUSE OF REPS') ||
+        combined.contains('REPRESENTATIVES') ||
+        combined.contains('FEDERAL HOUSE')) {
+      return 'HOUSE OF REPRESENTATIVES ELECTION';
+    }
+    if (combined.contains('STATE_HOUSE_OF_ASSEMBLY') ||
+        combined.contains('HOUSE_OF_ASSEMBLY') ||
+        combined.contains('STATE ASSEMBLY') ||
+        combined.contains('HOUSE OF ASSEMBLY')) {
+      return 'STATE HOUSE OF ASSEMBLY ELECTION';
+    }
+    if (combined.contains('LOCAL_GOVERNMENT') ||
+        combined.contains('LOCAL GOVERNMENT') ||
+        combined.contains('CHAIRMANSHIP') ||
+        combined.contains('COUNCILLORSHIP') ||
+        combined.contains('LGA')) {
+      return 'LOCAL GOVERNMENT ELECTION';
+    }
+    if (rawPrimary.isNotEmpty) {
+      final cleanPrimary = rawPrimary.replaceAll('_', ' ');
+      return cleanPrimary.endsWith('ELECTION')
+          ? cleanPrimary
+          : '$cleanPrimary ELECTION';
+    }
+    if (rawType.isNotEmpty) {
+      final cleanType = rawType.replaceAll('_', ' ');
+      return cleanType.endsWith('ELECTION')
+          ? cleanType
+          : '$cleanType ELECTION';
+    }
+    return 'ACTIVE ELECTION';
+  }
+
+  static Color _badgeAccentColor(String category) {
+    if (category.contains('PRESIDENTIAL')) return const Color(0xFF059669);
+    if (category.contains('SENATORIAL')) return const Color(0xFF7C3AED);
+    if (category.contains('GOVERNORSHIP')) return const Color(0xFF2563EB);
+    if (category.contains('REPRESENTATIVES')) return const Color(0xFFD97706);
+    if (category.contains('ASSEMBLY')) return const Color(0xFFDB2777);
+    return const Color(0xFF0D9488);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _startScrolling());
+  }
+
+  void _startScrolling() {
+    _scrollTimer?.cancel();
+    _scrollTimer = Timer.periodic(const Duration(milliseconds: 32), (_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final maxScroll = _scrollController.position.maxScrollExtent;
+      if (maxScroll <= 0) return;
+      final nextOffset = _scrollController.offset + 1.1;
+      if (nextOffset >= maxScroll) {
+        _scrollController.jumpTo(0);
+      } else {
+        _scrollController.jumpTo(nextOffset);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollTimer?.cancel();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final category = formatElectionCategory(widget.election);
+    final electionName = widget.election.name.trim();
+    final accentColor = _badgeAccentColor(category);
+    final tickerSegment =
+        '⚠️ YOU ARE CURRENTLY OBSERVING: $category  •  ELECTION: ${electionName.toUpperCase()}  •  PLEASE ENSURE ALL FORM EC8A SHEETS, CHECKLISTS & INCIDENT REPORTS BELONG TO THIS $category ONLY!     ';
+
+    return Container(
+      width: double.infinity,
+      height: 32,
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F172A),
+        border: Border(
+          bottom: BorderSide(color: Color(0xFF1E293B), width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            margin: const EdgeInsets.only(left: 8, right: 6),
+            decoration: BoxDecoration(
+              color: accentColor,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  LucideIcons.radio,
+                  size: 11,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  category,
+                  style: GoogleFonts.outfit(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                    letterSpacing: 0.6,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: IgnorePointer(
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                child: Row(
+                  children: List.generate(
+                    6,
+                    (_) => Padding(
+                      padding: const EdgeInsets.only(right: 24),
+                      child: Text(
+                        tickerSegment,
+                        style: GoogleFonts.outfit(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: const Color(0xFFFDE68A),
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
