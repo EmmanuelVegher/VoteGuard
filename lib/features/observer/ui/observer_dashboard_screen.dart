@@ -7159,6 +7159,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   bool _hasExtractedFromOcr = false;
   bool _isFlushingResultsDraft = false;
   bool _pendingResultsDraftFlush = false;
+  bool _isDeletingSubmission = false;
+  int _deleteGeneration = 0;
   String _cachedPuKey = '';
 
   bool get _hasAnyResultData {
@@ -7429,7 +7431,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 
   Future<void> _flushResultsAutoDraft() async {
-    if (!_hasLocalDraftEdits || _isFinal) return;
+    if (!_hasLocalDraftEdits || _isFinal || _isDeletingSubmission) return;
     if (_isFlushingResultsDraft) {
       _pendingResultsDraftFlush = true;
       return;
@@ -7438,13 +7440,16 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     try {
       do {
         _pendingResultsDraftFlush = false;
-        if (!_hasLocalDraftEdits || _isFinal) break;
+        final int flushGen = _deleteGeneration;
+        if (!_hasLocalDraftEdits || _isFinal || _isDeletingSubmission) break;
         final user = FirebaseAuth.instance.currentUser;
         if (user == null) break;
 
         _syncStateFromControllers();
         final orderedPartyVotes = _buildOrderedPartyVotesMap();
-        if (mounted) {
+        if (mounted &&
+            flushGen == _deleteGeneration &&
+            !_isDeletingSubmission) {
           setState(() {
             _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
           });
@@ -7460,6 +7465,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         final pollingUnitId = '${widget.electionId}_$puKey';
 
         final existingRows = await _localDb.getAllResults();
+        if (flushGen != _deleteGeneration ||
+            _isDeletingSubmission ||
+            !_hasLocalDraftEdits) {
+          break;
+        }
         for (final row in existingRows) {
           if (row.observerId != user.uid) continue;
           final matchesElection = row.pollingUnitId == pollingUnitId ||
@@ -7469,6 +7479,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           }
         }
 
+        if (flushGen != _deleteGeneration ||
+            _isDeletingSubmission ||
+            !_hasLocalDraftEdits) {
+          break;
+        }
         await _localDb.insertResult(
           db.ResultsCompanion(
             observerId: drift.Value(user.uid),
@@ -7493,13 +7508,22 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         );
 
         // Also sync auto-draft to Firestore when online so remote draft & Polling Unit Submissions stay in sync
-        if (!_isOffline && puKey.isNotEmpty) {
+        if (!_isOffline &&
+            puKey.isNotEmpty &&
+            flushGen == _deleteGeneration &&
+            !_isDeletingSubmission &&
+            _hasLocalDraftEdits) {
           try {
             final docRef = FirebaseFirestore.instance
                 .collection('election_results')
                 .doc(pollingUnitId);
             final docSnap =
                 await docRef.get().timeout(const Duration(seconds: 5));
+            if (flushGen != _deleteGeneration ||
+                _isDeletingSubmission ||
+                !_hasLocalDraftEdits) {
+              break;
+            }
             List<dynamic> submissionsList = [];
             String existingStatus = 'draft';
             if (docSnap.exists && docSnap.data() != null) {
@@ -7578,7 +7602,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 'EC8A AutoDraft: Remote Firestore sync skipped (saved locally): $remoteDraftErr');
           }
         }
-      } while (_pendingResultsDraftFlush && !_isFinal);
+      } while (_pendingResultsDraftFlush &&
+          !_isFinal &&
+          !_isDeletingSubmission);
     } catch (e) {
       debugPrint('EC8A AutoDraft: Save failed: $e');
     } finally {
@@ -7940,6 +7966,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       File? restoredLocalEvidenceFile;
 
       bool checkLocalOnly = _isOffline;
+      bool mainFirestoreDocChecked = false;
       List<dynamic> localSubmissions = [];
       String? localStatus;
 
@@ -7950,6 +7977,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               .doc(webDocId)
               .get()
               .timeout(const Duration(seconds: 5));
+          mainFirestoreDocChecked = true;
           if (docSnap.exists && docSnap.data() != null) {
             final data = docSnap.data() as Map<String, dynamic>;
             localStatus = data['status']?.toString();
@@ -7996,8 +8024,10 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         }
       }
 
-      // Check legacy Firestore paths if still no remote submission (only when online)
-      if (!checkLocalOnly && observerSubmission == null) {
+      // Check legacy Firestore paths only if main election_results doc could not be checked
+      if (!checkLocalOnly &&
+          !mainFirestoreDocChecked &&
+          observerSubmission == null) {
         try {
           var legacyDoc = await FirebaseFirestore.instance
               .collection('election_submissions')
@@ -8021,7 +8051,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         }
       }
 
-      if (!checkLocalOnly && observerStats == null) {
+      if (!checkLocalOnly &&
+          !mainFirestoreDocChecked &&
+          observerStats == null) {
         try {
           var legacyStats = await FirebaseFirestore.instance
               .collection('election_statistics_submissions')
@@ -8112,6 +8144,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         debugPrint('EC8A: Error loading local result: $localDbError');
       }
 
+      if (_isDeletingSubmission) {
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
+
       final bool skipOverwriteActiveEdits =
           _hasLocalDraftEdits && observerSubmission?['status'] != 'final';
 
@@ -8161,9 +8198,19 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 ..clear()
                 ..addAll(normalizedVotes);
               _isFinal = observerSubmission!['status'] == 'final';
-              _evidenceUrl = observerSubmission!['evidenceUrl'] as String?;
+              final remoteUrl = observerSubmission!['evidenceUrl']?.toString();
+              _evidenceUrl =
+                  (remoteUrl != null && remoteUrl.isNotEmpty) ? remoteUrl : null;
               if (restoredLocalEvidenceFile != null) {
                 _evidenceFile = restoredLocalEvidenceFile;
+              }
+            } else {
+              _partyVotes.clear();
+              _isFinal = false;
+              _evidenceUrl = null;
+              _evidenceFile = null;
+              for (final c in _partyControllers.values) {
+                c.clear();
               }
             }
 
@@ -8173,8 +8220,17 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 if (observerStats!.containsKey(key)) {
                   _stats[key] =
                       int.tryParse(observerStats![key].toString()) ?? 0;
+                } else {
+                  _stats[key] = 0;
                 }
               });
+            } else {
+              for (final key in _stats.keys.toList()) {
+                _stats[key] = 0;
+              }
+              for (final c in _statControllers.values) {
+                c.clear();
+              }
             }
             _updateControllers();
           } else {
@@ -8973,10 +9029,47 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           ElevatedButton.icon(
             onPressed: () async {
               Navigator.pop(confirmCtx);
+              _deleteGeneration++;
+              _isDeletingSubmission = true;
               _autoDraftTimer?.cancel();
               _hasLocalDraftEdits = false;
+              _pendingResultsDraftFlush = false;
+
+              final user = FirebaseAuth.instance.currentUser;
+              if (mounted) {
+                setState(() {
+                  _isFinal = false;
+                  _hasLocalDraftEdits = false;
+                  _hasExtractedFromOcr = false;
+                  _evidenceUrl = null;
+                  _evidenceFile = null;
+                  _partyVotes.clear();
+                  for (final party in _parties) {
+                    final abb = (party['abbreviation'] ?? '').toString();
+                    if (abb.isNotEmpty) {
+                      _partyVotes[abb] = 0;
+                    }
+                  }
+                  for (final k in _stats.keys.toList()) {
+                    _stats[k] = 0;
+                  }
+                  for (final c in _partyControllers.values) {
+                    c.clear();
+                  }
+                  for (final c in _statControllers.values) {
+                    c.clear();
+                  }
+                  _puSubmissions.removeWhere(
+                      (s) => s is Map && s['submittedBy'] == user?.uid);
+                  if (_puResultStatus?.toLowerCase() != 'disputed' &&
+                      _puResultStatus?.toLowerCase() != 'resolved') {
+                    _puResultStatus = 'Draft';
+                  }
+                  _updateControllers();
+                });
+              }
+
               try {
-                final user = FirebaseAuth.instance.currentUser;
                 final state = _userProfile?['assignedState'] ?? '';
                 final lga = _userProfile?['assignedLga'] ?? '';
                 final ward = _userProfile?['assignedWard'] ?? '';
@@ -8998,6 +9091,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 }
 
                 // 2. Also remove observer's submission from Firestore if online
+                // Note: Use .update() (permitted by Firestore security rules for observers)
+                // rather than .delete() (which is admin-only and would roll back on permission-denied).
                 if (!_isOffline && user != null && puKey.isNotEmpty) {
                   try {
                     final docRef = FirebaseFirestore.instance
@@ -9014,7 +9109,23 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                           (s) => s is Map && s['submittedBy'] == user.uid);
                       if (subs.isEmpty) {
                         await docRef
-                            .delete()
+                            .update({
+                              'submissions': <dynamic>[],
+                              'submissionCount': 0,
+                              'partyVotes': <String, dynamic>{},
+                              'results': <String, dynamic>{},
+                              'evidenceUrl': '',
+                              'votersInRegister': 0,
+                              'accreditedVoters': 0,
+                              'ballotsIssued': 0,
+                              'unusedBallots': 0,
+                              'spoiledBallots': 0,
+                              'rejectedBallots': 0,
+                              'totalValidVotes': 0,
+                              'totalUsedBallots': 0,
+                              'status': 'draft',
+                              'updatedAt': FieldValue.serverTimestamp(),
+                            })
                             .timeout(const Duration(seconds: 5));
                       } else {
                         await docRef
@@ -9028,7 +9139,18 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     }
                   } catch (remoteDelErr) {
                     debugPrint(
-                        'EC8A: Remote Firestore delete skipped: $remoteDelErr');
+                        'EC8A: Remote Firestore clear skipped: $remoteDelErr');
+                  }
+                }
+
+                // 3. Re-check local SQLite in case any in-flight write occurred
+                final remainingLocal = await dbInstance.getAllResults();
+                for (final r in remainingLocal) {
+                  if (r.observerId == user?.uid &&
+                      (r.pollingUnitId == '${widget.electionId}_$puKey' ||
+                          r.pollingUnitId
+                              .startsWith('${widget.electionId}_'))) {
+                    await dbInstance.deleteResult(r.id);
                   }
                 }
 
@@ -9040,6 +9162,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     _evidenceUrl = null;
                     _evidenceFile = null;
                     _partyVotes.clear();
+                    for (final party in _parties) {
+                      final abb = (party['abbreviation'] ?? '').toString();
+                      if (abb.isNotEmpty) {
+                        _partyVotes[abb] = 0;
+                      }
+                    }
                     for (final k in _stats.keys.toList()) {
                       _stats[k] = 0;
                     }
@@ -9060,13 +9188,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                         content: Text(wasFinal
-                            ? 'Submission deleted and form unlocked.'
-                            : 'Draft deleted and form cleared.'),
+                            ? 'Submission deleted and all fields cleared.'
+                            : 'Draft deleted and all fields cleared.'),
                         backgroundColor: const Color(0xFFEF4444)),
                   );
                 }
               } catch (e) {
                 debugPrint('Error deleting result: $e');
+              } finally {
+                _isDeletingSubmission = false;
               }
             },
             icon: const Icon(LucideIcons.trash2, size: 16, color: Colors.white),
