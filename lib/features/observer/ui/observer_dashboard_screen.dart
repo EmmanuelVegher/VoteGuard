@@ -7009,7 +7009,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             decoration: const BoxDecoration(
                 color: Color(0xFFECFDF5), shape: BoxShape.circle),
             child: Icon(icon, size: 16, color: const Color(0xFF10B981))),
-        const SizedBox(width: 16),
+        const SizedBox(width: 14),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -7019,14 +7019,18 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                       fontSize: 14,
                       fontWeight: FontWeight.w900,
                       color: const Color(0xFF0F172A)),
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis),
-              if (sub.isNotEmpty)
+              if (sub.isNotEmpty) ...[
+                const SizedBox(height: 2),
                 Text(sub,
                     style: GoogleFonts.outfit(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF94A3B8)),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF64748B)),
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis),
+              ],
             ],
           ),
         ),
@@ -7152,9 +7156,23 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   Timer? _autoDraftTimer;
   bool _isHydrated = false;
   bool _hasLocalDraftEdits = false;
+  bool _hasExtractedFromOcr = false;
   bool _isFlushingResultsDraft = false;
   bool _pendingResultsDraftFlush = false;
   String _cachedPuKey = '';
+
+  bool get _hasAnyResultData {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    final hasOwnPuSubmission = currentUid != null &&
+        _puSubmissions.any((s) => s is Map && s['submittedBy'] == currentUid);
+    return _isFinal ||
+        _hasLocalDraftEdits ||
+        _evidenceFile != null ||
+        (_evidenceUrl != null && _evidenceUrl!.isNotEmpty) ||
+        _totalValidVotes > 0 ||
+        _stats.values.any((v) => v > 0) ||
+        hasOwnPuSubmission;
+  }
 
   @override
   void initState() {
@@ -8059,12 +8077,17 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           final localUpdatedAt =
               DateTime.tryParse(statsMap['updatedAt']?.toString() ?? '') ??
                   match.createdAt;
-          final preferLocal = !remoteIsFinal &&
-              (observerSubmission == null ||
-                  !match.isSynced ||
-                  statsMap['isFinal'] == true ||
-                  remoteUpdatedAt == null ||
+          final localIsNewerDraft = !match.isSynced &&
+              statsMap['isFinal'] != true &&
+              (remoteUpdatedAt == null ||
                   localUpdatedAt.isAfter(remoteUpdatedAt));
+          final preferLocal = localIsNewerDraft ||
+              (!remoteIsFinal &&
+                  (observerSubmission == null ||
+                      !match.isSynced ||
+                      statsMap['isFinal'] == true ||
+                      remoteUpdatedAt == null ||
+                      localUpdatedAt.isAfter(remoteUpdatedAt)));
 
           if (preferLocal) {
             final savedImage = match.imagePath;
@@ -8163,6 +8186,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             _syncLocalObserverIntoPuSubmissions(
               statusOverride: _isFinal ? 'final' : 'draft',
             );
+          } else if (!_isFinal) {
+            final currentStatusLower = _puResultStatus?.toLowerCase();
+            if (currentStatusLower != 'disputed' &&
+                currentStatusLower != 'resolved') {
+              _puResultStatus = 'Draft';
+            }
           }
 
           _loading = false;
@@ -8336,7 +8365,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     File evidenceFile = await _addWatermark(rawFile);
 
     setState(() {
+      _isFinal = false;
       _evidenceFile = evidenceFile;
+      _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
     });
     _scheduleResultsAutoDraft(immediate: true);
 
@@ -8679,6 +8710,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               _stats[key] = parseIntSafe(result[key]);
             }
           }
+          _isFinal = false;
+          _hasExtractedFromOcr = true;
           _updateControllers();
           _syncLocalObserverIntoPuSubmissions(statusOverride: 'draft');
         });
@@ -8693,7 +8726,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   const SizedBox(width: 10),
                   const Expanded(
                     child: Text(
-                      'Extracted offline on device. Please cross-check numbers.',
+                      'Extracted offline on device. Please cross-check & edit any field if needed.',
                       style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
                     ),
                   ),
@@ -8713,7 +8746,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   const SizedBox(width: 10),
                   const Expanded(
                     child: Text(
-                      'EC8A Sheet Scanned Successfully via Gemini AI!',
+                      'EC8A Sheet Scanned! Review & edit any field before submitting.',
                       style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
                     ),
                   ),
@@ -8732,32 +8765,81 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             backgroundColor: Colors.white,
             title: Row(
               children: [
-                const Icon(LucideIcons.check, color: Colors.black),
-                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFECFDF5),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(LucideIcons.check,
+                      color: Color(0xFF059669), size: 20),
+                ),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: Text('Scan Complete',
+                  child: Text('Scan Complete — Draft Saved',
                       style: GoogleFonts.outfit(
                           fontWeight: FontWeight.bold,
                           fontSize: 18,
-                          color: Colors.black)),
+                          color: const Color(0xFF0F172A))),
                 ),
               ],
             ),
-            content: Text(
-              'The EC8A data has been extracted using Smart Scan AI.\n\nPlease carefully cross-check the populated numbers with your original EC8A image to ensure 100% accuracy before you submit.',
-              style: GoogleFonts.outfit(fontSize: 14, color: Colors.black),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'The EC8A data has been extracted using Smart Scan AI and saved as a Draft.',
+                  style: GoogleFonts.outfit(
+                      fontSize: 14, color: const Color(0xFF334155)),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0FDF4),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFA7F3D0)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(LucideIcons.pencil,
+                          size: 18, color: Color(0xFF059669)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'You can tap and edit any field in the Political Party Votes section and the Voter Statistics (EC8A) section below to correct any number that did not extract accurately before submitting.',
+                          style: GoogleFonts.outfit(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFF065F46),
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
             actions: [
-              ElevatedButton(
-                onPressed: () => Navigator.pop(ctx),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF10B981),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(ctx),
+                  icon: const Icon(LucideIcons.pencil,
+                      size: 16, color: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  label: Text('Review & Edit Fields',
+                      style: GoogleFonts.outfit(
+                          fontWeight: FontWeight.bold, color: Colors.white)),
                 ),
-                child: Text('Verify Now',
-                    style: GoogleFonts.outfit(
-                        fontWeight: FontWeight.bold, color: Colors.white)),
               ),
             ],
             shape:
@@ -8784,7 +8866,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             ),
             content: Text(
               'The scanner could not automatically parse the numbers from this image.\n\n'
-              'Don\'t worry! Your result sheet photo is safely attached. You can inspect the image above and enter the figures manually below.',
+              'Your result sheet photo is safely attached! You can tap and edit any field in the Political Party Votes and Voter Statistics (EC8A) sections below to enter the figures manually.',
               style: GoogleFonts.outfit(fontSize: 14, color: Colors.black87),
             ),
             actions: [
@@ -8826,7 +8908,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             ),
             content: Text(
               'Automatic scanning could not complete (${e.toString().replaceAll('Exception: ', '')}).\n\n'
-              'Your EC8A result sheet is safely attached! You can view the image above and enter the numbers manually below.',
+              'Your EC8A result sheet is safely attached! You can tap any field in the Political Party Votes and Voter Statistics (EC8A) sections below to enter or edit the numbers manually.',
               style: GoogleFonts.outfit(fontSize: 14, color: Colors.black87),
             ),
             actions: [
@@ -8853,36 +8935,58 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 
   Future<void> _handleDeleteLocalSubmission() async {
+    final bool wasFinal = _isFinal;
     showDialog(
       context: context,
       builder: (confirmCtx) => AlertDialog(
         backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text('Delete Local Submission Copy',
-            style: GoogleFonts.outfit(
-                fontWeight: FontWeight.bold, color: Colors.black)),
+        title: Row(
+          children: [
+            const Icon(LucideIcons.trash2, color: Color(0xFFEF4444), size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                  wasFinal
+                      ? 'Delete Submitted Result?'
+                      : 'Delete Draft & Clear Form?',
+                  style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      color: const Color(0xFF0F172A))),
+            ),
+          ],
+        ),
         content: Text(
-            'Are you sure you want to delete this locally stored results sheet submission copy? This will unlock the result entry form.',
-            style: GoogleFonts.outfit(color: Colors.black)),
+            wasFinal
+                ? 'Are you sure you want to delete your submitted result for this polling unit? This will remove your submission and unlock the form so you can scan or enter fresh figures.'
+                : 'Are you sure you want to delete this draft and clear all entered party votes, voter statistics, and the attached EC8A image?',
+            style: GoogleFonts.outfit(
+                fontSize: 14, color: const Color(0xFF334155))),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(confirmCtx),
             child: Text('CANCEL',
                 style: GoogleFonts.outfit(
-                    fontWeight: FontWeight.bold, color: Colors.grey)),
+                    fontWeight: FontWeight.bold, color: Colors.grey[700])),
           ),
-          ElevatedButton(
+          ElevatedButton.icon(
             onPressed: () async {
               Navigator.pop(confirmCtx);
+              _autoDraftTimer?.cancel();
+              _hasLocalDraftEdits = false;
               try {
                 final user = FirebaseAuth.instance.currentUser;
                 final state = _userProfile?['assignedState'] ?? '';
                 final lga = _userProfile?['assignedLga'] ?? '';
                 final ward = _userProfile?['assignedWard'] ?? '';
                 final pu = _userProfile?['assignedPollingUnit'] ?? '';
-                final puKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+                final computedPuKey = _sanitizeId('${state}_${lga}_${ward}_$pu');
+                final puKey =
+                    computedPuKey.isNotEmpty ? computedPuKey : _cachedPuKey;
 
-                final dbInstance = context.read<db.AppDatabase>();
+                // 1. Delete from local SQLite database
+                final dbInstance = _localDb;
                 final localResults = await dbInstance.getAllResults();
                 for (final r in localResults) {
                   if (r.observerId == user?.uid &&
@@ -8893,32 +8997,84 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   }
                 }
 
+                // 2. Also remove observer's submission from Firestore if online
+                if (!_isOffline && user != null && puKey.isNotEmpty) {
+                  try {
+                    final docRef = FirebaseFirestore.instance
+                        .collection('election_results')
+                        .doc('${widget.electionId}_$puKey');
+                    final docSnap = await docRef
+                        .get()
+                        .timeout(const Duration(seconds: 5));
+                    if (docSnap.exists && docSnap.data() != null) {
+                      final data = docSnap.data() as Map<String, dynamic>;
+                      final List<dynamic> subs =
+                          List<dynamic>.from(data['submissions'] ?? []);
+                      subs.removeWhere(
+                          (s) => s is Map && s['submittedBy'] == user.uid);
+                      if (subs.isEmpty) {
+                        await docRef
+                            .delete()
+                            .timeout(const Duration(seconds: 5));
+                      } else {
+                        await docRef
+                            .update({
+                              'submissions': subs,
+                              'submissionCount': subs.length,
+                              'updatedAt': FieldValue.serverTimestamp(),
+                            })
+                            .timeout(const Duration(seconds: 5));
+                      }
+                    }
+                  } catch (remoteDelErr) {
+                    debugPrint(
+                        'EC8A: Remote Firestore delete skipped: $remoteDelErr');
+                  }
+                }
+
                 if (mounted) {
                   setState(() {
                     _isFinal = false;
                     _hasLocalDraftEdits = false;
+                    _hasExtractedFromOcr = false;
                     _evidenceUrl = null;
                     _evidenceFile = null;
                     _partyVotes.clear();
-                    _stats.keys.forEach((k) => _stats[k] = 0);
+                    for (final k in _stats.keys.toList()) {
+                      _stats[k] = 0;
+                    }
+                    for (final c in _partyControllers.values) {
+                      c.clear();
+                    }
+                    for (final c in _statControllers.values) {
+                      c.clear();
+                    }
                     _puSubmissions.removeWhere(
                         (s) => s is Map && s['submittedBy'] == user?.uid);
+                    if (_puResultStatus?.toLowerCase() != 'disputed' &&
+                        _puResultStatus?.toLowerCase() != 'resolved') {
+                      _puResultStatus = 'Draft';
+                    }
                     _updateControllers();
                   });
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text(
-                            'Local submission copy deleted. Form unlocked.'),
-                        backgroundColor: Colors.red),
+                    SnackBar(
+                        content: Text(wasFinal
+                            ? 'Submission deleted and form unlocked.'
+                            : 'Draft deleted and form cleared.'),
+                        backgroundColor: const Color(0xFFEF4444)),
                   );
                 }
               } catch (e) {
-                debugPrint('Error deleting local result: $e');
+                debugPrint('Error deleting result: $e');
               }
             },
+            icon: const Icon(LucideIcons.trash2, size: 16, color: Colors.white),
             style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFEF4444)),
-            child: Text('DELETE COPY',
+                backgroundColor: const Color(0xFFEF4444),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8))),
+            label: Text(wasFinal ? 'DELETE & UNLOCK' : 'DELETE & CLEAR',
                 style: GoogleFonts.outfit(
                     fontWeight: FontWeight.bold, color: Colors.white)),
           ),
@@ -9607,27 +9763,104 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
 
     return ListView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       children: [
         _buildHeader(),
         if (_validationErrors.isNotEmpty && !isPrimaries) ...[
           const SizedBox(height: 16),
           _buildValidationBanner(),
         ],
-        const SizedBox(height: 32),
+        const SizedBox(height: 20),
+        if (!isPrimaries) ...[
+          _buildEvidenceSidebarCard(),
+          const SizedBox(height: 16),
+        ],
+        if (!_isFinal) ...[
+          _buildEditableFieldsBanner(),
+          const SizedBox(height: 16),
+        ],
         _buildResultsGridCard(),
         if (!isPrimaries) ...[
-          const SizedBox(height: 24),
-          _buildEvidenceSidebarCard(),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           _buildStatsSidebarCard(),
         ],
-        const SizedBox(height: 32),
+        const SizedBox(height: 20),
         _buildPollingUnitSubmissionsSection(),
-        const SizedBox(height: 32),
+        const SizedBox(height: 20),
         _buildProgressFooter(),
         const SizedBox(height: 48),
       ],
+    );
+  }
+
+  Widget _buildEditableFieldsBanner() {
+    final isHighlighted = _hasExtractedFromOcr;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: isHighlighted
+            ? const Color(0xFFECFDF5)
+            : const Color(0xFFF0F9FF),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isHighlighted
+              ? const Color(0xFFA7F3D0)
+              : const Color(0xFFBAE6FD),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: isHighlighted
+                  ? const Color(0xFFD1FAE5)
+                  : const Color(0xFFE0F2FE),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              LucideIcons.pencil,
+              size: 16,
+              color: isHighlighted
+                  ? const Color(0xFF059669)
+                  : const Color(0xFF0284C7),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isHighlighted
+                      ? 'EC8A Extracted — All Fields Are Editable'
+                      : 'All Fields Are Editable',
+                  style: GoogleFonts.outfit(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: isHighlighted
+                        ? const Color(0xFF065F46)
+                        : const Color(0xFF0369A1),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Tap any vote box in Political Party Votes or Voter Statistics (EC8A) below to edit and correct any figure that did not extract accurately.',
+                  style: GoogleFonts.outfit(
+                    fontSize: 12,
+                    height: 1.35,
+                    fontWeight: FontWeight.w500,
+                    color: isHighlighted
+                        ? const Color(0xFF047857)
+                        : const Color(0xFF075985),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -9636,13 +9869,16 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
     final isDisputed = _puResultStatus?.toLowerCase() == 'disputed';
     final isResolved = _puResultStatus?.toLowerCase() == 'resolved';
+    final effectiveBadgeLabel = isDisputed
+        ? 'DISPUTED'
+        : (isResolved ? 'RESOLVED' : (_isFinal ? 'FINAL' : 'DRAFT'));
 
     return Container(
-      padding: const EdgeInsets.all(28),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(32),
-        border: Border.all(color: const Color(0xFFF1F5F9)),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: [
           BoxShadow(
               color: const Color(0xFF0F172A).withOpacity(0.03),
@@ -9656,33 +9892,36 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('POLLING UNIT SUBMISSIONS',
-                  style: GoogleFonts.outfit(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w900,
-                      color: const Color(0xFF64748B),
-                      letterSpacing: 1)),
+              Flexible(
+                child: Text('POLLING UNIT SUBMISSIONS',
+                    style: GoogleFonts.outfit(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                        color: const Color(0xFF64748B),
+                        letterSpacing: 1)),
+              ),
+              const SizedBox(width: 8),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: isDisputed
                       ? const Color(0xFFFEF2F2)
-                      : (isResolved
+                      : (isResolved || _isFinal
                           ? const Color(0xFFECFDF5)
-                          : const Color(0xFFEFF6FF)),
+                          : const Color(0xFFFEF3C7)),
                   borderRadius: BorderRadius.circular(100),
                 ),
                 child: Text(
-                  (_puResultStatus ?? 'VERIFIED').toUpperCase(),
+                  effectiveBadgeLabel,
                   style: GoogleFonts.outfit(
                     fontSize: 10,
                     fontWeight: FontWeight.w900,
                     color: isDisputed
                         ? const Color(0xFFEF4444)
-                        : (isResolved
-                            ? const Color(0xFF10B981)
-                            : const Color(0xFF3B82F6)),
+                        : (isResolved || _isFinal
+                            ? const Color(0xFF059669)
+                            : const Color(0xFFD97706)),
                   ),
                 ),
               ),
@@ -9770,6 +10009,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               final observerPhone = sub['phone']?.toString() ?? 'N/A';
               final isCurrentUserSub = sub['submittedBy'] != null &&
                   sub['submittedBy'] == FirebaseAuth.instance.currentUser?.uid;
+              final subStatus = isCurrentUserSub
+                  ? (_isFinal ? 'FINAL' : 'DRAFT')
+                  : (sub['status']?.toString().toUpperCase() == 'FINAL'
+                      ? 'FINAL'
+                      : 'DRAFT');
+              final isSubFinal = subStatus == 'FINAL';
               final rawVotes = (sub['partyVotes'] ?? sub['results'])
                       as Map<String, dynamic>? ??
                   {};
@@ -9780,11 +10025,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               final evidence = sub['evidenceUrl']?.toString() ?? '';
 
               return Container(
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF8FAFC),
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: const Color(0xFFF1F5F9)),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -9804,11 +10049,39 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(observerName,
-                                  style: GoogleFonts.outfit(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
-                                      color: const Color(0xFF0F172A))),
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(observerName,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: GoogleFonts.outfit(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                            color: const Color(0xFF0F172A))),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: isSubFinal
+                                          ? const Color(0xFFECFDF5)
+                                          : const Color(0xFFFEF3C7),
+                                      borderRadius: BorderRadius.circular(100),
+                                    ),
+                                    child: Text(
+                                      subStatus,
+                                      style: GoogleFonts.outfit(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w900,
+                                        color: isSubFinal
+                                            ? const Color(0xFF059669)
+                                            : const Color(0xFFD97706),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                               const SizedBox(height: 2),
                               Row(
                                 children: [
@@ -9832,6 +10105,16 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                             icon: const Icon(LucideIcons.eye,
                                 size: 20, color: Color(0xFF0F172A)),
                             tooltip: 'View Results Document',
+                          ),
+                        ],
+                        if (isCurrentUserSub) ...[
+                          IconButton(
+                            onPressed: _handleDeleteLocalSubmission,
+                            icon: const Icon(LucideIcons.trash2,
+                                size: 20, color: Color(0xFFEF4444)),
+                            tooltip: _isFinal
+                                ? 'Delete Submission'
+                                : 'Delete Draft / Clear',
                           ),
                         ],
                       ],
@@ -10065,16 +10348,17 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Widget _buildResultsGridCard() {
     return Container(
-      padding: const EdgeInsets.all(32),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: const Color(0xFFF1F5F9))),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0xFFE2E8F0))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildCardHeader(LucideIcons.chartBar, 'Election Results', ''),
-          const SizedBox(height: 20),
+          _buildCardHeader(LucideIcons.chartBar, 'Election Results',
+              'Tap any party\'s vote box below to edit or correct figures'),
+          const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(4),
             decoration: BoxDecoration(
@@ -10090,7 +10374,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               ],
             ),
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 20),
           if (_isPrecisionView)
             _buildPrecisionHeader()
           else
@@ -10103,9 +10387,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               physics: const NeverScrollableScrollPhysics(),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: 1.5,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+                childAspectRatio: 2.1,
               ),
               itemCount: _parties.length,
               itemBuilder: (context, i) => _buildPartyEntryCard(_parties[i]),
@@ -10117,9 +10401,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Widget _buildPrecisionHeader() {
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
-    final logoSize = isPrimaries ? 64.0 : 48.0;
+    final logoSize = isPrimaries ? 56.0 : 44.0;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       child: Row(
         children: [
           SizedBox(
@@ -10130,7 +10414,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                       fontWeight: FontWeight.w900,
                       color: const Color(0xFF94A3B8),
                       letterSpacing: 0.5))),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           Expanded(
               child: Text(isPrimaries ? 'ASPIRANT NAME' : 'PARTY NAME',
                   style: GoogleFonts.outfit(
@@ -10140,12 +10424,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                       letterSpacing: 0.5))),
           const SizedBox(width: 12),
           SizedBox(
-              width: 80,
-              child: Text('TOTAL VOTES',
+              width: 92,
+              child: Text('VOTES (EDIT)',
                   style: GoogleFonts.outfit(
                       fontSize: 8,
                       fontWeight: FontWeight.w900,
-                      color: const Color(0xFF94A3B8),
+                      color: const Color(0xFF059669),
                       letterSpacing: 0.5),
                   textAlign: TextAlign.center)),
         ],
@@ -10169,15 +10453,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     final name = party['name'] ?? '';
     final logoUrl = party['logoUrl'];
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
-    final logoSize = isPrimaries ? 64.0 : 48.0;
-    final fontSize = isPrimaries ? 20.0 : 16.0;
+    final logoSize = isPrimaries ? 56.0 : 44.0;
+    final fontSize = isPrimaries ? 18.0 : 14.0;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
+      padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
         children: [
           _buildSmartLogo(logoUrl, abb, logoSize, fontSize: fontSize),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -10185,11 +10469,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               children: [
                 Text(name,
                     style: GoogleFonts.outfit(
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: FontWeight.bold,
                         color: const Color(0xFF1E293B))),
                 if (!isPrimaries) ...[
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 3),
                   Wrap(
                     crossAxisAlignment: WrapCrossAlignment.center,
                     spacing: 4,
@@ -10216,25 +10500,41 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               ],
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           SizedBox(
-            width: 80,
+            width: 92,
             child: TextField(
               enabled: !_isFinal,
               keyboardType: TextInputType.number,
               textAlign: TextAlign.center,
               style: GoogleFonts.outfit(
-                  fontSize: 14,
+                  fontSize: 15,
                   fontWeight: FontWeight.w900,
                   color: const Color(0xFF0F172A)),
               decoration: InputDecoration(
                 hintText: '0',
                 filled: true,
-                fillColor: const Color(0xFFF8FAFC),
-                contentPadding: const EdgeInsets.symmetric(vertical: 16),
+                fillColor:
+                    _isFinal ? const Color(0xFFF1F5F9) : Colors.white,
+                contentPadding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide:
+                      const BorderSide(color: Color(0xFFCBD5E1), width: 1.2),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide:
+                      const BorderSide(color: Color(0xFF10B981), width: 2),
+                ),
+                disabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                ),
                 border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(100),
-                    borderSide: BorderSide.none),
+                  borderRadius: BorderRadius.circular(14),
+                ),
               ),
               onChanged: (v) {
                 setState(() {
@@ -10283,18 +10583,18 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     final name = party['name'] ?? '';
     final logoUrl = party['logoUrl'];
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
-    final logoSize = isPrimaries ? 48.0 : 24.0;
+    final logoSize = isPrimaries ? 36.0 : 28.0;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
           color: const Color(0xFFF8FAFC),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFF1F5F9))),
+          border: Border.all(color: const Color(0xFFE2E8F0))),
       child: Row(
         children: [
           _buildSmartLogo(logoUrl, abb, logoSize,
-              fontSize: isPrimaries ? 14 : 10),
+              fontSize: isPrimaries ? 13 : 10),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -10303,7 +10603,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               children: [
                 Text(abb,
                     style: GoogleFonts.outfit(
-                        fontSize: 9,
+                        fontSize: 11,
                         fontWeight: FontWeight.w900,
                         color: const Color(0xFF0F172A)),
                     overflow: TextOverflow.ellipsis),
@@ -10311,31 +10611,42 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.outfit(
-                        fontSize: 7,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF94A3B8))),
+                        fontSize: 8,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF64748B))),
               ],
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 6),
           SizedBox(
-            width: 40,
+            width: 54,
             child: TextField(
               enabled: !_isFinal,
               keyboardType: TextInputType.number,
               textAlign: TextAlign.center,
               style: GoogleFonts.outfit(
-                  fontSize: 10,
+                  fontSize: 12,
                   fontWeight: FontWeight.w900,
                   color: const Color(0xFF0F172A)),
               decoration: InputDecoration(
                 hintText: '0',
                 filled: true,
                 fillColor: Colors.white,
-                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                contentPadding:
+                    const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide:
+                        const BorderSide(color: Color(0xFFCBD5E1), width: 1)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide:
+                        const BorderSide(color: Color(0xFF10B981), width: 1.8)),
+                disabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
                 border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none),
+                    borderRadius: BorderRadius.circular(10)),
               ),
               onChanged: (v) {
                 setState(() {
@@ -10355,11 +10666,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Widget _buildEvidenceSidebarCard() {
     return Container(
-      padding: const EdgeInsets.all(32),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: const Color(0xFFF1F5F9))),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0xFFE2E8F0))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -10367,27 +10678,28 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                  child: _buildCardHeader(
-                      LucideIcons.fileImage, 'RESULT SHEET (EC8A)', '')),
+                  child: _buildCardHeader(LucideIcons.fileImage,
+                      'RESULT SHEET (EC8A)', 'Upload or snap EC8A form')),
               if (_evidenceFile != null || _evidenceUrl != null)
                 IconButton(
                   onPressed: () => _showFullImage(),
                   icon: const Icon(LucideIcons.maximize2,
-                      size: 14, color: Color(0xFF10B981)),
+                      size: 16, color: Color(0xFF10B981)),
+                  tooltip: 'View Full Image',
                 )
               else
                 const Icon(LucideIcons.maximize2,
                     size: 14, color: Color(0xFFCBD5E1)),
             ],
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 16),
           Container(
             width: double.infinity,
-            height: 300,
+            height: 240,
             decoration: BoxDecoration(
               color: const Color(0xFFF8FAFC),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: const Color(0xFFF1F5F9)),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
               image: _evidenceFile != null
                   ? DecorationImage(
                       image: FileImage(_evidenceFile!),
@@ -10476,156 +10788,170 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   )
                 : (_evidenceFile == null && _evidenceUrl == null)
                     ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(LucideIcons.image,
-                                size: 48, color: Color(0xFFCBD5E1)),
-                            const SizedBox(height: 16),
-                            Text(
-                                'No result sheet uploaded yet.\nUpload the EC8A form to automatically read the numbers.',
-                                textAlign: TextAlign.center,
-                                style: GoogleFonts.outfit(
-                                    fontSize: 11,
-                                    color: const Color(0xFF94A3B8),
-                                    fontWeight: FontWeight.w500)),
-                          ],
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(LucideIcons.image,
+                                  size: 44, color: Color(0xFFCBD5E1)),
+                              const SizedBox(height: 12),
+                              Text(
+                                  'No result sheet uploaded yet.\nUpload the EC8A form to automatically read the numbers.',
+                                  textAlign: TextAlign.center,
+                                  style: GoogleFonts.outfit(
+                                      fontSize: 12,
+                                      color: const Color(0xFF64748B),
+                                      fontWeight: FontWeight.w500)),
+                            ],
+                          ),
                         ),
                       )
                     : null,
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
           if (_evidenceFile == null && _evidenceUrl == null && !_isFinal)
             Row(
               children: [
                 Expanded(
                     child: _buildActionButton(
-                        'TAKE SNAPSHOT',
+                        'TAKE PHOTO',
                         LucideIcons.camera,
                         () => _handleOCR(ImageSource.camera))),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Expanded(
                     child: _buildActionButton(
-                        'PICK FROM GALLERY',
+                        'UPLOAD IMAGE',
                         LucideIcons.image,
                         () => _handleOCR(ImageSource.gallery))),
               ],
             )
           else
-            Row(
+            Column(
               children: [
-                Expanded(
-                    child: _buildActionButton(
-                        'CHANGE IMAGE', LucideIcons.refreshCw, () {
-                  showModalBottomSheet(
-                    context: context,
-                    shape: const RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.vertical(top: Radius.circular(24))),
-                    backgroundColor: Colors.white,
-                    builder: (ctx) => SafeArea(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Change Image Source',
-                                style: GoogleFonts.outfit(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.black)),
-                            const SizedBox(height: 16),
-                            ListTile(
-                              leading: const Icon(LucideIcons.camera,
-                                  color: Colors.black),
-                              title: Text('Take New Photo',
-                                  style: GoogleFonts.outfit(
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.black)),
-                              onTap: () {
-                                Navigator.pop(ctx);
-                                _handleOCR(ImageSource.camera);
-                              },
+                Row(
+                  children: [
+                    Expanded(
+                        child: _buildActionButton(
+                            'CHANGE IMAGE', LucideIcons.refreshCw, () {
+                      showModalBottomSheet(
+                        context: context,
+                        shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(24))),
+                        backgroundColor: Colors.white,
+                        builder: (ctx) => SafeArea(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Change Image Source',
+                                    style: GoogleFonts.outfit(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.black)),
+                                const SizedBox(height: 16),
+                                ListTile(
+                                  leading: const Icon(LucideIcons.camera,
+                                      color: Colors.black),
+                                  title: Text('Take New Photo',
+                                      style: GoogleFonts.outfit(
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.black)),
+                                  onTap: () {
+                                    Navigator.pop(ctx);
+                                    _handleOCR(ImageSource.camera);
+                                  },
+                                ),
+                                ListTile(
+                                  leading: const Icon(LucideIcons.image,
+                                      color: Colors.black),
+                                  title: Text('Upload from Gallery',
+                                      style: GoogleFonts.outfit(
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.black)),
+                                  onTap: () {
+                                    Navigator.pop(ctx);
+                                    _handleOCR(ImageSource.gallery);
+                                  },
+                                ),
+                              ],
                             ),
-                            ListTile(
-                              leading: const Icon(LucideIcons.image,
-                                  color: Colors.black),
-                              title: Text('Upload from Gallery',
-                                  style: GoogleFonts.outfit(
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.black)),
-                              onTap: () {
-                                Navigator.pop(ctx);
-                                _handleOCR(ImageSource.gallery);
-                              },
-                            ),
-                          ],
+                          ),
+                        ),
+                      );
+                    })),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Container(
+                        height: 52,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                              colors: [Color(0xFF064E3B), Color(0xFF10B981)]),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: ElevatedButton.icon(
+                          onPressed:
+                              (_scanning || _isFinal) ? null : () => _runOCR(),
+                          icon: _scanning
+                              ? const SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white))
+                              : const Icon(LucideIcons.scan,
+                                  size: 15, color: Colors.white),
+                          label: Text('RESCAN SHEET',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.outfit(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w900,
+                                  color: Colors.white)),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14)),
+                          ),
                         ),
                       ),
                     ),
-                  );
-                })),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Container(
-                    height: 56,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [Color(0xFF064E3B), Color(0xFF10B981)]),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: ElevatedButton.icon(
-                      onPressed: _scanning ? null : () => _runOCR(),
-                      icon: _scanning
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white))
-                          : const Icon(LucideIcons.scan,
-                              size: 16, color: Colors.white),
-                      label: Text('AUTO-FILL NUMBERS',
-                          style: GoogleFonts.outfit(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.transparent,
-                        shadowColor: Colors.transparent,
+                  ],
+                ),
+                if (_hasAnyResultData) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      onPressed: _handleDeleteLocalSubmission,
+                      icon: const Icon(LucideIcons.trash2,
+                          size: 15, color: Color(0xFFEF4444)),
+                      label: Text(
+                        _isFinal
+                            ? 'DELETE SUBMISSION & UNLOCK'
+                            : 'DELETE DRAFT / CLEAR SHEET',
+                        style: GoogleFonts.outfit(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: const Color(0xFFEF4444),
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color(0xFFFCA5A5)),
+                        backgroundColor: const Color(0xFFFEF2F2),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16)),
+                            borderRadius: BorderRadius.circular(12)),
                       ),
                     ),
                   ),
-                ),
+                ],
               ],
             ),
-          const SizedBox(height: 12),
-          Center(
-            child: ListenableBuilder(
-              listenable: context.read<AIService>(),
-              builder: (context, _) {
-                final aiService = context.read<AIService>();
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // Icon(LucideIcons.cpu, size: 12, color: Colors.blueGrey.withOpacity(0.6)),
-                    // const SizedBox(width: 6),
-                    // Text(
-                    //   'ACTIVE ENGINE: ${aiService.currentModelName.toUpperCase()}',
-                    //   style: GoogleFonts.outfit(
-                    //     fontSize: 9,
-                    //     fontWeight: FontWeight.w900,
-                    //     color: Colors.blueGrey.withOpacity(0.7),
-                    //     letterSpacing: 0.8,
-                    //   ),
-                    // ),
-                  ],
-                );
-              },
-            ),
-          ),
         ],
       ),
     );
@@ -10668,19 +10994,22 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Widget _buildActionButton(String label, IconData icon, VoidCallback onTap) {
     return SizedBox(
-      height: 56,
+      height: 52,
       child: ElevatedButton.icon(
         onPressed: _isFinal ? null : onTap,
-        icon: Icon(icon, size: 16),
+        icon: Icon(icon, size: 15),
         label: Text(label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style:
                 GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w900)),
         style: ElevatedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
           backgroundColor: const Color(0xFFF1F5F9),
           foregroundColor: const Color(0xFF0F172A),
           elevation: 0,
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ),
       ),
     );
@@ -10688,17 +11017,19 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Widget _buildStatsSidebarCard() {
     return Container(
-      padding: const EdgeInsets.all(32),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: const Color(0xFFF1F5F9))),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0xFFE2E8F0))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildCardHeader(
-              LucideIcons.calculator, 'VOTER STATISTICS (EC8A)', ''),
-          const SizedBox(height: 32),
+              LucideIcons.calculator,
+              'VOTER STATISTICS (EC8A)',
+              'Tap any box below to edit or correct extracted statistics'),
+          const SizedBox(height: 20),
           Row(
             children: [
               _buildCompactStatInput('VOTERS IN REGISTER', 'votersInRegister'),
@@ -10722,7 +11053,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               _buildCompactStatInput('REJECTED BALLOTS', 'rejectedBallots'),
             ],
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -10731,12 +11062,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 children: [
                   Text('TOTAL VALID VOTES',
                       style: GoogleFonts.outfit(
-                          fontSize: 8,
+                          fontSize: 9,
                           fontWeight: FontWeight.w900,
-                          color: const Color(0xFF94A3B8))),
+                          color: const Color(0xFF64748B))),
                   Text(_totalValidVotes.toString(),
                       style: GoogleFonts.outfit(
-                          fontSize: 24,
+                          fontSize: 22,
                           fontWeight: FontWeight.w900,
                           color: const Color(0xFF10B981))),
                 ],
@@ -10746,12 +11077,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 children: [
                   Text('TOTAL USED BALLOTS',
                       style: GoogleFonts.outfit(
-                          fontSize: 8,
+                          fontSize: 9,
                           fontWeight: FontWeight.w900,
-                          color: const Color(0xFF94A3B8))),
+                          color: const Color(0xFF64748B))),
                   Text(_totalUsedBallots.toString(),
                       style: GoogleFonts.outfit(
-                          fontSize: 24,
+                          fontSize: 22,
                           fontWeight: FontWeight.w900,
                           color: const Color(0xFF0F172A))),
                 ],
@@ -10770,27 +11101,38 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         children: [
           Text(label,
               style: GoogleFonts.outfit(
-                  fontSize: 8,
+                  fontSize: 9,
                   fontWeight: FontWeight.w900,
-                  color: const Color(0xFF94A3B8),
-                  letterSpacing: 0.5)),
-          const SizedBox(height: 12),
+                  color: const Color(0xFF64748B),
+                  letterSpacing: 0.4)),
+          const SizedBox(height: 8),
           TextField(
             enabled: !_isFinal,
             keyboardType: TextInputType.number,
             style: GoogleFonts.outfit(
-                fontSize: 14,
+                fontSize: 15,
                 fontWeight: FontWeight.w900,
                 color: const Color(0xFF0F172A)),
             decoration: InputDecoration(
               hintText: '0',
               filled: true,
-              fillColor: const Color(0xFFF8FAFC),
-              border: OutlineInputBorder(
+              fillColor:
+                  _isFinal ? const Color(0xFFF1F5F9) : const Color(0xFFF8FAFC),
+              enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none),
+                  borderSide:
+                      const BorderSide(color: Color(0xFFCBD5E1), width: 1.2)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide:
+                      const BorderSide(color: Color(0xFF10B981), width: 2)),
+              disabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12)),
               contentPadding:
-                  const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
+                  const EdgeInsets.symmetric(vertical: 16, horizontal: 14),
             ),
             onChanged: (v) {
               setState(() => _stats[key] = int.tryParse(v) ?? 0);
@@ -10805,11 +11147,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   Widget _buildProgressFooter() {
     return Container(
-      padding: const EdgeInsets.all(32),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: const Color(0xFFF1F5F9))),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0xFFE2E8F0))),
       child: Column(
         children: [
           Row(
@@ -10821,15 +11163,16 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               _buildStepDivider(),
               Flexible(
                   child: _buildStepIndicator(
-                      '2', 'RESULT ENTRY', 'ACTIVE', false,
-                      isCurrent: true)),
+                      '2', 'RESULT ENTRY', _isFinal ? 'COMPLETED' : 'ACTIVE', _isFinal,
+                      isCurrent: !_isFinal)),
               _buildStepDivider(),
               Flexible(
                   child: _buildStepIndicator(
-                      '3', 'FINAL REVIEW', 'PENDING', false)),
+                      '3', 'FINAL REVIEW', _isFinal ? 'SUBMITTED' : 'PENDING', _isFinal,
+                      isCurrent: _isFinal)),
             ],
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
           Column(
             children: [
               SizedBox(
@@ -10850,25 +11193,25 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                       style: GoogleFonts.outfit(
                           fontSize: 12, fontWeight: FontWeight.w900)),
                   style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 24),
-                    side: const BorderSide(color: Color(0xFFF1F5F9)),
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    side: const BorderSide(color: Color(0xFFCBD5E1)),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24)),
+                        borderRadius: BorderRadius.circular(18)),
                   ),
                 ),
               ),
               if (!_isFinal) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Container(
                   width: double.infinity,
-                  height: 72,
+                  height: 64,
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
                       colors: [Color(0xFF064E3B), Color(0xFF065F46)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
-                    borderRadius: BorderRadius.circular(24),
+                    borderRadius: BorderRadius.circular(18),
                     boxShadow: [
                       BoxShadow(
                           color: const Color(0xFF059669).withOpacity(0.3),
@@ -10896,29 +11239,32 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                       backgroundColor: Colors.transparent,
                       shadowColor: Colors.transparent,
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(24)),
+                          borderRadius: BorderRadius.circular(18)),
                     ),
                   ),
                 ),
               ],
-              if (_isFinal) ...[
-                const SizedBox(height: 16),
+              if (_hasAnyResultData) ...[
+                const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
                     onPressed: _handleDeleteLocalSubmission,
                     icon: const Icon(LucideIcons.trash2,
                         size: 16, color: Color(0xFFEF4444)),
-                    label: Text('DELETE LOCAL SUBMISSION COPY',
+                    label: Text(
+                        _isFinal
+                            ? 'DELETE & UNLOCK SUBMISSION'
+                            : 'DELETE DRAFT / CLEAR FORM',
                         style: GoogleFonts.outfit(
                             fontSize: 12,
                             fontWeight: FontWeight.w900,
                             color: const Color(0xFFEF4444))),
                     style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      padding: const EdgeInsets.symmetric(vertical: 20),
                       side: const BorderSide(color: Color(0xFFFCA5A5)),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(24)),
+                          borderRadius: BorderRadius.circular(18)),
                       backgroundColor: const Color(0xFFFEF2F2),
                     ),
                   ),
@@ -11102,7 +11448,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
             decoration: const BoxDecoration(
                 color: Color(0xFFECFDF5), shape: BoxShape.circle),
             child: Icon(icon, size: 16, color: const Color(0xFF10B981))),
-        const SizedBox(width: 16),
+        const SizedBox(width: 14),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -11112,14 +11458,18 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                       fontSize: 14,
                       fontWeight: FontWeight.w900,
                       color: const Color(0xFF0F172A)),
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis),
-              if (sub.isNotEmpty)
+              if (sub.isNotEmpty) ...[
+                const SizedBox(height: 2),
                 Text(sub,
                     style: GoogleFonts.outfit(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF94A3B8)),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF64748B)),
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis),
+              ],
             ],
           ),
         ),
