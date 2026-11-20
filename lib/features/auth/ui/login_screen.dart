@@ -11,6 +11,8 @@ import 'package:local_auth/local_auth.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/core/routes/dashboard_redirect.dart';
 import 'package:voteguard/features/about/ui/about_screen.dart';
+import 'package:voteguard/services/language_service.dart';
+import 'package:voteguard/core/widgets/language_selector_button.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -44,49 +46,69 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
 
           SafeArea(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isCompact = constraints.maxWidth < 360;
+                return Stack(
                   children: [
-                    // Logo and Title
-                    Image.asset(
-                      'assets/images/voteguard_grey.png',
-                      height: 80,
+                    const Positioned(
+                      top: 12,
+                      right: 16,
+                      child: LanguageSelectorButton(dark: false, compact: false),
                     ),
-                    const SizedBox(height: 12),
-                    RichText(
-                      text: TextSpan(
-                        style: GoogleFonts.outfit(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          color: const Color(0xFF1E293B),
-                          letterSpacing: -0.5,
+                    Center(
+                      child: SingleChildScrollView(
+                        padding: EdgeInsets.fromLTRB(
+                          isCompact ? 16.0 : 24.0,
+                          56.0,
+                          isCompact ? 16.0 : 24.0,
+                          24.0,
                         ),
-                        children: [
-                          const TextSpan(text: 'VoteGuard '),
-                          TextSpan(
-                            text: 'Portal',
-                            style: TextStyle(color: const Color(0xFF991B1B)),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const Text(
-                      'ELECTION PORTAL FOR VOTEGUARD',
-                      style: TextStyle(
-                        color: Color(0xFF64748B),
-                        fontSize: 10,
-                        letterSpacing: 1.5,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 32),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 460),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              // Logo and Title
+                              Image.asset(
+                                'assets/images/voteguard_grey.png',
+                                height: isCompact ? 64 : 80,
+                              ),
+                              const SizedBox(height: 12),
+                              RichText(
+                                textAlign: TextAlign.center,
+                                text: TextSpan(
+                                  style: GoogleFonts.outfit(
+                                    fontSize: isCompact ? 24 : 28,
+                                    fontWeight: FontWeight.bold,
+                                    color: const Color(0xFF1E293B),
+                                    letterSpacing: -0.5,
+                                  ),
+                                  children: [
+                                    const TextSpan(text: 'VoteGuard '),
+                                    TextSpan(
+                                      text: 'Portal',
+                                      style: TextStyle(
+                                          color: const Color(0xFF991B1B)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Text(
+                                context.tr('ELECTION PORTAL FOR VOTEGUARD'),
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Color(0xFF64748B),
+                                  fontSize: 10,
+                                  letterSpacing: 1.5,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              SizedBox(height: isCompact ? 20 : 32),
 
-                    // Login Card
-                    Container(
-                      padding: const EdgeInsets.all(28),
+                              // Login Card
+                              Container(
+                                padding: EdgeInsets.all(isCompact ? 18 : 28),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(24),
@@ -101,14 +123,14 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildInputLabel('EMAIL / PHONE NUMBER'),
+                          _buildInputLabel(context.tr('EMAIL / PHONE NUMBER')),
                           TextField(
                             controller: _emailController,
                             style: const TextStyle(color: Colors.black),
                             keyboardType: TextInputType.text,
                             textInputAction: TextInputAction.next,
                             decoration: InputDecoration(
-                              hintText: 'Email/Phone Number',
+                              hintText: context.tr('Email/Phone Number'),
                               prefixIcon: const Icon(LucideIcons.logIn,
                                   size: 20, color: Color(0xFF64748B)),
                               fillColor: const Color(0xFFF8FAFC),
@@ -367,13 +389,13 @@ class _LoginScreenState extends State<LoginScreen> {
                                                   fontSize: 13)),
                                         ],
                                       )
-                                    : const Row(
+                                    : Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.center,
                                         children: [
-                                          Icon(LucideIcons.shield, size: 18, color: Colors.white),
-                                          SizedBox(width: 8),
-                                          Text('LOGIN', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                          const Icon(LucideIcons.shield, size: 18, color: Colors.white),
+                                          const SizedBox(width: 8),
+                                          Text(context.tr('LOGIN'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                                         ],
                                       ),
                               );
@@ -640,7 +662,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ],
                 ),
+                        ),
               ),
+            ),
+                  ],
+                );
+              },
             ),
           ),
         ],

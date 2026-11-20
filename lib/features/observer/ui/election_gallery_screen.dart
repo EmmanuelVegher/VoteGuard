@@ -18,6 +18,8 @@ import 'package:voteguard/services/sync_service.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:voteguard/services/language_service.dart';
+import 'package:voteguard/core/widgets/language_selector_button.dart';
 
 class ElectionGalleryScreen extends StatefulWidget {
   const ElectionGalleryScreen({super.key});
@@ -854,7 +856,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
             onPressed: () => _showLogoutConfirmation(),
             icon: const Icon(LucideIcons.logOut, color: Color(0xFFEF4444), size: 15),
             label: Text(
-              'Logout',
+              context.tr('Logout'),
               style: GoogleFonts.outfit(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
@@ -878,16 +880,22 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
         ),
       ),
       centerTitle: true,
-      title: Text(
-        'ELECTION GALLERY',
-        style: GoogleFonts.outfit(
-          fontSize: 14,
-          fontWeight: FontWeight.w900,
-          color: const Color(0xFF1E293B),
-          letterSpacing: 0.5,
+      title: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(
+          context.tr('ELECTION GALLERY'),
+          maxLines: 1,
+          style: GoogleFonts.outfit(
+            fontSize: 14,
+            fontWeight: FontWeight.w900,
+            color: const Color(0xFF1E293B),
+            letterSpacing: 0.5,
+          ),
         ),
       ),
       actions: [
+        const Center(child: LanguageSelectorButton(dark: false, compact: true)),
+        const SizedBox(width: 4),
         Builder(
           builder: (context) {
             // Filter notifications for this user based on their role from profile
@@ -1178,29 +1186,36 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                 ),
                 const SizedBox(height: 12),
                 if (!_isEditingAssignment) ...[
-                  GridView.count(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    crossAxisCount: 2,
-                    childAspectRatio: 2.1,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 12,
-                    children: [
-                      _buildAssignmentItem(
-                          'STATE', profile?['assignedState'] ?? 'N/A'),
-                      _buildAssignmentItem(
-                          'LGA', profile?['assignedLga'] ?? 'N/A'),
-                      _buildAssignmentItem(
-                          'WARD', profile?['assignedWard'] ?? 'N/A'),
-                      _buildAssignmentItem('POLLING UNIT',
-                          profile?['assignedPollingUnit'] ?? 'N/A'),
-                      if (isDiocesan)
-                        _buildAssignmentItem('DIOCESE',
-                            profile?['assignedDiocese'] ?? 'N/A'),
-                      if (isProvincial)
-                        _buildAssignmentItem('PROVINCE',
-                            profile?['assignedProvince'] ?? 'N/A'),
-                    ],
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final cols = constraints.maxWidth >= 520 ? 3 : 2;
+                      const spacing = 12.0;
+                      final itemWidth =
+                          (constraints.maxWidth - (spacing * (cols - 1))) / cols;
+                      final items = <Widget>[
+                        _buildAssignmentItem(
+                            'STATE', profile?['assignedState'] ?? 'N/A'),
+                        _buildAssignmentItem(
+                            'LGA', profile?['assignedLga'] ?? 'N/A'),
+                        _buildAssignmentItem(
+                            'WARD', profile?['assignedWard'] ?? 'N/A'),
+                        _buildAssignmentItem('POLLING UNIT',
+                            profile?['assignedPollingUnit'] ?? 'N/A'),
+                        if (isDiocesan)
+                          _buildAssignmentItem('DIOCESE',
+                              profile?['assignedDiocese'] ?? 'N/A'),
+                        if (isProvincial)
+                          _buildAssignmentItem('PROVINCE',
+                              profile?['assignedProvince'] ?? 'N/A'),
+                      ];
+                      return Wrap(
+                        spacing: spacing,
+                        runSpacing: 12,
+                        children: items
+                            .map((item) => SizedBox(width: itemWidth, child: item))
+                            .toList(),
+                      );
+                    },
                   ),
                 ] else ...[
                   if (_states.isEmpty)
@@ -1434,21 +1449,36 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   }
 
   Widget _buildAssignmentItem(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label,
-            style: GoogleFonts.outfit(
-                color: Colors.white.withOpacity(0.5),
-                fontSize: 8,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 1)),
-        const SizedBox(height: 2),
-        Text(value.toString().toUpperCase(),
-            style: GoogleFonts.outfit(
-                color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-            overflow: TextOverflow.ellipsis),
-      ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(context.tr(label),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.outfit(
+                  color: Colors.white.withOpacity(0.55),
+                  fontSize: 8,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1)),
+          const SizedBox(height: 4),
+          Text(value.toString().toUpperCase(),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.outfit(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  height: 1.2)),
+        ],
+      ),
     );
   }
 

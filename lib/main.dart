@@ -13,6 +13,8 @@ import 'package:voteguard/features/auth/ui/password_reset_screen.dart';
 import 'package:voteguard/features/observer/ui/observer_dashboard_screen.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/ai_service.dart';
+import 'package:voteguard/services/language_service.dart';
+import 'package:voteguard/core/widgets/auto_translate_app.dart';
 import 'package:voteguard/data/local/app_database.dart';
 import 'package:voteguard/services/notification_service.dart';
 import 'package:voteguard/features/splash/ui/splash_screen.dart';
@@ -47,6 +49,8 @@ void main() async {
   await NotificationService().init();
 
   final aiService = AIService();
+  final languageService = LanguageService();
+  await languageService.init();
 
   // Dynamic API Key Sync from Firestore
   FirebaseFirestore.instance
@@ -65,12 +69,14 @@ void main() async {
               valueJson['ai']?['gemini_api_key'] ?? valueJson['gemini_api_key'];
           if (key != null && key.toString().isNotEmpty) {
             aiService.setApiKey(key.toString());
+            languageService.setGeminiConfig(apiKey: key.toString());
           }
 
           // 2. Sync Selected OCR Model
           final modelId = valueJson['ai']?['ocrModel'];
           if (modelId != null && modelId.toString().isNotEmpty) {
             aiService.setPrimaryModel(modelId.toString());
+            languageService.setGeminiConfig(modelName: modelId.toString());
             debugPrint('System Config: Config Updated (Model: $modelId)');
           }
         }
@@ -86,8 +92,11 @@ void main() async {
         RepositoryProvider(create: (context) => AuthService()),
         RepositoryProvider(create: (context) => AppDatabase()),
       ],
-      child: ChangeNotifierProvider.value(
-        value: aiService,
+      child: MultiProvider(
+        providers: [
+          ChangeNotifierProvider.value(value: aiService),
+          ChangeNotifierProvider.value(value: languageService),
+        ],
         child: BlocProvider(
           create: (context) => AuthBloc(
             authService: context.read<AuthService>(),
@@ -108,6 +117,8 @@ class VoteGuardApp extends StatelessWidget {
       title: 'VoteGuard',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
+      builder: (context, child) =>
+          AutoTranslateApp(child: child ?? const SizedBox.shrink()),
       onGenerateRoute: (settings) {
         if (settings.name == '/login') {
           return MaterialPageRoute(builder: (context) => const LoginScreen());

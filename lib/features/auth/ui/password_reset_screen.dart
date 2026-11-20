@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import 'package:voteguard/services/auth_service.dart';
+import 'package:voteguard/core/widgets/language_selector_button.dart';
 
 class PasswordResetScreen extends StatefulWidget {
   const PasswordResetScreen({super.key});
@@ -42,117 +43,116 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
             ),
           ),
           SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24.0),
-              child: Column(
-                children: [
-                  const SizedBox(height: 32),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(LucideIcons.arrowLeft,
-                          color: Color(0xFF1E293B)),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isCompact = constraints.maxWidth < 360;
+                return Center(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: isCompact ? 16.0 : 24.0,
+                      vertical: 16.0,
                     ),
-                  ),
-                  Image.asset(
-                    'assets/images/voteguard_grey.png',
-                    height: 72,
-                  ),
-                  const SizedBox(height: 12),
-                  RichText(
-                    text: TextSpan(
-                      style: GoogleFonts.outfit(
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF1E293B),
-                        letterSpacing: -0.5,
-                      ),
-                      children: [
-                        const TextSpan(text: 'Password '),
-                        TextSpan(
-                          text: 'Reset',
-                          style: GoogleFonts.outfit(
-                            color: const Color(0xFF991B1B),
-                            fontSize: 26,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Choose a recovery method and we will send you instructions to reset your VoteGuard password.',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.outfit(
-                      color: const Color(0xFF64748B),
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  DefaultTabController(
-                    length: 1,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(24),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withAlpha(13),
-                            blurRadius: 20,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(24),
-                        child: Column(
-                          children: [
-                            TabBar(
-                              dividerColor: Colors.transparent,
-                              indicator: BoxDecoration(
-                                color: const Color(0xFF991B1B),
-                                borderRadius: BorderRadius.circular(12),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 460),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                onPressed: () => Navigator.pop(context),
+                                icon: const Icon(LucideIcons.arrowLeft,
+                                    color: Color(0xFF1E293B)),
                               ),
-                              indicatorSize: TabBarIndicatorSize.tab,
-                              labelColor: Colors.white,
-                              unselectedLabelColor: const Color(0xFF64748B),
-                              labelStyle: GoogleFonts.outfit(
-                                fontSize: 10,
+                              const LanguageSelectorButton(
+                                  dark: false, compact: false),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Image.asset(
+                            'assets/images/voteguard_grey.png',
+                            height: isCompact ? 60 : 72,
+                          ),
+                          const SizedBox(height: 12),
+                          RichText(
+                            textAlign: TextAlign.center,
+                            text: TextSpan(
+                              style: GoogleFonts.outfit(
+                                fontSize: isCompact ? 22 : 26,
                                 fontWeight: FontWeight.bold,
+                                color: const Color(0xFF1E293B),
+                                letterSpacing: -0.5,
                               ),
-                              tabs: const [
-                                // Tab(text: 'PHONE'), // Phone number tab commented out per request
-                                Tab(text: 'EMAIL'),
+                              children: [
+                                const TextSpan(text: 'Password '),
+                                TextSpan(
+                                  text: 'Reset',
+                                  style: GoogleFonts.outfit(
+                                    color: const Color(0xFF991B1B),
+                                    fontSize: isCompact ? 22 : 26,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ],
                             ),
-                            const SizedBox(height: 16),
-                            SizedBox(
-                              height: 340,
-                              child: TabBarView(
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Choose a recovery method and we will send you instructions to reset your VoteGuard password.',
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.outfit(
+                              color: const Color(0xFF64748B),
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withAlpha(13),
+                                  blurRadius: 20,
+                                  offset: const Offset(0, 10),
+                                ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  /*
-                                  Padding(
+                                  Container(
+                                    width: double.infinity,
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 24.0),
-                                    child: _buildPhoneResetSection(),
+                                        vertical: 12),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF991B1B),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Text(
+                                      'EMAIL',
+                                      textAlign: TextAlign.center,
+                                      style: GoogleFonts.outfit(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 1.0,
+                                      ),
+                                    ),
                                   ),
-                                  */
+                                  const SizedBox(height: 16),
                                   Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 24.0),
+                                    padding: EdgeInsets.symmetric(
+                                        horizontal: isCompact ? 16.0 : 24.0),
                                     child: _buildEmailResetSection(),
                                   ),
+                                  const SizedBox(height: 20),
                                 ],
                               ),
                             ),
-                            const SizedBox(height: 16),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+                          ),
                   // Phone OTP notice commented out per request
                   /*
                   const SizedBox(height: 24),
@@ -170,6 +170,10 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
                 ],
               ),
             ),
+          ),
+        );
+      },
+    ),
           ),
         ],
       ),

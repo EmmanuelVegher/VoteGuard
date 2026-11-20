@@ -33,6 +33,8 @@ import 'package:voteguard/services/neon_api_service.dart';
 import 'package:voteguard/data/local/app_database.dart' as db;
 import 'package:drift/drift.dart' as drift;
 import 'package:voteguard/features/observer/ui/document_camera_screen.dart';
+import 'package:voteguard/services/language_service.dart';
+import 'package:voteguard/core/widgets/language_selector_button.dart';
 
 Future<String> _getPublicIP() async {
   try {
@@ -1875,6 +1877,28 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
     }
   }
 
+  Widget _buildWrappedTab(String label) {
+    return Tab(
+      height: 46,
+      child: Center(
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          softWrap: true,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontFamily: 'Roboto',
+            fontFamilyFallback: ['Noto Sans', 'Roboto', 'sans-serif'],
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            height: 1.15,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildOfflineSyncBanner() {
     return StreamBuilder<List<dynamic>>(
       stream: _unsyncedSubject.stream,
@@ -2364,33 +2388,10 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                     color: const Color(0xFF0F172A))),
-            // Role display commented out per request:
-            // Text.rich(
-            //   TextSpan(
-            //     children: [
-            //       TextSpan(
-            //         text: 'OBSERVER DASHBOARD • ',
-            //         style: GoogleFonts.outfit(
-            //             fontSize: 10,
-            //             fontWeight: FontWeight.w900,
-            //             color: const Color(0xFF10B981),
-            //             letterSpacing: 1),
-            //       ),
-            //       TextSpan(
-            //         text: '${(context.watch<AuthBloc>().state.role ?? "OBSERVER").toUpperCase()}',
-            //         style: GoogleFonts.outfit(
-            //             fontSize: 10,
-            //             fontWeight: FontWeight.w900,
-            //             color: const Color(0xFF991B1B),
-            //             letterSpacing: 1),
-            //       ),
-            //     ],
-            //   ),
-            //   maxLines: 1,
-            //   overflow: TextOverflow.ellipsis,
-            // ),
             Text(
-              'OBSERVER DASHBOARD',
+              context.tr('OBSERVER DASHBOARD'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: GoogleFonts.outfit(
                   fontSize: 10,
                   fontWeight: FontWeight.w900,
@@ -2399,111 +2400,125 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
             ),
           ],
         ),
-        actions: [
-          Builder(
-            builder: (btnContext) => StreamBuilder<List<dynamic>>(
-              stream: _unsyncedSubject.stream,
-              builder: (context, snapshot) {
-                final unsynced = snapshot.data ?? [];
-                final count = unsynced.length;
-                final hasPending = count > 0;
-                return InkWell(
-                  onTap: () => Scaffold.of(btnContext).openEndDrawer(),
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 10),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: hasPending
-                          ? const Color(0xFFFEF3C7)
-                          : const Color(0xFFF1F5F9),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: hasPending
-                            ? const Color(0xFFF59E0B)
-                            : const Color(0xFFE2E8F0),
-                        width: 1,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(98),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+                child: Row(
+                  children: [
+                    const LanguageSelectorButton(dark: false, compact: true),
+                    const SizedBox(width: 8),
+                    Builder(
+                      builder: (btnContext) => StreamBuilder<List<dynamic>>(
+                        stream: _unsyncedSubject.stream,
+                        builder: (context, snapshot) {
+                          final unsynced = snapshot.data ?? [];
+                          final count = unsynced.length;
+                          final hasPending = count > 0;
+                          return InkWell(
+                            onTap: () =>
+                                Scaffold.of(btnContext).openEndDrawer(),
+                            borderRadius: BorderRadius.circular(20),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: hasPending
+                                    ? const Color(0xFFFEF3C7)
+                                    : const Color(0xFFF1F5F9),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: hasPending
+                                      ? const Color(0xFFF59E0B)
+                                      : const Color(0xFFE2E8F0),
+                                  width: 1,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    _isOffline
+                                        ? LucideIcons.wifiOff
+                                        : (hasPending
+                                            ? LucideIcons.cloudLightning
+                                            : LucideIcons.cloud),
+                                    color: hasPending
+                                        ? const Color(0xFFD97706)
+                                        : const Color(0xFF0D9488),
+                                    size: 13,
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    hasPending
+                                        ? '${context.tr('Sync')} ($count)'
+                                        : context.tr('Sync'),
+                                    style: GoogleFonts.outfit(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: hasPending
+                                          ? const Color(0xFFB45309)
+                                          : const Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _isOffline
-                              ? LucideIcons.wifiOff
-                              : (hasPending
-                                  ? LucideIcons.cloudLightning
-                                  : LucideIcons.cloud),
-                          color: hasPending
-                              ? const Color(0xFFD97706)
-                              : const Color(0xFF0D9488),
-                          size: 14,
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () => _showLogoutConfirmation(),
+                      icon: const Icon(LucideIcons.logOut,
+                          color: Color(0xFFEF4444), size: 13),
+                      label: Text(
+                        context.tr('Logout'),
+                        style: GoogleFonts.outfit(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFFEF4444),
                         ),
-                        const SizedBox(width: 5),
-                        Text(
-                          hasPending ? 'Sync ($count)' : 'Sync',
-                          style: GoogleFonts.outfit(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: hasPending
-                                ? const Color(0xFFB45309)
-                                : const Color(0xFF0F172A),
+                      ),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
+                        backgroundColor: const Color(0xFFFEF2F2),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                          side: BorderSide(
+                            color:
+                                const Color(0xFFFCA5A5).withValues(alpha: 0.5),
+                            width: 1,
                           ),
                         ),
-                      ],
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
-                  ),
-                );
-              },
-            ),
-          ),
-          const SizedBox(width: 6),
-          Center(
-            child: TextButton.icon(
-              onPressed: () => _showLogoutConfirmation(),
-              icon: const Icon(LucideIcons.logOut,
-                  color: Color(0xFFEF4444), size: 14),
-              label: Text(
-                'Logout',
-                style: GoogleFonts.outfit(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: const Color(0xFFEF4444),
+                  ],
                 ),
               ),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                backgroundColor: const Color(0xFFFEF2F2),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  side: BorderSide(
-                    color: const Color(0xFFFCA5A5).withValues(alpha: 0.5),
-                    width: 1,
-                  ),
-                ),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              TabBar(
+                controller: _tabController,
+                isScrollable: false,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                labelColor: const Color(0xFF065F46),
+                unselectedLabelColor: const Color(0xFF64748B),
+                indicatorColor: const Color(0xFF065F46),
+                tabs: [
+                  _buildWrappedTab(context.tr('DASHBOARD')),
+                  _buildWrappedTab(context.tr('CHECKLIST')),
+                  _buildWrappedTab(context.tr('INCIDENTS')),
+                  _buildWrappedTab(context.tr('RESULTS')),
+                ],
               ),
-            ),
+            ],
           ),
-          const SizedBox(width: 10),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: false, // Forces all tabs to fit on screen
-          labelPadding: const EdgeInsets.symmetric(
-              horizontal: 2), // Minimizes padding for small screens
-          labelColor: const Color(0xFF065F46),
-          unselectedLabelColor: const Color(0xFF64748B),
-          indicatorColor: const Color(0xFF065F46),
-          labelStyle:
-              GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.bold),
-          tabs: const [
-            Tab(text: 'DASHBOARD'),
-            Tab(text: 'CHECKLIST'),
-            Tab(text: 'INCIDENTS'),
-            Tab(text: 'RESULTS'),
-          ],
         ),
       ),
       body: Column(
@@ -2512,9 +2527,12 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
             _ElectionTypeMarqueeBanner(election: _election!),
           _buildOfflineSyncBanner(),
           Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 900),
+                child: TabBarView(
+                  controller: _tabController,
+                  children: [
                 _DashboardTab(
                     electionId: widget.electionId,
                     electionName: _election?.name,
@@ -2534,6 +2552,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                     primaryElectionType: _election?.primaryElectionType,
                     electionStartDate: _election?.startDate),
               ],
+            ),
+              ),
             ),
           ),
         ],
@@ -2691,10 +2711,16 @@ class _ElectionTypeMarqueeBannerState
   @override
   Widget build(BuildContext context) {
     final category = formatElectionCategory(widget.election);
+    final translatedCategory = context.tr(category).toUpperCase();
     final electionName = widget.election.name.trim();
     final accentColor = _badgeAccentColor(category);
+    final observingPrefix = context.tr('YOU ARE CURRENTLY OBSERVING').toUpperCase();
+    final electionWord = context.tr('ELECTION').toUpperCase();
+    final warningText = context
+        .tr('PLEASE ENSURE ALL FORM EC8A SHEETS, CHECKLISTS & INCIDENT REPORTS BELONG TO THIS ELECTION ONLY!')
+        .toUpperCase();
     final tickerSegment =
-        '⚠️ YOU ARE CURRENTLY OBSERVING: $category  •  ELECTION: ${electionName.toUpperCase()}  •  PLEASE ENSURE ALL FORM EC8A SHEETS, CHECKLISTS & INCIDENT REPORTS BELONG TO THIS $category ONLY!     ';
+        '⚠️ $observingPrefix: $translatedCategory  •  $electionWord: ${electionName.toUpperCase()}  •  $warningText     ';
 
     return Container(
       width: double.infinity,
@@ -2724,7 +2750,7 @@ class _ElectionTypeMarqueeBannerState
                 ),
                 const SizedBox(width: 5),
                 Text(
-                  category,
+                  translatedCategory,
                   style: GoogleFonts.outfit(
                     fontSize: 9.5,
                     fontWeight: FontWeight.w900,
@@ -3430,6 +3456,8 @@ class _ChecklistTabState extends State<_ChecklistTab>
   bool _loading = true;
   bool _submitting = false;
   List<dynamic> _questions = [];
+  AppLanguage? _lastTranslatedLang;
+  int _lastTranslatedQuestionCount = 0;
   Map<String, dynamic>? _userProfile;
   bool _isFinalized = false;
   bool _hasSavedDraft = false;
@@ -4495,9 +4523,32 @@ class _ChecklistTabState extends State<_ChecklistTab>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    final langService = context.watch<LanguageService>();
+
     if (_loading)
       return const Center(
           child: CircularProgressIndicator(color: Color(0xFF065F46)));
+
+    // Automatically batch-translate dynamic Firestore checklist sections & questions ONCE per language
+    if (langService.currentLanguage != AppLanguage.en &&
+        _questions.isNotEmpty &&
+        (_lastTranslatedLang != langService.currentLanguage ||
+            _lastTranslatedQuestionCount != _questions.length)) {
+      _lastTranslatedLang = langService.currentLanguage;
+      _lastTranslatedQuestionCount = _questions.length;
+      final textsToTranslate = <String>[];
+      for (final q in _questions) {
+        final sec = (q['section'] ?? 'General').toString().trim();
+        final txt = (q['text'] ?? '').toString().trim();
+        if (sec.isNotEmpty) textsToTranslate.add(sec);
+        if (txt.isNotEmpty) textsToTranslate.add(txt);
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          langService.translateBatch(textsToTranslate);
+        }
+      });
+    }
 
     final grouped = <String, List<dynamic>>{};
     for (var q in _questions) {
@@ -4512,6 +4563,34 @@ class _ChecklistTabState extends State<_ChecklistTab>
       onTap: () => FocusScope.of(context).unfocus(),
       child: Column(
         children: [
+          if (langService.isTranslating)
+            Container(
+              width: double.infinity,
+              color: const Color(0xFFECFDF5),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Color(0xFF059669),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    langService.tr('Translating checklist...'),
+                    style: GoogleFonts.outfit(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF065F46),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (_isFinalized)
             Container(
               width: double.infinity,
@@ -4529,7 +4608,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('CHECKLIST FINALIZED',
+                        Text(context.tr('CHECKLIST FINALIZED'),
                             style: GoogleFonts.outfit(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w900,
@@ -4537,7 +4616,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                                 letterSpacing: 1)),
                         const SizedBox(height: 2),
                         Text(
-                            'All responses are now locked for synchronization.',
+                            context.tr('All responses are now locked for synchronization.'),
                             style: GoogleFonts.outfit(
                                 fontSize: 12, color: Colors.white70)),
                       ],
@@ -4569,7 +4648,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('AUTO-DRAFT SAVED — NOT YET FINALLY SUBMITTED',
+                        Text(context.tr('AUTO-DRAFT SAVED — NOT YET FINALLY SUBMITTED'),
                             style: GoogleFonts.outfit(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w900,
@@ -4630,13 +4709,13 @@ class _ChecklistTabState extends State<_ChecklistTab>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('COMPLETION TRACKER',
+                      Text(context.tr('COMPLETION TRACKER'),
                           style: GoogleFonts.outfit(
                               fontSize: 10,
                               fontWeight: FontWeight.w900,
                               color: const Color(0xFF64748B),
                               letterSpacing: 1)),
-                      Text('${(progress * 100).toInt()}% Questions Answered',
+                      Text('${(progress * 100).toInt()}% ${context.tr('Questions Answered')}',
                           style: GoogleFonts.outfit(
                               fontSize: 14,
                               fontWeight: FontWeight.bold,
@@ -4649,9 +4728,9 @@ class _ChecklistTabState extends State<_ChecklistTab>
           ),
           const SizedBox(width: 12),
           _isOffline
-              ? _buildConnectionStatusBadge('OFFLINE CONNECTION',
+              ? _buildConnectionStatusBadge(context.tr('OFFLINE CONNECTION'),
                   const Color(0xFFFEF2F2), const Color(0xFFEF4444))
-              : _buildConnectionStatusBadge('LIVE CONNECTION',
+              : _buildConnectionStatusBadge(context.tr('LIVE CONNECTION'),
                   const Color(0xFFECFDF5), const Color(0xFF10B981)),
         ],
       ),
@@ -4670,7 +4749,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 32),
-        Text(title.toUpperCase(),
+        Text(context.tr(title).toUpperCase(),
             style: GoogleFonts.outfit(
                 fontSize: 11,
                 fontWeight: FontWeight.w900,
@@ -4748,7 +4827,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
           Row(
             children: [
               Expanded(
-                  child: Text(text,
+                  child: Text(context.tr(text),
                       style: GoogleFonts.outfit(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
@@ -4779,7 +4858,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
               const Icon(Icons.add, size: 10, color: Color(0xFF10B981)),
               const SizedBox(width: 4),
               Text(
-                categoryLabel,
+                context.tr(categoryLabel),
                 style: GoogleFonts.outfit(
                     fontSize: 9,
                     fontWeight: FontWeight.w800,
@@ -4791,7 +4870,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
               Container(width: 1, height: 10, color: const Color(0xFFCBD5E1)),
               const SizedBox(width: 8),
               Text(
-                isRequired ? 'REQUIRED' : 'OPTIONAL',
+                isRequired ? context.tr('REQUIRED') : context.tr('OPTIONAL'),
                 style: GoogleFonts.outfit(
                     fontSize: 9,
                     fontWeight: FontWeight.w700,
@@ -4891,7 +4970,10 @@ class _ChecklistTabState extends State<_ChecklistTab>
                     Icon(hasUrl ? LucideIcons.refreshCw : LucideIcons.camera,
                         size: 16, color: const Color(0xFF64748B)),
                     const SizedBox(width: 8),
-                    Text(hasUrl ? 'REPLACE MEDIA' : 'ADD PHOTO/VIDEO',
+                    Text(
+                        hasUrl
+                            ? context.tr('REPLACE MEDIA')
+                            : context.tr('ADD PHOTO/VIDEO'),
                         style: GoogleFonts.outfit(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
@@ -4908,11 +4990,11 @@ class _ChecklistTabState extends State<_ChecklistTab>
     if (type == 'yes_no_undecided' || type == 'choice') {
       return Row(
         children: [
-          _buildChoiceChip(id, 'Yes', 'yes', enabled),
+          _buildChoiceChip(id, context.tr('Yes'), 'yes', enabled),
           const SizedBox(width: 12),
-          _buildChoiceChip(id, 'No', 'no', enabled),
+          _buildChoiceChip(id, context.tr('No'), 'no', enabled),
           const SizedBox(width: 12),
-          _buildChoiceChip(id, 'Undecided', 'undecided', enabled),
+          _buildChoiceChip(id, context.tr('Undecided'), 'undecided', enabled),
         ],
       );
     }
@@ -5150,13 +5232,16 @@ class _ChecklistTabState extends State<_ChecklistTab>
           _scheduleAutoDraftSave(immediate: true);
         },
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
           decoration: BoxDecoration(
             color: selected ? activeColor : const Color(0xFFF8FAFC),
             borderRadius: BorderRadius.circular(12),
           ),
           child: Center(
             child: Text(label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.outfit(
                     fontSize: 11,
                     fontWeight: FontWeight.w900,
@@ -5435,7 +5520,8 @@ class _IncidentsTab extends StatefulWidget {
   State<_IncidentsTab> createState() => _IncidentsTabState();
 }
 
-class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserver {
+class _IncidentsTabState extends State<_IncidentsTab>
+    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   final _descriptionController = TextEditingController();
   String? _selectedType;
   final List<Map<String, dynamic>> _media = [];
@@ -5447,16 +5533,23 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
   final String _deviceId =
       'OBS-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
   Timer? _clockTimer;
+  final ValueNotifier<String> _clockNotifier =
+      ValueNotifier<String>(DateFormat('HH:mm:ss').format(DateTime.now()));
   bool _isOffline = false;
   Timer? _networkCheckTimer;
   bool _hasPromptedForRelatedImport = false;
   late final db.AppDatabase _localDb;
   Timer? _autoDraftTimer;
+  Stream<QuerySnapshot>? _recentSubmissionsStream;
+  String? _recentSubmissionsStreamKey;
 
   bool _isHydrated = false;
   bool _hasLocalDraftEdits = false;
   bool _isFlushingIncidentDraft = false;
   bool _pendingIncidentDraftFlush = false;
+
+  @override
+  bool get wantKeepAlive => true;
 
   final List<Map<String, String>> _types = [
     {'id': 'ballot_snatching', 'label': 'Ballot Snatching'},
@@ -5469,6 +5562,15 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     {'id': 'other', 'label': 'Other Incident'},
   ];
 
+  void _startClockTimer() {
+    _clockTimer?.cancel();
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        _clockNotifier.value = DateFormat('HH:mm:ss').format(DateTime.now());
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -5477,9 +5579,13 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     _descriptionController.addListener(_onDescriptionChanged);
     _initData();
     _startNetworkTimer();
-    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
+    _startClockTimer();
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _startClockTimer();
   }
 
   @override
@@ -5503,6 +5609,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     WidgetsBinding.instance.removeObserver(this);
     _networkCheckTimer?.cancel();
     _clockTimer?.cancel();
+    _clockNotifier.dispose();
     _descriptionController.dispose();
     super.dispose();
   }
@@ -5646,6 +5753,20 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       debugPrint('IncidentDraft: Local DB read warning: $e');
     }
 
+    if (localDraft != null && !_hasLocalDraftEdits) {
+      List<dynamic> decodedMedia = [];
+      try {
+        final raw = jsonDecode(localDraft.mediaPathsJson);
+        if (raw is List) decodedMedia = raw;
+      } catch (_) {}
+      _applyIncidentDraftFields(
+        type: localDraft.category,
+        desc: localDraft.description,
+        mediaItems: _decodeMediaItems(decodedMedia),
+      );
+      _hasLocalDraftEdits = !localDraft.isSynced;
+    }
+
     Map<String, dynamic>? remoteDraft;
     DateTime? remoteUpdatedAt;
     try {
@@ -5673,35 +5794,12 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             remoteUpdatedAt == null ||
             localDraft.createdAt.isAfter(remoteUpdatedAt));
 
-    if (preferLocal) {
-      List<dynamic> decodedMedia = [];
-      try {
-        final raw = jsonDecode(localDraft.mediaPathsJson);
-        if (raw is List) decodedMedia = raw;
-      } catch (_) {}
-      _applyIncidentDraftFields(
-        type: localDraft.category,
-        desc: localDraft.description,
-        mediaItems: _decodeMediaItems(decodedMedia),
-      );
-      _hasLocalDraftEdits = !localDraft.isSynced;
-    } else if (remoteDraft != null) {
+    if (!preferLocal && remoteDraft != null) {
       final mediaItems = remoteDraft['mediaItems'] as List<dynamic>? ?? [];
       _applyIncidentDraftFields(
         type: remoteDraft['incidentType']?.toString(),
         desc: remoteDraft['description']?.toString(),
         mediaItems: _decodeMediaItems(mediaItems),
-      );
-    } else if (localDraft != null) {
-      List<dynamic> decodedMedia = [];
-      try {
-        final raw = jsonDecode(localDraft.mediaPathsJson);
-        if (raw is List) decodedMedia = raw;
-      } catch (_) {}
-      _applyIncidentDraftFields(
-        type: localDraft.category,
-        desc: localDraft.description,
-        mediaItems: _decodeMediaItems(decodedMedia),
       );
     }
   }
@@ -5739,8 +5837,12 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     _isHydrated = false;
     _hasLocalDraftEdits = false;
 
-    // Force clear state to prevent cross-election data bleed
-    if (mounted) {
+    if (mounted &&
+        (_descriptionController.text.isNotEmpty ||
+            _selectedType != null ||
+            _media.isNotEmpty ||
+            _savingDraft ||
+            _submitting)) {
       setState(() {
         _descriptionController.clear();
         _selectedType = null;
@@ -5752,6 +5854,9 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 
     try {
       final user = FirebaseAuth.instance.currentUser;
+      // Load local/remote draft first so form fields populate without waiting on GPS
+      await _loadIncidentDraftFromSources();
+
       try {
         final profile = await FirebaseFirestore.instance
             .collection('users')
@@ -5768,9 +5873,6 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
         debugPrint('Incident: Location skipped: $e');
       }
       if (mounted) setState(() {});
-
-      // Load draft from Drift / Firestore
-      await _loadIncidentDraftFromSources();
 
       // After loading, check if we should import from related / concurrent elections
       if (!_hasPromptedForRelatedImport &&
@@ -6300,6 +6402,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -6326,7 +6429,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('AUTO-DRAFT SAVED — NOT YET SUBMITTED',
+                      Text(context.tr('AUTO-DRAFT SAVED — NOT YET SUBMITTED'),
                           style: GoogleFonts.outfit(
                               fontSize: 10,
                               fontWeight: FontWeight.w900,
@@ -6334,7 +6437,8 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                               letterSpacing: 0.5)),
                       const SizedBox(height: 2),
                       Text(
-                          'Your incident report is currently saved as an auto-draft. Tap "SUBMIT REPORT" below to officially submit it.',
+                          context.tr(
+                              'Your incident report is currently saved as an auto-draft. Tap "SUBMIT REPORT" below to officially submit it.'),
                           style: GoogleFonts.outfit(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
@@ -6372,14 +6476,15 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Report an Issue',
+              Text(context.tr('Report an Issue'),
                   style: GoogleFonts.outfit(
                       fontSize: 32,
                       fontWeight: FontWeight.w900,
                       color: const Color(0xFF0F172A),
                       letterSpacing: -1)),
               const SizedBox(height: 4),
-              Text('Reporting for ${widget.electionName ?? 'Election'}',
+              Text(
+                  '${context.tr('Reporting for')} ${widget.electionName ?? context.tr('Election')}',
                   style: GoogleFonts.outfit(
                       fontSize: 14,
                       color: const Color(0xFF64748B),
@@ -6410,7 +6515,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
               decoration:
                   BoxDecoration(color: textCol, shape: BoxShape.circle)),
           const SizedBox(width: 8),
-          Text(text,
+          Text(context.tr(text),
               style: GoogleFonts.outfit(
                   fontSize: 9,
                   fontWeight: FontWeight.w900,
@@ -6433,7 +6538,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
           _buildCardHeader(
               LucideIcons.activity, 'ISSUE DETAILS', 'INCIDENT INFORMATION'),
           const SizedBox(height: 32),
-          Text('TYPE OF ISSUE',
+          Text(context.tr('TYPE OF ISSUE'),
               style: GoogleFonts.outfit(
                   fontSize: 10,
                   fontWeight: FontWeight.w900,
@@ -6451,7 +6556,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             items: _types
                 .map((t) => DropdownMenuItem(
                     value: t['id'],
-                    child: Text(t['label']!,
+                    child: Text(context.tr(t['label']!),
                         style: GoogleFonts.outfit(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
@@ -6463,7 +6568,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             },
           ),
           const SizedBox(height: 24),
-          Text('POLLING UNIT',
+          Text(context.tr('POLLING UNIT'),
               style: GoogleFonts.outfit(
                   fontSize: 10,
                   fontWeight: FontWeight.w900,
@@ -6480,7 +6585,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                 Expanded(
                     child: Text(
                         _userProfile?['assignedPollingUnit'] ??
-                            'LOCATING POLLING UNIT...',
+                            context.tr('LOCATING POLLING UNIT...'),
                         style: GoogleFonts.outfit(
                             fontSize: 13,
                             fontWeight: FontWeight.w900,
@@ -6491,7 +6596,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             ),
           ),
           const SizedBox(height: 24),
-          Text('DESCRIBE WHAT HAPPENED',
+          Text(context.tr('DESCRIBE WHAT HAPPENED'),
               style: GoogleFonts.outfit(
                   fontSize: 10,
                   fontWeight: FontWeight.w900,
@@ -6639,14 +6744,14 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
           children: [
             Icon(icon, color: const Color(0xFF0F172A), size: 28),
             const SizedBox(height: 16),
-            Text(title,
+            Text(context.tr(title),
                 textAlign: TextAlign.center,
                 style: GoogleFonts.outfit(
                     fontSize: 11,
                     fontWeight: FontWeight.w900,
                     color: const Color(0xFF0F172A))),
             const SizedBox(height: 4),
-            Text(sub,
+            Text(context.tr(sub),
                 textAlign: TextAlign.center,
                 style: GoogleFonts.outfit(
                     fontSize: 9,
@@ -6678,7 +6783,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                   decoration: const BoxDecoration(
                       color: Color(0xFF10B981), shape: BoxShape.circle)),
               const SizedBox(width: 8),
-              Text('REPORT DETAILS',
+              Text(context.tr('REPORT DETAILS'),
                   style: GoogleFonts.outfit(
                       fontSize: 10,
                       fontWeight: FontWeight.w900,
@@ -6687,8 +6792,21 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             ],
           ),
           const SizedBox(height: 32),
-          _buildDetailRow('TIME', DateFormat('HH:mm:ss').format(DateTime.now()),
-              LucideIcons.clock),
+          _buildDetailRow(
+            'TIME',
+            '',
+            LucideIcons.clock,
+            valueWidget: ValueListenableBuilder<String>(
+              valueListenable: _clockNotifier,
+              builder: (context, timeStr, _) => Text(
+                timeStr,
+                style: GoogleFonts.outfit(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    color: const Color(0xFF0F172A)),
+              ),
+            ),
+          ),
           _buildDetailRow(
               'LATITUDE',
               '${_currentPosition?.latitude.toStringAsFixed(4) ?? '0.0000'}° N',
@@ -6715,7 +6833,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
   }
 
   Widget _buildDetailRow(String label, String value, IconData icon,
-      {Color? labelColor, Color? valueColor}) {
+      {Color? labelColor, Color? valueColor, Widget? valueWidget}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
       child: Row(
@@ -6725,17 +6843,18 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label,
+                Text(context.tr(label),
                     style: GoogleFonts.outfit(
                         fontSize: 8,
                         fontWeight: FontWeight.w900,
                         color: labelColor ?? const Color(0xFF94A3B8))),
                 const SizedBox(height: 4),
-                Text(value,
-                    style: GoogleFonts.outfit(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w900,
-                        color: valueColor ?? const Color(0xFF0F172A))),
+                valueWidget ??
+                    Text(value,
+                        style: GoogleFonts.outfit(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w900,
+                            color: valueColor ?? const Color(0xFF0F172A))),
               ],
             ),
           ),
@@ -6780,7 +6899,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                   size: 10, color: Color(0xFF10B981))),
           const SizedBox(width: 12),
           Expanded(
-              child: Text(text,
+              child: Text(context.tr(text),
                   style: GoogleFonts.outfit(
                       fontSize: 10,
                       fontWeight: FontWeight.w900,
@@ -6807,7 +6926,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('UPLOADING REPORT...',
+                    Text(context.tr('UPLOADING REPORT...'),
                         style: GoogleFonts.outfit(
                             fontSize: 10,
                             fontWeight: FontWeight.w900,
@@ -6852,7 +6971,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
               children: [
                 const Icon(LucideIcons.send, size: 16, color: Colors.white),
                 const SizedBox(width: 12),
-                Text('SUBMIT REPORT',
+                Text(context.tr('SUBMIT REPORT'),
                     style: GoogleFonts.outfit(
                         fontSize: 12,
                         fontWeight: FontWeight.w900,
@@ -6880,7 +6999,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                 const Icon(LucideIcons.save,
                     size: 16, color: Color(0xFF065F46)),
                 const SizedBox(width: 12),
-                Text('SAVE DRAFT',
+                Text(context.tr('SAVE DRAFT'),
                     style: GoogleFonts.outfit(
                         fontSize: 12,
                         fontWeight: FontWeight.w900,
@@ -6896,6 +7015,17 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 
   Widget _buildRecentSubmissions() {
     final user = FirebaseAuth.instance.currentUser;
+    final streamKey = '${widget.electionId}_${user?.uid ?? ""}';
+    if (_recentSubmissionsStream == null ||
+        _recentSubmissionsStreamKey != streamKey) {
+      _recentSubmissionsStreamKey = streamKey;
+      _recentSubmissionsStream = FirebaseFirestore.instance
+          .collection('incident_reports')
+          .where('electionId', isEqualTo: widget.electionId)
+          .where('observerId', isEqualTo: user?.uid)
+          .orderBy('createdAt', descending: true)
+          .snapshots();
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -6903,12 +7033,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
             'HISTORY FOR THIS ELECTION'),
         const SizedBox(height: 24),
         StreamBuilder<QuerySnapshot>(
-          stream: FirebaseFirestore.instance
-              .collection('incident_reports')
-              .where('electionId', isEqualTo: widget.electionId)
-              .where('observerId', isEqualTo: user?.uid)
-              .orderBy('createdAt', descending: true)
-              .snapshots(),
+          stream: _recentSubmissionsStream,
           builder: (context, snapshot) {
             if (snapshot.hasError)
               return Center(
@@ -6924,79 +7049,88 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                       color: const Color(0xFFF8FAFC),
                       borderRadius: BorderRadius.circular(24)),
                   child: Center(
-                      child: Text('No reports submitted yet',
+                      child: Text(context.tr('No reports submitted yet'),
                           style: GoogleFonts.outfit(
                               fontSize: 13, color: const Color(0xFF64748B)))));
 
-            return ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: docs.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (context, i) {
-                final d = docs[i].data() as Map<String, dynamic>;
-                final date = d['createdAt'] != null
-                    ? (d['createdAt'] as Timestamp).toDate()
-                    : (d['timestamp'] != null
-                        ? (d['timestamp'] as Timestamp).toDate()
-                        : DateTime.now());
-                return GestureDetector(
-                  onTap: () => _showIncidentDetails(docs[i].id, d),
-                  child: Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(color: const Color(0xFFF1F5F9))),
-                    child: Row(
-                      children: [
-                        Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(12)),
-                            child: const Icon(LucideIcons.triangleAlert,
-                                size: 16, color: Colors.orange)),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+            return Column(
+              children: [
+                for (int i = 0; i < docs.length; i++) ...[
+                  if (i > 0) const SizedBox(height: 12),
+                  Builder(
+                    builder: (context) {
+                      final d = docs[i].data() as Map<String, dynamic>;
+                      final date =
+                          _parseIncidentDate(d['createdAt'] ?? d['timestamp']);
+                      return GestureDetector(
+                        onTap: () => _showIncidentDetails(docs[i].id, d),
+                        child: Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(24),
+                              border:
+                                  Border.all(color: const Color(0xFFF1F5F9))),
+                          child: Row(
                             children: [
-                              Row(
-                                children: [
-                                  Text(
-                                      d['incidentType']
-                                              ?.toString()
-                                              .replaceAll('_', ' ')
-                                              .toUpperCase() ??
-                                          'INCIDENT',
-                                      style: GoogleFonts.outfit(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w900,
-                                          color: const Color(0xFF0F172A))),
-                                  const Spacer(),
-                                  _buildStatusBadge(d['status'] ?? 'reported'),
-                                ],
+                              Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(12)),
+                                  child: const Icon(LucideIcons.triangleAlert,
+                                      size: 16, color: Colors.orange)),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                              context
+                                                  .tr(d['incidentType']
+                                                          ?.toString()
+                                                          .replaceAll(
+                                                              '_', ' ') ??
+                                                      'INCIDENT')
+                                                  .toUpperCase(),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: GoogleFonts.outfit(
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.w900,
+                                                  color: const Color(
+                                                      0xFF0F172A))),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _buildStatusBadge(
+                                            d['status'] ?? 'reported'),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                        DateFormat('dd/MM/yyyy, HH:mm:ss')
+                                            .format(date),
+                                        style: GoogleFonts.outfit(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            color: const Color(0xFF94A3B8))),
+                                  ],
+                                ),
                               ),
-                              const SizedBox(height: 4),
-                              Text(
-                                  DateFormat('dd/MM/yyyy, HH:mm:ss')
-                                      .format(date),
-                                  style: GoogleFonts.outfit(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: const Color(0xFF94A3B8))),
+                              const SizedBox(width: 12),
+                              const Icon(LucideIcons.chevronRight,
+                                  size: 16, color: Color(0xFFCBD5E1)),
                             ],
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        const Icon(LucideIcons.chevronRight,
-                            size: 16, color: Color(0xFFCBD5E1)),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-                );
-              },
+                ],
+              ],
             );
           },
         ),
@@ -7014,7 +7148,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
       decoration:
           BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(6)),
       child: Text(
-        status.toUpperCase(),
+        context.tr(status).toUpperCase(),
         style: GoogleFonts.outfit(
             fontSize: 8,
             fontWeight: FontWeight.w900,
@@ -7024,12 +7158,23 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
     );
   }
 
+  DateTime _parseIncidentDate(dynamic raw) {
+    if (raw == null) return DateTime.now();
+    if (raw is Timestamp) return raw.toDate();
+    if (raw is DateTime) return raw;
+    if (raw is String) return DateTime.tryParse(raw) ?? DateTime.now();
+    if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw);
+    if (raw is Map) {
+      final secs = raw['_seconds'] ?? raw['seconds'];
+      if (secs is int) {
+        return DateTime.fromMillisecondsSinceEpoch(secs * 1000);
+      }
+    }
+    return DateTime.now();
+  }
+
   void _showIncidentDetails(String docId, Map<String, dynamic> data) {
-    final date = data['createdAt'] != null
-        ? (data['createdAt'] as Timestamp).toDate()
-        : (data['timestamp'] != null
-            ? (data['timestamp'] as Timestamp).toDate()
-            : DateTime.now());
+    final date = _parseIncidentDate(data['createdAt'] ?? data['timestamp']);
     final List<dynamic> mediaItems = data['mediaItems'] ?? [];
     final List<String> mediaUrls = List<String>.from(data['mediaUrls'] ?? []);
 
@@ -7293,7 +7438,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title,
+              Text(context.tr(title),
                   style: GoogleFonts.outfit(
                       fontSize: 14,
                       fontWeight: FontWeight.w900,
@@ -7302,7 +7447,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
                   overflow: TextOverflow.ellipsis),
               if (sub.isNotEmpty) ...[
                 const SizedBox(height: 2),
-                Text(sub,
+                Text(context.tr(sub),
                     style: GoogleFonts.outfit(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -7319,7 +7464,7 @@ class _IncidentsTabState extends State<_IncidentsTab> with WidgetsBindingObserve
 
   InputDecoration _inputDecoration(String hint) {
     return InputDecoration(
-      hintText: hint,
+      hintText: context.tr(hint),
       hintStyle:
           GoogleFonts.outfit(fontSize: 12, color: const Color(0xFFCBD5E1)),
       filled: true,
@@ -10325,9 +10470,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isHighlighted
+                  context.tr(isHighlighted
                       ? 'EC8A Extracted — All Fields Are Editable'
-                      : 'All Fields Are Editable',
+                      : 'All Fields Are Editable'),
                   style: GoogleFonts.outfit(
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
@@ -10338,7 +10483,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  'Tap any vote box in Political Party Votes or Voter Statistics (EC8A) below to edit and correct any figure that did not extract accurately.',
+                  context.tr(
+                      'Tap any vote box in Political Party Votes or Voter Statistics (EC8A) below to edit and correct any figure that did not extract accurately.'),
                   style: GoogleFonts.outfit(
                     fontSize: 12,
                     height: 1.35,
@@ -10741,14 +10887,15 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Submit Results',
+              Text(context.tr('Submit Results'),
                   style: GoogleFonts.outfit(
                       fontSize: 32,
                       fontWeight: FontWeight.w900,
                       color: const Color(0xFF0F172A),
                       letterSpacing: -1)),
               const SizedBox(height: 4),
-              Text('Enter results for ${widget.electionName ?? 'Election'}',
+              Text(
+                  '${context.tr('Enter results for')} ${widget.electionName ?? context.tr('Election')}',
                   style: GoogleFonts.outfit(
                       fontSize: 14,
                       color: const Color(0xFF64748B),
@@ -10779,7 +10926,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               decoration:
                   BoxDecoration(color: textCol, shape: BoxShape.circle)),
           const SizedBox(width: 8),
-          Text(text,
+          Text(context.tr(text),
               style: GoogleFonts.outfit(
                   fontSize: 9,
                   fontWeight: FontWeight.w900,
@@ -10874,17 +11021,28 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           if (_isPrecisionView)
             _buildPrecisionList()
           else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: 2.1,
-              ),
-              itemCount: _parties.length,
-              itemBuilder: (context, i) => _buildPartyEntryCard(_parties[i]),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final w = constraints.maxWidth;
+                final cols = w >= 900
+                    ? 4
+                    : (w >= 600 ? 3 : (w < 310 ? 1 : 2));
+                final ratio = cols == 1
+                    ? 3.2
+                    : (w < 360 ? 1.85 : (cols >= 3 ? 2.2 : 2.1));
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: cols,
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 10,
+                    childAspectRatio: ratio,
+                  ),
+                  itemCount: _parties.length,
+                  itemBuilder: (context, i) => _buildPartyEntryCard(_parties[i]),
+                );
+              },
             ),
         ],
       ),
@@ -10900,7 +11058,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         children: [
           SizedBox(
               width: logoSize,
-              child: Text(isPrimaries ? 'ASPIRANTS' : 'PARTY LOGO',
+              child: Text(
+                  context.tr(isPrimaries ? 'ASPIRANTS' : 'PARTY LOGO'),
                   style: GoogleFonts.outfit(
                       fontSize: 8,
                       fontWeight: FontWeight.w900,
@@ -10908,7 +11067,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                       letterSpacing: 0.5))),
           const SizedBox(width: 12),
           Expanded(
-              child: Text(isPrimaries ? 'ASPIRANT NAME' : 'PARTY NAME',
+              child: Text(
+                  context.tr(isPrimaries ? 'ASPIRANT NAME' : 'PARTY NAME'),
                   style: GoogleFonts.outfit(
                       fontSize: 8,
                       fontWeight: FontWeight.w900,
@@ -10917,7 +11077,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           const SizedBox(width: 12),
           SizedBox(
               width: 92,
-              child: Text('VOTES (EDIT)',
+              child: Text(context.tr('VOTES (EDIT)'),
                   style: GoogleFonts.outfit(
                       fontSize: 8,
                       fontWeight: FontWeight.w900,
@@ -10981,7 +11141,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                           decoration: const BoxDecoration(
                               color: Color(0xFFCBD5E1),
                               shape: BoxShape.circle)),
-                      Text('OFFICIAL PARTY',
+                      Text(context.tr('OFFICIAL PARTY'),
                           style: GoogleFonts.outfit(
                               fontSize: 9,
                               fontWeight: FontWeight.bold,
@@ -11059,7 +11219,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 ]
               : null,
         ),
-        child: Text(label,
+        child: Text(context.tr(label),
             style: GoogleFonts.outfit(
                 fontSize: 8,
                 fontWeight: FontWeight.w900,
@@ -11289,7 +11449,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                                   size: 44, color: Color(0xFFCBD5E1)),
                               const SizedBox(height: 12),
                               Text(
-                                  'No result sheet uploaded yet.\nUpload the EC8A form to automatically read the numbers.',
+                                  context.tr(
+                                      'No result sheet uploaded yet.\nUpload the EC8A form to automatically read the numbers.'),
                                   textAlign: TextAlign.center,
                                   style: GoogleFonts.outfit(
                                       fontSize: 12,
@@ -11395,7 +11556,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                                       strokeWidth: 2, color: Colors.white))
                               : const Icon(LucideIcons.scan,
                                   size: 15, color: Colors.white),
-                          label: Text('RESCAN SHEET',
+                          label: Text(context.tr('RESCAN SHEET'),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: GoogleFonts.outfit(
@@ -11490,7 +11651,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       child: ElevatedButton.icon(
         onPressed: _isFinal ? null : onTap,
         icon: Icon(icon, size: 15),
-        label: Text(label,
+        label: Text(context.tr(label),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style:
@@ -11547,37 +11708,42 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           ),
           const SizedBox(height: 24),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('TOTAL VALID VOTES',
-                      style: GoogleFonts.outfit(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF64748B))),
-                  Text(_totalValidVotes.toString(),
-                      style: GoogleFonts.outfit(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF10B981))),
-                ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(context.tr('TOTAL VALID VOTES'),
+                        style: GoogleFonts.outfit(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                            color: const Color(0xFF64748B))),
+                    Text(_totalValidVotes.toString(),
+                        style: GoogleFonts.outfit(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                            color: const Color(0xFF10B981))),
+                  ],
+                ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text('TOTAL USED BALLOTS',
-                      style: GoogleFonts.outfit(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF64748B))),
-                  Text(_totalUsedBallots.toString(),
-                      style: GoogleFonts.outfit(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF0F172A))),
-                ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(context.tr('TOTAL USED BALLOTS'),
+                        textAlign: TextAlign.end,
+                        style: GoogleFonts.outfit(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                            color: const Color(0xFF64748B))),
+                    Text(_totalUsedBallots.toString(),
+                        style: GoogleFonts.outfit(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                            color: const Color(0xFF0F172A))),
+                  ],
+                ),
               ),
             ],
           ),
@@ -11591,7 +11757,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label,
+          Text(context.tr(label),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: GoogleFonts.outfit(
                   fontSize: 9,
                   fontWeight: FontWeight.w900,
@@ -11805,12 +11973,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title,
+              Text(context.tr(title),
                   style: GoogleFonts.outfit(
                       fontSize: 9,
                       fontWeight: FontWeight.w900,
                       color: const Color(0xFF0F172A))),
-              Text(sub,
+              Text(context.tr(sub),
                   style: GoogleFonts.outfit(
                       fontSize: 7,
                       fontWeight: FontWeight.bold,
@@ -11945,7 +12113,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title,
+              Text(context.tr(title),
                   style: GoogleFonts.outfit(
                       fontSize: 14,
                       fontWeight: FontWeight.w900,
@@ -11954,7 +12122,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                   overflow: TextOverflow.ellipsis),
               if (sub.isNotEmpty) ...[
                 const SizedBox(height: 2),
-                Text(sub,
+                Text(context.tr(sub),
                     style: GoogleFonts.outfit(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
