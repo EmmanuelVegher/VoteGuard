@@ -434,6 +434,8 @@ class BiometricDeduplicationService {
           'profileImageUrl': downloadUrl,
           'localProfileImagePath': localFilePath,
           'isFaceEnrolled': true,
+          'photoNeedsFix': false,
+          'photoIssueReason': null,
           'faceAuditStatus': 'CLEAN',
           'duplicateConfidence': double.parse(highestSimilarity.toStringAsFixed(3)),
           'enrolledAt': FieldValue.serverTimestamp(),

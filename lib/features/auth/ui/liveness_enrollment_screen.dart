@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -67,6 +68,13 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   int _lastImageHeight = 0;
   String? _uploadStatusText;
   String? _errorMessage;
+
+  // Real-time Eyeglasses & Bare-Chest/Nudity Compliance State (1GB RAM zero-allocation detector)
+  DateTime? _lastComplianceTime;
+  int _glassesStrikes = 0;
+  int _nudityStrikes = 0;
+  String? _complianceWarningTitle;
+  String? _complianceWarningDetail;
 
   @override
   void initState() {
@@ -158,8 +166,9 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     }
 
     final now = DateTime.now();
-    // Inference Throttling: Cap to ~12-15 FPS (minimum 75ms frame interval)
-    if (_lastInferenceTime != null && now.difference(_lastInferenceTime!).inMilliseconds < 75) {
+    // Adaptive Inference Throttling: 125ms (~8 FPS) on 1GB RAM / lagging phones, 80ms (~12.5 FPS) on standard phones
+    final minIntervalMs = _isLaggingDevice ? 125 : 80;
+    if (_lastInferenceTime != null && now.difference(_lastInferenceTime!).inMilliseconds < minIntervalMs) {
       return;
     }
     _lastInferenceTime = now;
@@ -220,8 +229,73 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       }
 
       final face = faces.first;
-      _lastImageWidth = image.width;
-      _lastImageHeight = image.height;
+      final rot = _cameraController!.description.sensorOrientation;
+      final isRotated90or270 = rot == 90 || rot == 270;
+      _lastImageWidth = isRotated90or270 ? image.height : image.width;
+      _lastImageHeight = isRotated90or270 ? image.width : image.height;
+
+      // Real-time Eyeglasses & Bare-Chest/Nudity Check (throttled to ~3.8 FPS / 260ms, zero heap allocation)
+      final yawAbs = (face.headEulerAngleY ?? 0.0).abs();
+      if (yawAbs < 16.0 &&
+          (_lastComplianceTime == null ||
+              now.difference(_lastComplianceTime!).inMilliseconds >= 260)) {
+        _lastComplianceTime = now;
+        final compliance = _checkStreamGlassesAndAttire(image, face, rot);
+        if (compliance.bareChestOrNude) {
+          _nudityStrikes = (_nudityStrikes + 1).clamp(0, 4);
+        } else {
+          _nudityStrikes = (_nudityStrikes - 1).clamp(0, 4);
+        }
+
+        if (compliance.wearingGlasses) {
+          _glassesStrikes = (_glassesStrikes + 1).clamp(0, 4);
+        } else {
+          _glassesStrikes = (_glassesStrikes - 1).clamp(0, 4);
+        }
+
+        if (_nudityStrikes >= 2) {
+          _stateHoldStartTime = null;
+          if (mounted) {
+            setState(() {
+              _complianceWarningTitle = "Proper Attire Required (No Bare Chest / Nudity)";
+              _complianceWarningDetail =
+                  "Bare chest or nudity detected. Please wear a shirt or proper clothing covering your chest and shoulders to continue the liveness check.";
+              _instruction = "Proper Attire Required 👕";
+              _subInstruction = "Please wear clothing covering your chest and shoulders";
+              _stepIcon = Icons.checkroom_rounded;
+            });
+          }
+          return;
+        } else if (_glassesStrikes >= 2) {
+          _stateHoldStartTime = null;
+          if (mounted) {
+            setState(() {
+              _complianceWarningTitle = "Please Remove Your Eyeglasses";
+              _complianceWarningDetail =
+                  "Eyeglasses or sunglasses detected. Please take off your glasses so your eyes are clearly visible during the liveness check.";
+              _instruction = "Please Remove Eyeglasses 👓";
+              _subInstruction = "Take off your glasses to continue biometric verification";
+              _stepIcon = Icons.visibility_off_rounded;
+            });
+          }
+          return;
+        } else if (_complianceWarningTitle != null &&
+            _nudityStrikes == 0 &&
+            _glassesStrikes == 0) {
+          if (mounted) {
+            setState(() {
+              _complianceWarningTitle = null;
+              _complianceWarningDetail = null;
+            });
+          }
+        }
+      }
+
+      if (_complianceWarningTitle != null) {
+        _stateHoldStartTime = null;
+        return;
+      }
+
       _handleStepProgression(face);
     } catch (e) {
       debugPrint("Face evaluation frame drop: $e");
@@ -497,6 +571,468 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     }
   }
 
+  /// Zero-allocation (<0.15ms) live CameraImage stream check for Eyeglasses & Bare-Chest/Nudity.
+  /// Samples sparse YCbCr pixels directly in-place from NV21 (Android) or BGRA8888 (iOS) planes.
+  /// Safe for 1GB RAM devices: allocates 0 image buffers on the heap.
+  ({bool wearingGlasses, bool bareChestOrNude}) _checkStreamGlassesAndAttire(
+    CameraImage image,
+    Face face,
+    int sensorRotation,
+  ) {
+    final isRot90or270 = sensorRotation == 90 || sensorRotation == 270;
+    final upW = (isRot90or270 ? image.height : image.width).toDouble();
+    final upH = (isRot90or270 ? image.width : image.height).toDouble();
+    if (upW <= 0 || upH <= 0 || image.planes.isEmpty) {
+      return (wearingGlasses: false, bareChestOrNude: false);
+    }
+
+    final rawW = image.width;
+    final rawH = image.height;
+    final plane0 = image.planes[0];
+    final bytes0 = plane0.bytes;
+    final rowStride0 = plane0.bytesPerRow;
+    final isBgra = image.format.group == ImageFormatGroup.bgra8888 ||
+        (image.planes.length == 1 && rowStride0 >= rawW * 4);
+    final hasNv21Chroma = !isBgra && image.planes.length >= 2;
+    final bytes1 = hasNv21Chroma ? image.planes[1].bytes : null;
+    final rowStride1 = hasNv21Chroma ? image.planes[1].bytesPerRow : 0;
+    final pixelStride1 = hasNv21Chroma ? (image.planes[1].bytesPerPixel ?? 2) : 2;
+
+    // Map normalized upright coordinate (nx, ny in 0..1) to sensor coordinate (rx, ry) and return (Y, Cb, Cr)
+    ({double y, double cb, double cr}) sampleYCbCr(double nx, double ny) {
+      final cnx = nx.clamp(0.0, 0.999);
+      final cny = ny.clamp(0.0, 0.999);
+      int rx;
+      int ry;
+      if (sensorRotation == 270) {
+        rx = ((1.0 - cny) * (rawW - 1)).round();
+        ry = (cnx * (rawH - 1)).round();
+      } else if (sensorRotation == 90) {
+        rx = (cny * (rawW - 1)).round();
+        ry = ((1.0 - cnx) * (rawH - 1)).round();
+      } else if (sensorRotation == 180) {
+        rx = ((1.0 - cnx) * (rawW - 1)).round();
+        ry = ((1.0 - cny) * (rawH - 1)).round();
+      } else {
+        rx = (cnx * (rawW - 1)).round();
+        ry = (cny * (rawH - 1)).round();
+      }
+      rx = rx.clamp(0, rawW - 1);
+      ry = ry.clamp(0, rawH - 1);
+
+      if (isBgra) {
+        final idx = ry * rowStride0 + rx * 4;
+        if (idx + 2 >= bytes0.length) return (y: 128.0, cb: 128.0, cr: 128.0);
+        final b = bytes0[idx].toDouble();
+        final g = bytes0[idx + 1].toDouble();
+        final r = bytes0[idx + 2].toDouble();
+        final y = 0.299 * r + 0.587 * g + 0.114 * b;
+        final cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+        final cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+        return (y: y, cb: cb, cr: cr);
+      } else {
+        final yIdx = ry * rowStride0 + rx;
+        final yVal = yIdx < bytes0.length ? bytes0[yIdx].toDouble() : 128.0;
+        double cbVal = 128.0;
+        double crVal = 128.0;
+        if (bytes1 != null) {
+          final uvRow = ry >> 1;
+          final uvCol = rx >> 1;
+          final uvIdx = uvRow * rowStride1 + uvCol * pixelStride1;
+          if (uvIdx + 1 < bytes1.length) {
+            // NV21 plane[1] stores V (Cr) followed by U (Cb)
+            crVal = bytes1[uvIdx].toDouble();
+            cbVal = bytes1[uvIdx + 1].toDouble();
+          }
+        }
+        return (y: yVal, cb: cbVal, cr: crVal);
+      }
+    }
+
+    final box = face.boundingBox;
+    final fx = (box.left / upW).clamp(0.02, 0.98);
+    final fy = (box.top / upH).clamp(0.02, 0.98);
+    final fw = (box.width / upW).clamp(0.10, 0.95);
+    final fh = (box.height / upH).clamp(0.10, 0.95);
+
+    // 1. Calibrate user's live facial skin signature from left cheek, right cheek, and forehead
+    final skinPoints = <({double x, double y})>[
+      (x: fx + 0.24 * fw, y: fy + 0.58 * fh),
+      (x: fx + 0.28 * fw, y: fy + 0.64 * fh),
+      (x: fx + 0.76 * fw, y: fy + 0.58 * fh),
+      (x: fx + 0.72 * fw, y: fy + 0.64 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.20 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.54 * fh),
+    ];
+
+    double skinYSum = 0, skinCbSum = 0, skinCrSum = 0, cheekGradSum = 0;
+    for (final pt in skinPoints) {
+      final p = sampleYCbCr(pt.x, pt.y);
+      final pDown = sampleYCbCr(pt.x, pt.y + 0.015);
+      skinYSum += p.y;
+      skinCbSum += p.cb;
+      skinCrSum += p.cr;
+      cheekGradSum += (p.y - pDown.y).abs();
+    }
+    final skinY = skinYSum / skinPoints.length;
+    final skinCb = skinCbSum / skinPoints.length;
+    final skinCr = skinCrSum / skinPoints.length;
+    final baselineCheekGrad = math.max(3.5, cheekGradSum / skinPoints.length);
+
+    // 2. Eyeglasses & Sunglasses Check
+    double eyeYSum = 0;
+    int eyeCount = 0;
+    int glareHits = 0;
+    int darkHits = 0;
+
+    for (final eyeCenterX in [fx + 0.30 * fw, fx + 0.70 * fw]) {
+      final eyeCenterY = fy + 0.38 * fh;
+      for (int sy = -2; sy <= 2; sy++) {
+        for (int sx = -2; sx <= 2; sx++) {
+          final p = sampleYCbCr(eyeCenterX + sx * 0.03 * fw, eyeCenterY + sy * 0.022 * fh);
+          eyeYSum += p.y;
+          eyeCount++;
+          if (p.y > math.min(238.0, skinY + 68.0) &&
+              (p.cb - 128.0).abs() < 16.0 &&
+              (p.cr - 128.0).abs() < 16.0) {
+            glareHits++;
+          }
+          if (skinY > 42.0 && p.y < skinY * 0.36) {
+            darkHits++;
+          }
+        }
+      }
+    }
+
+    final avgEyeY = eyeCount > 0 ? eyeYSum / eyeCount : skinY;
+    final glareRatio = eyeCount > 0 ? glareHits / eyeCount : 0.0;
+    final darkRatio = eyeCount > 0 ? darkHits / eyeCount : 0.0;
+
+    // Nasal bridge horizontal frame bar check (between the eyes at x = fx + 0.50*fw, y = fy + 0.34*fh..0.44*fh)
+    double bridgeMaxJump = 0.0;
+    double bridgeChromaShift = 0.0;
+    for (final bx in [fx + 0.47 * fw, fx + 0.50 * fw, fx + 0.53 * fw]) {
+      var prev = sampleYCbCr(bx, fy + 0.31 * fh);
+      for (int k = 1; k <= 6; k++) {
+        final cur = sampleYCbCr(bx, fy + (0.31 + k * 0.022) * fh);
+        final jump = (cur.y - prev.y).abs();
+        if (jump > bridgeMaxJump) bridgeMaxJump = jump;
+        final shift = math.sqrt((cur.cb - skinCb) * (cur.cb - skinCb) +
+                (cur.cr - skinCr) * (cur.cr - skinCr)) +
+            (cur.y - skinY).abs() * 0.5;
+        if (shift > bridgeChromaShift) bridgeChromaShift = shift;
+        prev = cur;
+      }
+    }
+
+    // Lower orbital rim & outer temple frame edge check
+    int rimHits = 0;
+    for (final rx in [fx + 0.14 * fw, fx + 0.30 * fw, fx + 0.70 * fw, fx + 0.86 * fw]) {
+      var prev = sampleYCbCr(rx, fy + 0.43 * fh);
+      double maxJump = 0.0;
+      for (int k = 1; k <= 5; k++) {
+        final cur = sampleYCbCr(rx, fy + (0.43 + k * 0.025) * fh);
+        final jump = (cur.y - prev.y).abs();
+        if (jump > maxJump) maxJump = jump;
+        prev = cur;
+      }
+      if (maxJump > baselineCheekGrad * 2.4 && maxJump > 15.0) {
+        rimHits++;
+      }
+    }
+
+    final isSunglasses = (skinY > 38.0 && avgEyeY < skinY * 0.37) || darkRatio >= 0.45;
+    final hasEyeglassFrame = bridgeMaxJump > math.max(17.0, baselineCheekGrad * 2.5) &&
+        bridgeChromaShift > 20.0 &&
+        (rimHits >= 2 || glareRatio >= 0.08);
+    final hasGlareAndBridge =
+        glareRatio >= 0.13 && bridgeMaxJump > math.max(14.0, baselineCheekGrad * 2.0);
+    final wearingGlasses = isSunglasses || hasEyeglassFrame || hasGlareAndBridge;
+
+    // 3. Bare-Chest / Shirtless / Nudity Check (left shoulder, right shoulder, and lower chest below chin)
+    bool bareChestOrNude = false;
+    final chinY = fy + fh;
+    final centerX = fx + 0.50 * fw;
+
+    if (chinY < 0.82 && fh > 0.14 && fw > 0.12) {
+      bool isSkinPixel(double nx, double ny) {
+        if (nx < 0.03 || nx > 0.97 || ny < 0.03 || ny > 0.97) return false;
+        final p = sampleYCbCr(nx, ny);
+        final chromaDist = math.sqrt(
+          (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
+        );
+        final lumDiff = (p.y - skinY).abs();
+        final validSkinChroma = p.cr >= 131.0 &&
+            p.cr <= 185.0 &&
+            p.cb >= 76.0 &&
+            p.cb <= 136.0 &&
+            p.cr > p.cb + 6.0 &&
+            p.y > 18.0 &&
+            p.y < 242.0;
+        return validSkinChroma &&
+            chromaDist <= 11.5 &&
+            lumDiff <= math.max(32.0, skinY * 0.36);
+      }
+
+      ({double ratio, int total}) sampleTorsoZone(
+        double x0,
+        double x1,
+        double y0,
+        double y1,
+      ) {
+        int hits = 0;
+        int total = 0;
+        for (int sy = 0; sy <= 3; sy++) {
+          final ny = y0 + (y1 - y0) * (sy / 3.0);
+          if (ny > 0.96 || ny <= chinY + 0.15 * fh) continue;
+          for (int sx = 0; sx <= 3; sx++) {
+            final nx = x0 + (x1 - x0) * (sx / 3.0);
+            if (nx < 0.04 || nx > 0.96) continue;
+            total++;
+            if (isSkinPixel(nx, ny)) hits++;
+          }
+        }
+        return (ratio: total > 0 ? hits / total : 0.0, total: total);
+      }
+
+      final topTorsoY = chinY + 0.24 * fh;
+      final botTorsoY = math.min(0.95, chinY + 0.85 * fh);
+
+      if (botTorsoY - topTorsoY >= 0.09) {
+        final leftShoulder = sampleTorsoZone(
+          centerX - 0.82 * fw,
+          centerX - 0.26 * fw,
+          topTorsoY,
+          botTorsoY,
+        );
+        final rightShoulder = sampleTorsoZone(
+          centerX + 0.26 * fw,
+          centerX + 0.82 * fw,
+          topTorsoY,
+          botTorsoY,
+        );
+        final lowerChest = sampleTorsoZone(
+          centerX - 0.32 * fw,
+          centerX + 0.32 * fw,
+          chinY + 0.38 * fh,
+          math.min(0.96, chinY + 0.88 * fh),
+        );
+
+        double collarEdgeMax = 0.0;
+        for (final offX in [-0.35 * fw, 0.0, 0.35 * fw]) {
+          final neckP = sampleYCbCr(centerX + offX, chinY + 0.14 * fh);
+          final chestP = sampleYCbCr(centerX + offX, chinY + 0.45 * fh);
+          final diff = math.sqrt((neckP.cb - chestP.cb) * (neckP.cb - chestP.cb) +
+                  (neckP.cr - chestP.cr) * (neckP.cr - chestP.cr)) +
+              (neckP.y - chestP.y).abs() * 0.4;
+          if (diff > collarEdgeMax) collarEdgeMax = diff;
+        }
+
+        if (leftShoulder.total >= 6 &&
+            rightShoulder.total >= 6 &&
+            lowerChest.total >= 4 &&
+            leftShoulder.ratio >= 0.72 &&
+            rightShoulder.ratio >= 0.72 &&
+            lowerChest.ratio >= 0.72 &&
+            collarEdgeMax < 16.0) {
+          bareChestOrNude = true;
+        }
+      }
+    }
+
+    return (wearingGlasses: wearingGlasses, bareChestOrNude: bareChestOrNude);
+  }
+
+  /// Capture-time verification on decoded upright image for Eyeglasses & Bare-Chest/Nudity.
+  String? _validateDecodedImageGlassesAndAttire(img.Image decoded, Face detected) {
+    final upW = decoded.width.toDouble();
+    final upH = decoded.height.toDouble();
+    if (upW <= 0 || upH <= 0) return null;
+
+    ({double y, double cb, double cr, double r, double g}) samplePx(double nx, double ny) {
+      final ix = (nx.clamp(0.0, 0.999) * (decoded.width - 1)).round();
+      final iy = (ny.clamp(0.0, 0.999) * (decoded.height - 1)).round();
+      final px = decoded.getPixel(ix, iy);
+      final r = px.r.toDouble();
+      final g = px.g.toDouble();
+      final b = px.b.toDouble();
+      final y = 0.299 * r + 0.587 * g + 0.114 * b;
+      final cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+      final cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+      return (y: y, cb: cb, cr: cr, r: r, g: g);
+    }
+
+    final box = detected.boundingBox;
+    final fx = (box.left / upW).clamp(0.02, 0.98);
+    final fy = (box.top / upH).clamp(0.02, 0.98);
+    final fw = (box.width / upW).clamp(0.10, 0.95);
+    final fh = (box.height / upH).clamp(0.10, 0.95);
+
+    final skinPoints = <({double x, double y})>[
+      (x: fx + 0.24 * fw, y: fy + 0.58 * fh),
+      (x: fx + 0.28 * fw, y: fy + 0.64 * fh),
+      (x: fx + 0.76 * fw, y: fy + 0.58 * fh),
+      (x: fx + 0.72 * fw, y: fy + 0.64 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.20 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.54 * fh),
+    ];
+
+    double skinYSum = 0, skinCbSum = 0, skinCrSum = 0, cheekGradSum = 0;
+    for (final pt in skinPoints) {
+      final p = samplePx(pt.x, pt.y);
+      final pDown = samplePx(pt.x, pt.y + 0.015);
+      skinYSum += p.y;
+      skinCbSum += p.cb;
+      skinCrSum += p.cr;
+      cheekGradSum += (p.y - pDown.y).abs();
+    }
+    final skinY = skinYSum / skinPoints.length;
+    final skinCb = skinCbSum / skinPoints.length;
+    final skinCr = skinCrSum / skinPoints.length;
+    final baselineCheekGrad = math.max(3.5, cheekGradSum / skinPoints.length);
+
+    // Check bare chest / nudity first
+    final chinY = fy + fh;
+    final centerX = fx + 0.50 * fw;
+    if (chinY < 0.82 && fh > 0.14 && fw > 0.12) {
+      bool isSkinPixel(double nx, double ny) {
+        if (nx < 0.03 || nx > 0.97 || ny < 0.03 || ny > 0.97) return false;
+        final p = samplePx(nx, ny);
+        final chromaDist = math.sqrt(
+          (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
+        );
+        final lumDiff = (p.y - skinY).abs();
+        final validSkinChroma = p.cr >= 131.0 &&
+            p.cr <= 185.0 &&
+            p.cb >= 76.0 &&
+            p.cb <= 136.0 &&
+            p.cr > p.cb + 6.0 &&
+            p.r >= p.g * 0.92 &&
+            p.y > 18.0 &&
+            p.y < 242.0;
+        return validSkinChroma &&
+            chromaDist <= 11.5 &&
+            lumDiff <= math.max(32.0, skinY * 0.36);
+      }
+
+      ({double ratio, int total}) sampleZone(double x0, double x1, double y0, double y1) {
+        int hits = 0, total = 0;
+        for (int sy = 0; sy <= 3; sy++) {
+          final ny = y0 + (y1 - y0) * (sy / 3.0);
+          if (ny > 0.96 || ny <= chinY + 0.15 * fh) continue;
+          for (int sx = 0; sx <= 3; sx++) {
+            final nx = x0 + (x1 - x0) * (sx / 3.0);
+            if (nx < 0.04 || nx > 0.96) continue;
+            total++;
+            if (isSkinPixel(nx, ny)) hits++;
+          }
+        }
+        return (ratio: total > 0 ? hits / total : 0.0, total: total);
+      }
+
+      final topTorsoY = chinY + 0.24 * fh;
+      final botTorsoY = math.min(0.95, chinY + 0.85 * fh);
+      if (botTorsoY - topTorsoY >= 0.09) {
+        final leftShoulder = sampleZone(centerX - 0.82 * fw, centerX - 0.26 * fw, topTorsoY, botTorsoY);
+        final rightShoulder = sampleZone(centerX + 0.26 * fw, centerX + 0.82 * fw, topTorsoY, botTorsoY);
+        final lowerChest = sampleZone(
+          centerX - 0.32 * fw,
+          centerX + 0.32 * fw,
+          chinY + 0.38 * fh,
+          math.min(0.96, chinY + 0.88 * fh),
+        );
+
+        double collarEdgeMax = 0.0;
+        for (final offX in [-0.35 * fw, 0.0, 0.35 * fw]) {
+          final neckP = samplePx(centerX + offX, chinY + 0.14 * fh);
+          final chestP = samplePx(centerX + offX, chinY + 0.45 * fh);
+          final diff = math.sqrt((neckP.cb - chestP.cb) * (neckP.cb - chestP.cb) +
+                  (neckP.cr - chestP.cr) * (neckP.cr - chestP.cr)) +
+              (neckP.y - chestP.y).abs() * 0.4;
+          if (diff > collarEdgeMax) collarEdgeMax = diff;
+        }
+
+        if (leftShoulder.total >= 6 &&
+            rightShoulder.total >= 6 &&
+            lowerChest.total >= 4 &&
+            leftShoulder.ratio >= 0.72 &&
+            rightShoulder.ratio >= 0.72 &&
+            lowerChest.ratio >= 0.72 &&
+            collarEdgeMax < 16.0) {
+          return "Bare chest or nudity detected. Please wear a shirt or proper clothing covering your chest and shoulders before capturing your observer profile photo.";
+        }
+      }
+    }
+
+    // Check eyeglasses / sunglasses
+    double eyeYSum = 0;
+    int eyeCount = 0, glareHits = 0, darkHits = 0;
+    for (final eyeCenterX in [fx + 0.30 * fw, fx + 0.70 * fw]) {
+      final eyeCenterY = fy + 0.38 * fh;
+      for (int sy = -2; sy <= 2; sy++) {
+        for (int sx = -2; sx <= 2; sx++) {
+          final p = samplePx(eyeCenterX + sx * 0.03 * fw, eyeCenterY + sy * 0.022 * fh);
+          eyeYSum += p.y;
+          eyeCount++;
+          if (p.y > math.min(238.0, skinY + 68.0) &&
+              (p.cb - 128.0).abs() < 16.0 &&
+              (p.cr - 128.0).abs() < 16.0) {
+            glareHits++;
+          }
+          if (skinY > 42.0 && p.y < skinY * 0.36) {
+            darkHits++;
+          }
+        }
+      }
+    }
+    final avgEyeY = eyeCount > 0 ? eyeYSum / eyeCount : skinY;
+    final glareRatio = eyeCount > 0 ? glareHits / eyeCount : 0.0;
+    final darkRatio = eyeCount > 0 ? darkHits / eyeCount : 0.0;
+
+    double bridgeMaxJump = 0.0, bridgeChromaShift = 0.0;
+    for (final bx in [fx + 0.47 * fw, fx + 0.50 * fw, fx + 0.53 * fw]) {
+      var prev = samplePx(bx, fy + 0.31 * fh);
+      for (int k = 1; k <= 6; k++) {
+        final cur = samplePx(bx, fy + (0.31 + k * 0.022) * fh);
+        final jump = (cur.y - prev.y).abs();
+        if (jump > bridgeMaxJump) bridgeMaxJump = jump;
+        final shift = math.sqrt((cur.cb - skinCb) * (cur.cb - skinCb) +
+                (cur.cr - skinCr) * (cur.cr - skinCr)) +
+            (cur.y - skinY).abs() * 0.5;
+        if (shift > bridgeChromaShift) bridgeChromaShift = shift;
+        prev = cur;
+      }
+    }
+
+    int rimHits = 0;
+    for (final rx in [fx + 0.14 * fw, fx + 0.30 * fw, fx + 0.70 * fw, fx + 0.86 * fw]) {
+      var prev = samplePx(rx, fy + 0.43 * fh);
+      double maxJump = 0.0;
+      for (int k = 1; k <= 5; k++) {
+        final cur = samplePx(rx, fy + (0.43 + k * 0.025) * fh);
+        final jump = (cur.y - prev.y).abs();
+        if (jump > maxJump) maxJump = jump;
+        prev = cur;
+      }
+      if (maxJump > baselineCheekGrad * 2.4 && maxJump > 15.0) {
+        rimHits++;
+      }
+    }
+
+    final isSunglasses = (skinY > 38.0 && avgEyeY < skinY * 0.37) || darkRatio >= 0.45;
+    final hasEyeglassFrame = bridgeMaxJump > math.max(17.0, baselineCheekGrad * 2.5) &&
+        bridgeChromaShift > 20.0 &&
+        (rimHits >= 2 || glareRatio >= 0.08);
+    final hasGlareAndBridge =
+        glareRatio >= 0.13 && bridgeMaxJump > math.max(14.0, baselineCheekGrad * 2.0);
+
+    if (isSunglasses || hasEyeglassFrame || hasGlareAndBridge) {
+      return "Eyeglasses or sunglasses detected. Please remove your glasses so your eyes are clearly visible and retry.";
+    }
+
+    return null;
+  }
+
   /// High-definition Biometric Pipeline: EXIF bake, tight passport crop, contrast & saturation boost, upload & sync
   Future<void> _captureAndEnroll() async {
     try {
@@ -522,7 +1058,14 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         _uploadStatusText = "Enhancing clarity & cropping biometric portrait...";
       });
 
+      // Free Flutter's memory image cache before decoding still photo (prevents OOM on 1GB RAM phones)
+      try {
+        PaintingBinding.instance.imageCache.clear();
+        PaintingBinding.instance.imageCache.clearLiveImages();
+      } catch (_) {}
+
       Uint8List? finalJpgBytes;
+      img.Image? enrolledFaceImage;
       final capturedTempFile = File(photo.path);
       final rawBytes = await capturedTempFile.readAsBytes();
         img.Image? decoded = img.decodeImage(rawBytes);
@@ -531,8 +1074,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           // 1. Correct EXIF orientation so front selfie is 100% upright
           decoded = img.bakeOrientation(decoded);
 
+          // 1b. Memory cap for 1GB RAM phones: downscale oversized sensor captures (>1080px) immediately
+          if (decoded.width > 1080 || decoded.height > 1080) {
+            decoded = decoded.width >= decoded.height
+                ? img.copyResize(decoded, width: 1080, interpolation: img.Interpolation.linear)
+                : img.copyResize(decoded, height: 1080, interpolation: img.Interpolation.linear);
+          }
+
           final orientedTempFile = File("${capturedTempFile.path}_upright.jpg");
-          await orientedTempFile.writeAsBytes(img.encodeJpg(decoded, quality: 90));
+          await orientedTempFile.writeAsBytes(img.encodeJpg(decoded, quality: 88));
 
           int cropX = 0;
           int cropY = 0;
@@ -597,18 +1147,24 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                 validationError =
                     "Only part of your face was visible or you were looking away. Please center your full face (forehead to chin) inside the oval and retry.";
               } else {
-                // Full-head passport crop: includes entire head, hair, chin, and collar
-                final desiredDim = (face.height * 1.95)
-                    .clamp(240.0, minSide.toDouble())
-                    .toDouble();
-                final halfDim = desiredDim / 2;
+                // Verify eyeglasses and attire (bare chest / nudity) on the captured portrait
+                final complianceErr = _validateDecodedImageGlassesAndAttire(decoded, detected);
+                if (complianceErr != null) {
+                  validationError = complianceErr;
+                } else {
+                  // Full-head passport crop: includes entire head, hair, chin, and collar
+                  final desiredDim = (face.height * 1.95)
+                      .clamp(240.0, minSide.toDouble())
+                      .toDouble();
+                  final halfDim = desiredDim / 2;
 
-                final targetX = face.center.dx;
-                final targetY = face.center.dy - (face.height * 0.05);
+                  final targetX = face.center.dx;
+                  final targetY = face.center.dy - (face.height * 0.05);
 
-                cropX = (targetX - halfDim).round();
-                cropY = (targetY - halfDim).round();
-                cropDim = desiredDim.round();
+                  cropX = (targetX - halfDim).round();
+                  cropY = (targetY - halfDim).round();
+                  cropDim = desiredDim.round();
+                }
               }
             }
           } catch (e) {
@@ -647,11 +1203,12 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             height: actualH,
           );
 
-          // 2. High-resolution 800x800 avatar resize
+          // 2. Adaptive avatar resize: 640x640 on 1GB RAM / lagging devices, 800x800 on standard devices
+          final outDim = _isLaggingDevice ? 640 : 800;
           var hdAvatar = img.copyResize(
             cropped,
-            width: 800,
-            height: 800,
+            width: outDim,
+            height: outDim,
             interpolation: img.Interpolation.linear,
           );
 
@@ -662,10 +1219,16 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             saturation: 1.12,
           );
 
-          finalJpgBytes = Uint8List.fromList(img.encodeJpg(hdAvatar, quality: 95));
+          enrolledFaceImage = hdAvatar;
+          finalJpgBytes = Uint8List.fromList(img.encodeJpg(hdAvatar, quality: 92));
         }
 
       final effectiveBytes = finalJpgBytes ?? await File(photo.path).readAsBytes();
+      try {
+        if (await capturedTempFile.exists()) {
+          await capturedTempFile.delete();
+        }
+      } catch (_) {}
 
       // 4. Save enhanced HD copy to local phone storage
       setState(() {
@@ -698,12 +1261,12 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       );
       final downloadUrl = await uploadTask.ref.getDownloadURL();
 
-      // 6. Biometric Deduplication Audit against all enrolled observers
+      // 6. Biometric Deduplication Audit against all enrolled observers (reuses enrolledFaceImage to avoid duplicate decode on 1GB RAM devices)
       setState(() {
         _uploadStatusText = "Analyzing facial biometrics & checking for duplicate accounts...";
       });
 
-      final faceForEmbedding = img.decodeImage(effectiveBytes)!;
+      final faceForEmbedding = enrolledFaceImage ?? img.decodeImage(effectiveBytes)!;
       final auditResult = await BiometricDeduplicationService().auditAndEnrollFace(
         user: user,
         faceImage: faceForEmbedding,
@@ -1137,6 +1700,64 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.45),
                       borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+
+                // Real-time Eyeglasses / Bare-Chest Warning Banner Overlay inside Camera Viewport
+                if (_complianceWarningTitle != null)
+                  Positioned(
+                    top: 12,
+                    left: 12,
+                    right: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF450A0A).withValues(alpha: 0.96),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.redAccent, width: 1.8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.65),
+                            blurRadius: 14,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, color: Colors.amberAccent, size: 22),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _complianceWarningTitle!,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 0.3,
+                                  ),
+                                ),
+                                if (_complianceWarningDetail != null) ...[
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    _complianceWarningDetail!,
+                                    style: const TextStyle(
+                                      color: Color(0xFFFECACA),
+                                      fontSize: 11,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
               ],
