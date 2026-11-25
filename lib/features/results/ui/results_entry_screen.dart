@@ -19,12 +19,12 @@ class _ResultsEntryScreenState extends State<ResultsEntryScreen> {
   final _picker = ImagePicker();
   bool _isProcessingAI = false;
 
-  // Party Votes (Mock Data for UI)
+  // Party Votes (Mock Data for UI, sorted ascending by party short name)
   final Map<String, TextEditingController> _partyVotes = {
     'APC': TextEditingController(),
     'LP': TextEditingController(),
-    'PDP': TextEditingController(),
     'NNPP': TextEditingController(),
+    'PDP': TextEditingController(),
   };
 
   // Ballot Statistics

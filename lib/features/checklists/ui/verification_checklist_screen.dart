@@ -165,15 +165,14 @@ class _VerificationChecklistScreenState
         backgroundColor: AppColors.background,
         elevation: 0,
       ),
-      body: Column(
+      body: ListView(
+        padding: const EdgeInsets.only(bottom: 24),
         children: [
           _buildProgressHeader(visible),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-              itemCount: visible.length,
-              itemBuilder: (context, index) =>
-                  _buildItem(visible[index]),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+            child: Column(
+              children: visible.map((item) => _buildItem(item)).toList(),
             ),
           ),
           _buildFooter(),

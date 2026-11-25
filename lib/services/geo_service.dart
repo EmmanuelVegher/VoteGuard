@@ -14,38 +14,61 @@ class GeoService {
   static final Map<String, List<PollingUnit>> _cachePus = {};
 
   Future<List<GeoItem>> getStates() async {
-    if (_cacheStates.containsKey('all')) {
+    if (_cacheStates.containsKey('all') && _cacheStates['all']!.isNotEmpty) {
       return _cacheStates['all']!;
     }
-    try {
-      final apiStates = await NeonApiService.getGeoStates();
-      if (apiStates.isNotEmpty) {
-        final items = apiStates
-            .map((name) => GeoItem(id: name.hashCode, name: name))
-            .toList();
-        _cacheStates['all'] = items;
-        return items;
-      }
-    } catch (e) {
-      debugPrint("GeoService API (States) notice: $e");
-    }
 
-    try {
-      final snapshot =
-          await _firestore.collection('states').orderBy('name').get();
-      final items =
-          snapshot.docs.map((doc) => GeoItem.fromFirestore(doc.data())).toList();
-      _cacheStates['all'] = items;
-      return items;
-    } catch (e) {
-      debugPrint("GeoService Error (States): $e");
-      rethrow;
-    }
+    // Canonical 37 Nigerian states (36 States + FCT), instant 0ms response
+    const canonicalStates = <String>[
+      "Abia",
+      "Adamawa",
+      "Akwa Ibom",
+      "Anambra",
+      "Bauchi",
+      "Bayelsa",
+      "Benue",
+      "Borno",
+      "Cross River",
+      "Delta",
+      "Ebonyi",
+      "Edo",
+      "Ekiti",
+      "Enugu",
+      "FCT",
+      "Gombe",
+      "Imo",
+      "Jigawa",
+      "Kaduna",
+      "Kano",
+      "Katsina",
+      "Kebbi",
+      "Kogi",
+      "Kwara",
+      "Lagos",
+      "Nasarawa",
+      "Niger",
+      "Ogun",
+      "Ondo",
+      "Osun",
+      "Oyo",
+      "Plateau",
+      "Rivers",
+      "Sokoto",
+      "Taraba",
+      "Yobe",
+      "Zamfara",
+    ];
+
+    final items = canonicalStates
+        .map((name) => GeoItem(id: name.hashCode, name: name))
+        .toList();
+    _cacheStates['all'] = items;
+    return items;
   }
 
   Future<List<GeoItem>> getLGAs(String stateName) async {
     final cacheKey = stateName.toLowerCase().trim();
-    if (_cacheLgas.containsKey(cacheKey)) {
+    if (_cacheLgas.containsKey(cacheKey) && _cacheLgas[cacheKey]!.isNotEmpty) {
       return _cacheLgas[cacheKey]!;
     }
 
@@ -58,6 +81,19 @@ class GeoService {
         ..sort((a, b) => a.name.compareTo(b.name));
       _cacheLgas[cacheKey] = staticItems;
       return staticItems;
+    }
+
+    // 2. Secondary fallback tonigeriaWardMapping keys if state name was unusual
+    final inecStateKey = resolveInecStateKey(stateName);
+    if (inecStateKey != null && nigeriaWardMapping.containsKey(inecStateKey)) {
+      final wardMapLgas = nigeriaWardMapping[inecStateKey]!.keys
+          .map((name) => GeoItem(id: name.hashCode, name: name))
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      if (wardMapLgas.isNotEmpty) {
+        _cacheLgas[cacheKey] = wardMapLgas;
+        return wardMapLgas;
+      }
     }
 
     try {
@@ -92,7 +128,9 @@ class GeoService {
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
-      _cacheLgas[cacheKey] = items;
+      if (items.isNotEmpty) {
+        _cacheLgas[cacheKey] = items;
+      }
       return items;
     } catch (e) {
       debugPrint("GeoService Error (LGAs): $e");
@@ -266,15 +304,25 @@ class GeoService {
       String state, String lga, String ward) async {
     final cacheKey =
         "${state.toLowerCase().trim()}_${lga.toLowerCase().trim()}_${ward.toLowerCase().trim()}";
-    if (_cachePus.containsKey(cacheKey)) {
+    if (_cachePus.containsKey(cacheKey) && _cachePus[cacheKey]!.isNotEmpty) {
       return _cachePus[cacheKey]!;
     }
 
-    debugPrint("GeoService: Fetching units for $state, $lga, $ward");
+    final inecState = resolveInecStateKey(state) ?? state.trim().toUpperCase();
+    final inecLga = resolveInecLgaKey(state, lga) ?? lga.trim().toUpperCase();
 
-    // 1. Primary fast lookup: Express API Backend (includes full static lookup fallback)
+    debugPrint(
+        "GeoService: Fetching units for $state ($inecState), $lga ($inecLga), $ward");
+
+    // 1. Primary fast lookup: Express API Backend (includes full 176,623 static INEC lookup)
+    // Try exact INEC canonical state/LGA keys first so aliased LGAs (e.g. Nasarawa Egon -> NASARAWA EGGON,
+    // Esit-Eket -> ESIT EKET (UQUO), Aniocha South -> ANIOCHA - SOUTH) match 100% on the first call.
     try {
-      final apiPus = await NeonApiService.getGeoPollingUnits(state, lga, ward);
+      var apiPus =
+          await NeonApiService.getGeoPollingUnits(inecState, inecLga, ward);
+      if (apiPus.isEmpty && (inecState != state || inecLga != lga)) {
+        apiPus = await NeonApiService.getGeoPollingUnits(state, lga, ward);
+      }
       if (apiPus.isNotEmpty) {
         final items = apiPus
             .map((name) => PollingUnit(
@@ -285,7 +333,8 @@ class GeoService {
                   lgaId: 0,
                   stateId: 0,
                 ))
-            .toList();
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
         _cachePus[cacheKey] = items;
         debugPrint(
             "GeoService: Successfully fetched ${items.length} units via Express API backend");
@@ -448,7 +497,7 @@ class GeoService {
         'oshodi-isolo': ['oshodi/isolo'],
         'shomolu': ['somolu'],
         'somolu': ['shomolu'],
-        'nasarawa egon': ['nasarawa eggon', 'nasarawa'],
+        'nasarawa egon': ['nasarawa eggon'],
         'nasarawa eggon': ['nasarawa egon'],
         'edati': ['edatti'],
         'edatti': ['edati'],
@@ -526,8 +575,15 @@ class GeoService {
       final lgaVariations = <String>{
         lga,
         lgaLower,
-        lga.toUpperCase()
+        lga.toUpperCase(),
+        inecLga,
+        inecLga.toLowerCase(),
       };
+      final directAlias = lgaAliases[lga.trim().toUpperCase()];
+      if (directAlias != null) {
+        lgaVariations.add(directAlias);
+        lgaVariations.add(directAlias.toLowerCase());
+      }
 
       if (lgaLower.contains('ogori')) {
         lgaVariations.addAll([
@@ -561,73 +617,81 @@ class GeoService {
       lgaVariations.add(lgaLower.replaceAll(RegExp(r'\s+'), '-'));
       lgaVariations.add(lgaLower.replaceAll(RegExp(r'\s+'), '  '));
 
-      final originalWard = ward;
-      final singleSpacedWard = ward.replaceAll(RegExp(r'\s+'), ' ').trim();
-      final doubleSpacedWard = ward.replaceAll(RegExp(r'\s+'), '  ').trim();
-
       final stateVariations = <String>{
+        inecState,
         state,
         state.toLowerCase(),
         state.toUpperCase(),
         '$state State',
         '${state.toUpperCase()} STATE'
       };
-      if (state.toUpperCase() == 'FCT' || state.toUpperCase() == 'ABUJA' || state.toUpperCase().contains('CAPITAL')) {
+      if (state.toUpperCase() == 'FCT' ||
+          state.toUpperCase() == 'ABUJA' ||
+          state.toUpperCase().contains('CAPITAL')) {
         stateVariations.add('FCT');
         stateVariations.add('fct');
         stateVariations.add('Federal Capital Territory');
         stateVariations.add('FEDERAL CAPITAL TERRITORY');
       }
 
-      List<Map<String, String>> strategies = [];
+      String normalizeWardClean(String raw) {
+        return raw
+            .toLowerCase()
+            .replaceAll(RegExp(r'[^a-z0-9]'), '')
+            .replaceAll(RegExp(r'^ward0*'), '')
+            .replaceAll(RegExp(r'^0+'), '');
+      }
 
-      for (var w in [
-        originalWard,
-        originalWard.toLowerCase(),
-        originalWard.toUpperCase(),
-        singleSpacedWard,
-        doubleSpacedWard
-      ]) {
-        for (var l in lgaVariations) {
-          for (var s in stateVariations) {
-            strategies.add({'s': s, 'l': l, 'w': w});
+      bool isWardMatch(String cand, String target) {
+        if (cand.isEmpty || target.isEmpty) return false;
+        if (cand.trim().toUpperCase() == target.trim().toUpperCase()) return true;
+        final c = normalizeWardClean(cand);
+        final t = normalizeWardClean(target);
+        if (c == t) return true;
+        if (c.length >= 3 && t.length >= 3 && (c.contains(t) || t.contains(c))) {
+          return true;
+        }
+        return false;
+      }
+
+      // Stage 2A: Query Firestore polling_units by (state, lga in lgaBatch) and match ward in memory
+      // Mirrors VoteGuardWeb firestoreDataService.getPollingUnitsFull (fast, avoids 250 3-field queries)
+      final lgaList = lgaVariations.where((s) => s.trim().isNotEmpty).toList();
+      final lgaBatches = <List<String>>[];
+      for (var i = 0; i < lgaList.length; i += 10) {
+        lgaBatches.add(
+            lgaList.sublist(i, i + 10 > lgaList.length ? lgaList.length : i + 10));
+      }
+
+      for (final sVar in stateVariations) {
+        for (final lField in ['lga', 'lgaName']) {
+          for (final batch in lgaBatches) {
+            try {
+              final snap = await _firestore
+                  .collection('polling_units')
+                  .where('state', isEqualTo: sVar)
+                  .where(lField, whereIn: batch)
+                  .get();
+              if (snap.docs.isNotEmpty) {
+                final matchedDocs = snap.docs.where((doc) {
+                  final data = doc.data();
+                  final docWard =
+                      (data['ward'] ?? data['wardName'] ?? '').toString();
+                  return isWardMatch(docWard, ward);
+                }).toList();
+                if (matchedDocs.isNotEmpty) {
+                  final items = matchedDocs
+                      .map((doc) => PollingUnit.fromFirestore(doc.data()))
+                      .toList()
+                    ..sort((a, b) => a.name.compareTo(b.name));
+                  _cachePus[cacheKey] = items;
+                  debugPrint(
+                      "GeoService: Found ${items.length} units in Firestore 2-field LGA+ward matcher");
+                  return items;
+                }
+              }
+            } catch (_) {}
           }
-        }
-      }
-
-      final seen = <String>{};
-      final uniqueStrategies = <Map<String, String>>[];
-      for (var strategy in strategies) {
-        final key = "${strategy['s']}_${strategy['l']}_${strategy['w']}";
-        if (!seen.contains(key)) {
-          seen.add(key);
-          uniqueStrategies.add(strategy);
-        }
-      }
-
-      // Execute queries in PARALLEL batches without orderBy to avoid index requirement
-      final futures = uniqueStrategies.map((strategy) {
-        return _firestore
-            .collection('polling_units')
-            .where('state', isEqualTo: strategy['s'])
-            .where('lga', isEqualTo: strategy['l'])
-            .where('ward', isEqualTo: strategy['w'])
-            .get()
-            .then<QuerySnapshot<Map<String, dynamic>>?>((snap) => snap)
-            .catchError((_) => null);
-      });
-
-      final snapshots = await Future.wait(futures);
-      for (var snapshot in snapshots) {
-        if (snapshot != null && snapshot.docs.isNotEmpty) {
-          final items = snapshot.docs
-              .map((doc) => PollingUnit.fromFirestore(doc.data()))
-              .toList();
-          items.sort((a, b) => a.name.compareTo(b.name));
-          _cachePus[cacheKey] = items;
-          debugPrint(
-              "GeoService: Found ${items.length} units in Firestore parallel fallback");
-          return items;
         }
       }
 
@@ -881,8 +945,24 @@ class GeoService {
       "Zamfara": ["Anka", "Bakura", "Birnin Magaji/Kiyaw", "Bukkuyum", "Bungudu", "Gummi", "Gusau", "Kaura Namoda", "Maradun", "Maru", "Shinkafi", "Talata Mafara", "Chafe", "Zurmi"]
     };
 
+    final cleaned = stateName
+        .trim()
+        .replaceAll(RegExp(r'\s+State$', caseSensitive: false), '')
+        .trim();
+    final upper = cleaned.toUpperCase();
+    final normalizedTarget = (upper == 'FEDERAL CAPITAL TERRITORY' ||
+            upper == 'ABUJA' ||
+            upper == 'FCT ABUJA' ||
+            upper == 'F.C.T' ||
+            upper == 'F.C.T.')
+        ? 'fct'
+        : (upper == 'NASSARAWA' ? 'nasarawa' : cleaned.toLowerCase());
+
     final key = mapping.keys.firstWhere(
-      (k) => k.toLowerCase() == stateName.toLowerCase().trim(),
+      (k) =>
+          k.toLowerCase() == normalizedTarget ||
+          k.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '') ==
+              normalizedTarget.replaceAll(RegExp(r'[^a-z0-9]'), ''),
       orElse: () => '',
     );
     return key.isNotEmpty ? mapping[key]! : <String>[];

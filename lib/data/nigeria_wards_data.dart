@@ -10438,124 +10438,460 @@ const Map<String, Map<String, List<String>>> nigeriaWardMapping = {
 
 const Map<String, String> stateAliases = {
   'FCT': 'FEDERAL CAPITAL TERRITORY',
+  'F.C.T': 'FEDERAL CAPITAL TERRITORY',
+  'F.C.T.': 'FEDERAL CAPITAL TERRITORY',
+  'FCT ABUJA': 'FEDERAL CAPITAL TERRITORY',
+  'FCT - ABUJA': 'FEDERAL CAPITAL TERRITORY',
   'ABUJA': 'FEDERAL CAPITAL TERRITORY',
   'FEDERAL CAPITAL TERRITORY': 'FEDERAL CAPITAL TERRITORY',
   'NASSARAWA': 'NASARAWA',
+  'AKWA-IBOM': 'AKWA IBOM',
+  'CROSS-RIVER': 'CROSS RIVER',
 };
 
 const Map<String, String> lgaAliases = {
+  // Abia
+  'ISIUKWUATO': 'ISUIKWUATO',
+  'ISUIKWUATO': 'ISIUKWUATO',
+  'OBI NGWA': 'OBINGWA',
+  'OBINGWA': 'OBINGWA',
+  'OSISIOMA': 'OSISIOMA',
+  'OSISIOMA NGWA': 'OSISIOMA',
+  'UKWA WEST': 'UKWA  WEST',
+  'UKWA  WEST': 'UKWA WEST',
+  'UMUAHIA SOUTH': 'UMUAHIA  SOUTH',
+  'UMUAHIA  SOUTH': 'UMUAHIA SOUTH',
+  'UMU NNEOCHI': 'UMU - NNEOCHI',
+  'UMUNNEOCHI': 'UMU - NNEOCHI',
+  'UMU - NNEOCHI': 'UMUNNEOCHI',
+
+  // Adamawa
+  'GIREI': 'GIRE 1',
+  'GIRE 1': 'GIREI',
+  'MAYO-BELWA': 'MAYO - BELWA',
+  'MAYOBELWA': 'MAYO - BELWA',
+  'MAYO BELWA': 'MAYO - BELWA',
+  'MAYO - BELWA': 'MAYO-BELWA',
+
+  // Akwa Ibom
+  'ESIT-EKET': 'ESIT EKET (UQUO)',
+  'ESIT EKET': 'ESIT EKET (UQUO)',
+  'ESIT EKET (UQUO)': 'ESIT-EKET',
+  'ETIM-EKPO': 'ETIM EKPO',
+  'ETIM EKPO': 'ETIM-EKPO',
+  'IBESIKPO-ASUTAN': 'IBESIKPO ASUTAN',
+  'IBESIKPO ASUTAN': 'IBESIKPO-ASUTAN',
+  'IBIONO-IBOM': 'IBIONO IBOM',
+  'IBIONO IBOM': 'IBIONO-IBOM',
+  'MKPAT-ENIN': 'MKPAT ENIN',
+  'MKPAT ENIN': 'MKPAT-ENIN',
+  'NSIT-ATAI': 'NSIT ATAI',
+  'NSIT ATAI': 'NSIT-ATAI',
+  'NSIT-IBOM': 'NSIT IBOM',
+  'NSIT IBOM': 'NSIT-IBOM',
+  'NSIT-UBIUM': 'NSIT UBIUM',
+  'NSIT UBIUM': 'NSIT-UBIUM',
+  'UDUNG-UKO': 'UDUNG UKO',
+  'UDUNG UKO': 'UDUNG-UKO',
+  'URUE-OFFONG/ORUKO': 'URUE OFFONG/ORUKO',
+  'URUE OFFONG/ORUKO': 'URUE-OFFONG/ORUKO',
+  'URUE OFFONG ORUKO': 'URUE OFFONG/ORUKO',
+
+  // Anambra
+  'IDEMILI SOUTH': 'IDEMILI-SOUTH',
+  'IDEMILI-SOUTH': 'IDEMILI SOUTH',
+  'IHIALA': 'IHALA',
+  'IHALA': 'IHIALA',
+  'ONITSHA NORTH': 'ONITSHA-NORTH',
+  'ONITSHA-NORTH': 'ONITSHA NORTH',
+  'ONITSHA SOUTH': 'ONITSHA -SOUTH',
+  'ONITSHA-SOUTH': 'ONITSHA -SOUTH',
+  'ONITSHA -SOUTH': 'ONITSHA SOUTH',
+  'ORUMBA SOUTH': 'ORUMBA  SOUTH',
+  'ORUMBA  SOUTH': 'ORUMBA SOUTH',
+
+  // Bauchi
+  'DAMBAN': 'DAMBAM',
+  'DAMBAM': 'DAMBAN',
+  'ITAS/GADAU': 'ITAS/GADAU',
+  'ITAS-GADAU': 'ITAS/GADAU',
+  'ITAS GADAU': 'ITAS/GADAU',
+
+  // Borno
+  'ASKIRA/UBA': 'ASKIRA / UBA',
+  'ASKIRA / UBA': 'ASKIRA/UBA',
+  'KALA/BALGE': 'KALA BALGE',
+  'KALA-BALGE': 'KALA BALGE',
+  'KALA BALGE': 'KALA/BALGE',
+  'KWAYA KUSAR': 'KWAYA / KUSAR',
+  'KWAYA / KUSAR': 'KWAYA KUSAR',
+  'MAIDUGURI': 'MAIDUGURI M. C.',
+  'MAIDUGURI MC': 'MAIDUGURI M. C.',
+  'MAIDUGURI MUNICIPAL': 'MAIDUGURI M. C.',
+  'MAIDUGURI (METROPOLITAN COUNCIL)': 'MAIDUGURI M. C.',
+  'MAIDUGURI M. C.': 'MAIDUGURI',
+
+  // Cross River
+  'CALABAR MUNICIPAL': 'CALABAR MUNICIPALITY',
+  'CALABAR MUNICIPALITY': 'CALABAR MUNICIPAL',
+  'YAKUUR': 'YAKURR',
+  'YAKURR': 'YAKUUR',
+
+  // Delta
+  'ANIOCHA SOUTH': 'ANIOCHA - SOUTH',
+  'ANIOCHASOUTH': 'ANIOCHA - SOUTH',
+  'ANIOCHA - SOUTH': 'ANIOCHA SOUTH',
+  'ETHIOPE EAST': 'ETHIOPE  EAST',
+  'ETHIOPE  EAST': 'ETHIOPE EAST',
+  'ETHIOPE WEST': 'ETHIOPE  WEST',
+  'ETHIOPE  WEST': 'ETHIOPE WEST',
+  'IKA NORTH EAST': 'IKA NORTH- EAST',
+  'IKA NORTH-EAST': 'IKA NORTH- EAST',
+  'IKA NORTH- EAST': 'IKA NORTH EAST',
+  'IKA SOUTH': 'IKA - SOUTH',
+  'IKASOUTH': 'IKA - SOUTH',
+  'IKA - SOUTH': 'IKA SOUTH',
+  'OSHIMILI NORTH': 'OSHIMILI - NORTH',
+  'OSHIMILINORTH': 'OSHIMILI - NORTH',
+  'OSHIMILI - NORTH': 'OSHIMILI NORTH',
+  'OSHIMILI SOUTH': 'OSHIMILI - SOUTH',
+  'OSHIMILISOUTH': 'OSHIMILI - SOUTH',
+  'OSHIMILI - SOUTH': 'OSHIMILI SOUTH',
+  'WARRI NORTH': 'WARRI  NORTH',
+  'WARRI  NORTH': 'WARRI NORTH',
+  'WARRI SOUTH WEST': 'WARRI SOUTH  WEST',
+  'WARRI SOUTH  WEST': 'WARRI SOUTH WEST',
+
+  // Ebonyi
+  'AFIKPO SOUTH': 'AFIKPO  SOUTH',
+  'AFIKPO  SOUTH': 'AFIKPO SOUTH',
+  'EDDA': 'AFIKPO  SOUTH',
+
+  // Edo
+  'AKOKO-EDO': 'AKOKO EDO',
+  'AKOKO EDO': 'AKOKO-EDO',
+  'ESAN NORTH-EAST': 'ESAN NORTH EAST',
+  'ESAN NORTH EAST': 'ESAN NORTH-EAST',
+  'ESAN SOUTH-EAST': 'ESAN SOUTH EAST',
+  'ESAN SOUTH EAST': 'ESAN SOUTH-EAST',
+  'ESTAKO EAST': 'ETSAKO EAST',
+  'ESTAKO WEST': 'ETSAKO  WEST',
+  'ETSAKO WEST': 'ETSAKO  WEST',
+  'ETSAKO  WEST': 'ETSAKO WEST',
+  'ESTAKO CENTRAL': 'ETSAKO CENTRAL',
+  'IKPOBA-OKHA': 'IKPOBA/OKHA',
+  'IKPOBA/OKHA': 'IKPOBA-OKHA',
+  'OVIA NORTH-EAST': 'OVIA NORTH EAST',
+  'OVIA NORTH EAST': 'OVIA NORTH-EAST',
+  'OVIA SOUTH-WEST': 'OVIA SOUTH WEST',
+  'OVIA SOUTH WEST': 'OVIA SOUTH-WEST',
+  'UHUNMWONDE': 'UHUNMWODE',
+  'UHUNMWODE': 'UHUNMWONDE',
+
+  // Ekiti
+  'ADO-EKITI': 'ADO EKITI',
+  'ADO EKITI': 'ADO-EKITI',
+  'ADO': 'ADO EKITI',
+  'EKITI SOUTH-WEST': 'EKITI SOUTH WEST',
+  'EKITI SOUTH WEST': 'EKITI SOUTH-WEST',
+  'IDO-OSI': 'IDO / OSI',
+  'IDO/OSI': 'IDO / OSI',
+  'IDO / OSI': 'IDO-OSI',
+  'IREPODUN/IFELODUN': 'IREPODUN / IFELODUN',
+  'IREPODUN / IFELODUN': 'IREPODUN/IFELODUN',
+  'ISE/ORUN': 'ISE / ORUN',
+  'ISE / ORUN': 'ISE/ORUN',
+
+  // Enugu
+  'OJI RIVER': 'OJI-RIVER',
+  'OJI-RIVER': 'OJI RIVER',
+
+  // FCT
   'MUNICIPAL AREA COUNCIL': 'MUNICIPAL',
   'MUNICIPAL': 'MUNICIPAL AREA COUNCIL',
   'ABUJA MUNICIPAL': 'MUNICIPAL',
   'ABUJA MUNICIPAL AREA COUNCIL': 'MUNICIPAL',
   'AMAC': 'MUNICIPAL',
-  'ATAKUNMOSA WEST': 'ATAKUMOSA WEST',
-  'ATAKUMOSA WEST': 'ATAKUNMOSA WEST',
-  'ATAKUNMOSA EAST': 'ATAKUMOSA EAST',
-  'ATAKUMOSA EAST': 'ATAKUNMOSA EAST',
-  'OBI NGWA': 'OBINGWA',
-  'OBINGWA': 'OBINGWA',
-  'OSISIOMA': 'OSISIOMA',
-  'OSISIOMA NGWA': 'OSISIOMA',
-  'ISUIKWUATO': 'ISIUKWUATO',
-  'ISIUKWUATO': 'ISUIKWUATO',
-  'UMU NNEOCHI': 'UMU - NNEOCHI',
-  'UMUNNEOCHI': 'UMU - NNEOCHI',
-  'GIREI': 'GIRE 1',
-  'GIRE 1': 'GIREI',
-  'IHIALA': 'IHALA',
-  'IHALA': 'IHIALA',
-  'YAKUUR': 'YAKURR',
-  'YAKURR': 'YAKUUR',
-  'EDDA': 'AFIKPO  SOUTH',
-  'AFIKPO SOUTH': 'AFIKPO  SOUTH',
-  'UHUNMWONDE': 'UHUNMWODE',
-  'UHUNMWODE': 'UHUNMWONDE',
-  'ESTAKO EAST': 'ETSAKO EAST',
-  'ESTAKO WEST': 'ETSAKO  WEST',
-  'ETSAKO WEST': 'ETSAKO  WEST',
-  'ESTAKO CENTRAL': 'ETSAKO CENTRAL',
+
+  // Gombe
   'YAMALTU/DEBA': 'YALMALTU/ DEBA',
   'YAMALTU DEBA': 'YALMALTU/ DEBA',
+  'YALMALTU/ DEBA': 'YAMALTU/DEBA',
+
+  // Imo
+  'EZINIHITTE': 'EZINIHITTE MBAISE',
+  'EZINIHITTE MBAISE': 'EZINIHITTE',
+  'IHITTE/UBOMA': 'IHITTE/UBOMA (ISINWEKE)',
+  'IHITTE UBOMA': 'IHITTE/UBOMA (ISINWEKE)',
+  'IHITTE/UBOMA (ISINWEKE)': 'IHITTE/UBOMA',
+  'IKEDURU': 'IKEDURU (IHO)',
+  'IKEDURU (IHO)': 'IKEDURU',
+  'ISIALA MBANO': 'ISIALA MBANO (UMUELEMAI)',
+  'ISIALA MBANO (UMUELEMAI)': 'ISIALA MBANO',
   'ISU': 'ISU (UMUNDUGBA)',
+  'ISU (UMUNDUGBA)': 'ISU',
+  'MBAITOLI': 'MBAITOLI (NWAORIEUBI)',
+  'MBAITOLI (NWAORIEUBI)': 'MBAITOLI',
+  'NGOR OKPALA': 'NGOR OKPALA (UMUNEKE)',
+  'NGOR OKPALA (UMUNEKE)': 'NGOR OKPALA',
+  'NJABA': 'NJABA (NNENASA)',
+  'NJABA (NNENASA)': 'NJABA',
+  'NWANGELE': 'NWANGELE (ONU-NWANGELE AMAIGBO)',
+  'NWANGELE (ONU-NWANGELE AMAIGBO)': 'NWANGELE',
+  'OBOWO': 'OBOWO (OTOKO)',
+  'OBOWO (OTOKO)': 'OBOWO',
+  'OGUTA': 'OGUTA (OGUTA)',
+  'OGUTA (OGUTA)': 'OGUTA',
+  'OHAJI/EGBEMA': 'OHAJI/EGBEMA (MMAHU-EGBEMA)',
+  'OHAJI EGBEMA': 'OHAJI/EGBEMA (MMAHU-EGBEMA)',
+  'OHAJI/EGBEMA (MMAHU-EGBEMA)': 'OHAJI/EGBEMA',
+  'OKIGWE': 'OKIGWE  (OKIGWE)',
+  'OKIGWE (OKIGWE)': 'OKIGWE  (OKIGWE)',
+  'OKIGWE  (OKIGWE)': 'OKIGWE',
+  'ONUIMO': 'ONUIMO (OKWE)',
+  'ONUIMO (OKWE)': 'ONUIMO',
+  'ORSU': 'ORSU (AWO IDEMILI)',
+  'ORSU (AWO IDEMILI)': 'ORSU',
+  'ORU EAST': 'ORU-EAST',
+  'ORU-EAST': 'ORU EAST',
+  'ORU WEST': 'ORU WEST (MGBIDI)',
+  'ORU WEST (MGBIDI)': 'ORU WEST',
+  'OWERRI NORTH': 'OWERRI NORTH (ORIE URATTA)',
+  'OWERRI NORTH (ORIE URATTA)': 'OWERRI NORTH',
+  'OWERRI WEST': 'OWERRI WEST (UMUGUMA)',
+  'OWERRI WEST (UMUGUMA)': 'OWERRI WEST',
+
+  // Jigawa
   'BIRINIWA': 'BIRNIWA',
   'BIRNINWA': 'BIRNIWA',
+  'BIRNIWA': 'BIRINIWA',
   'KAGAUMA': 'KAUGAMA',
   'KIRI KASAMA': 'KIRIKA SAMMA',
   'KIRIKASAMA': 'KIRIKA SAMMA',
   'KIRIKASAMMA': 'KIRIKA SAMMA',
+  'KIRIKA SAMMA': 'KIRIKASAMMA',
+  'SULE TANKARKAR': 'SULE-TANKARKAR',
+  'SULE-TANKARKAR': 'SULE TANKARKAR',
+
+  // Kano
   'DAMBATTA': 'DANBATA',
+  'DANBATA': 'DAMBATTA',
   'DAWAKIN KUDU': 'DAWAKI KUDU',
+  'DAWAKI KUDU': 'DAWAKIN KUDU',
+  'DAWAKIN TOFA': 'DAWAKI TOFA',
+  'DAWAKI TOFA': 'DAWAKIN TOFA',
   'GARUN MALLAM': 'GARUN MALAM',
   'GARIN MALAM': 'GARUN MALAM',
+  'GARUN MALAM': 'GARUN MALLAM',
+
+  // Katsina
+  'DUTSIN MA': 'DUTSIN-MA',
+  'DUTSIN-MA': 'DUTSIN MA',
   'MALUMFASHI': 'MALUFASHI',
+  'MALUFASHI': 'MALUMFASHI',
+
+  // Kebbi
   'ALEIRO': 'ALIERO',
+  'ALIERO': 'ALEIRO',
+  'AREWA DANDI': 'AREWA',
+  'AREWA': 'AREWA DANDI',
+
+  // Kogi
+  'IGALAMELA ODOLU': 'IGALAMELA/ODOLU',
+  'IGALAMELA/ODOLU': 'IGALAMELA ODOLU',
+  'KOGI': 'KOGI . K. K.',
+  'KOGI KK': 'KOGI . K. K.',
+  'KOGI .K.K.': 'KOGI . K. K.',
+  'KOGI . K. K.': 'KOGI',
   'MOPA MURO': 'MOPA MORO',
   'MOPA-MURO': 'MOPA MORO',
+  'MOPA MORO': 'MOPA MURO',
   'OGORI/MAGONGO': 'OGORI MANGOGO',
   'OGORI/MAGUNGO': 'OGORI MANGOGO',
   'OGORI MAGONGO': 'OGORI MANGOGO',
   'OGORI MAGUNGO': 'OGORI MANGOGO',
   'OGORI-MAGONGO': 'OGORI MANGOGO',
   'OGORI-MAGUNGO': 'OGORI MANGOGO',
-  'PATEGI': 'PATIGI',
+  'OGORI MANGOGO': 'OGORI/MAGONGO',
+
+  // Kwara
+  'ILORIN SOUTH': 'ILORIN-SOUTH',
+  'ILORIN-SOUTH': 'ILORIN SOUTH',
+  'ILORIN WEST': 'ILORIN-WEST',
+  'ILORIN-WEST': 'ILORIN WEST',
   'OKE ERO': 'OKE - ERO',
+  'OKE-ERO': 'OKE - ERO',
+  'OKEERO': 'OKE - ERO',
   'OKE-ERO (OKE ERO)': 'OKE - ERO',
   'OKE- ERO (OKE ERO': 'OKE - ERO',
+  'OKE - ERO': 'OKE ERO',
+  'PATEGI': 'PATIGI',
+  'PATIGI': 'PATEGI',
+
+  // Lagos
+  'AJEROMI-IFELODUN': 'AJEROMI/IFELODUN',
+  'AJEROMI/IFELODUN': 'AJEROMI-IFELODUN',
+  'IBEJU-LEKKI': 'IBEJU/LEKKI',
+  'IBEJU/LEKKI': 'IBEJU-LEKKI',
   'IFAKO-IJAIYE': 'IFAKO-IJAYE',
+  'IFAKO-IJAYE': 'IFAKO-IJAIYE',
+  'OSHODI-ISOLO': 'OSHODI/ISOLO',
+  'OSHODI/ISOLO': 'OSHODI-ISOLO',
   'SHOMOLU': 'SOMOLU',
+  'SOMOLU': 'SHOMOLU',
+
+  // Nasarawa
+  'NASARAWA EGON': 'NASARAWA EGGON',
+  'NASARAWA EGGON': 'NASARAWA EGON',
+
+  // Niger
   'EDATI': 'EDATTI',
+  'EDATTI': 'EDATI',
   'MOYA': 'MUNYA',
   'MUNYA': 'MOYA',
-  'SHAGAMU': 'SAGAMU',
+
+  // Ogun
+  'ADO-ODO/OTA': 'ADO ODO-OTA',
+  'ADO ODO-OTA': 'ADO-ODO/OTA',
+  'ADO-ODO OTA': 'ADO ODO-OTA',
   'YEWA NORTH': 'EGBADO NORTH',
   'YEWA SOUTH': 'EGBADO SOUTH',
+  'IMEKO AFON': 'IMEKO/AFON',
   'IMOKE/ AFON': 'IMEKO/AFON',
+  'IMEKO/AFON': 'IMEKO AFON',
+  'OBAFEMI OWODE': 'OBAFEMI/OWODE',
+  'OBAFEMI/OWODE': 'OBAFEMI OWODE',
+  'OGUN WATERSIDE': 'OGUN WATER SIDE',
+  'OGUN WATER SIDE': 'OGUN WATERSIDE',
+  'SHAGAMU': 'SAGAMU',
+  'SAGAMU': 'SHAGAMU',
+
+  // Ondo
+  'AKOKO NORTH-EAST': 'AKOKO NORTH EAST',
+  'AKOKO NORTH EAST': 'AKOKO NORTH-EAST',
+  'AKOKO NORTH-WEST': 'AKOKO NORTH WEST',
+  'AKOKO NORTH WEST': 'AKOKO NORTH-WEST',
+  'AKOKO SOUTH-EAST': 'AKOKO SOUTH EAST',
+  'AKOKO SOUTH EAST': 'AKOKO SOUTH-EAST',
+  'AKOKO SOUTH-WEST': 'AKOKO SOUTH WEST',
+  'AKOKO SOUTH WEST': 'AKOKO SOUTH-WEST',
+  'ESE ODO': 'ESE-ODO',
+  'ESE-ODO': 'ESE ODO',
+  'ILE OLUJI/OKEIGBO': 'ILEOLUJI/OKEIGBO',
+  'ILEOLUJI/OKEIGBO': 'ILE OLUJI/OKEIGBO',
+
+  // Osun
+  'ATAKUNMOSA WEST': 'ATAKUMOSA WEST',
+  'ATAKUMOSA WEST': 'ATAKUNMOSA WEST',
+  'ATAKUNMOSA EAST': 'ATAKUMOSA EAST',
+  'ATAKUMOSA EAST': 'ATAKUNMOSA EAST',
   'AIYEDAADE': 'AYEDAADE',
+  'AYEDAADE': 'AIYEDAADE',
   'AIYEDIRE': 'AYEDIRE',
+  'AYEDIRE': 'AIYEDIRE',
+  'ODO OTIN': 'ODO-OTIN',
+  'ODO-OTIN': 'ODO OTIN',
+  'OLA OLUWA': 'OLA-OLUWA',
+  'OLA-OLUWA': 'OLA OLUWA',
+
+  // Oyo
+  'IBADAN NORTH-EAST': 'IBADAN NORTH EAST',
+  'IBADAN NORTH EAST': 'IBADAN NORTH-EAST',
+  'IBADAN NORTH-WEST': 'IBADAN NORTH WEST',
+  'IBADAN NORTH WEST': 'IBADAN NORTH-WEST',
+  'IBADAN SOUTH-WEST': 'IBADAN SOUTH WEST',
+  'IBADAN SOUTH WEST': 'IBADAN SOUTH-WEST',
+  'OGO OLUWA': 'OGO-OLUWA',
+  'OGO-OLUWA': 'OGO OLUWA',
+  'ONA ARA': 'ONA-ARA',
+  'ONA-ARA': 'ONA ARA',
+  'ORELOPE': 'OORELOPE',
+  'OORELOPE': 'ORELOPE',
+
+  // Plateau
   'BARKIN LADI': 'BARIKIN LADI',
+  'BARIKIN LADI': 'BARKIN LADI',
+
+  // Rivers
+  'ABUA/ODUAL': 'ABUA-ODUAL',
+  'ABUA-ODUAL': 'ABUA/ODUAL',
+  'AKUKU-TORU': 'AKUKU TORU',
+  'AKUKU TORU': 'AKUKU-TORU',
   'EMUOHA': 'EMOHUA',
+  'EMOHUA': 'EMUOHA',
   'OPOBO/NKORO': 'OPOBO/NEKORO',
+  'OPOBO/NEKORO': 'OPOBO/NKORO',
+
+  // Sokoto
+  'DANGE SHUNI': 'DANGE/SHUNI',
+  'DANGE/SHUNI': 'DANGE SHUNI',
   'SABON BIRNI': 'S/BIRNI',
+  'SABON-BIRNI': 'S/BIRNI',
+  'S/BIRNI': 'SABON BIRNI',
   'WAMAKO': 'WAMAKKO',
-  'KARASUWA': 'KARASAWA',
-  'CHAFE': 'TSAFE',
-  'TALATAR MAFARA': 'TALATA MAFARA',
-  'MAIDUGURI (METROPOLITAN COUNCIL)': 'MAIDUGURI',
+  'WAMAKKO': 'WAMAKO',
+
+  // Taraba
+  'ARDO KOLA': 'ARDO - KOLA',
+  'ARDOKOLA': 'ARDO - KOLA',
+  'ARDO - KOLA': 'ARDO KOLA',
+  'KARIM LAMIDO': 'KARIM-LAMIDO',
+  'KARIM-LAMIDO': 'KARIM LAMIDO',
+
+  // Yobe
   'DAMATURU (STATE CAPITAL)': 'DAMATURU',
+  'KARASUWA': 'KARASAWA',
+  'KARASAWA': 'KARASUWA',
+
+  // Zamfara
+  'BIRNIN MAGAJI/KIYAW': 'BIRNIN MAGAJI',
+  'BIRNIN MAGAJI': 'BIRNIN MAGAJI/KIYAW',
+  'CHAFE': 'TSAFE',
+  'TSAFE': 'CHAFE',
+  'TALATAR MAFARA': 'TALATA MAFARA',
 };
 
-List<String> getStaticWardsForLga(String state, String lga) {
-  final lgaUpper = lga.trim().toUpperCase();
-  final lgaAlias = lgaAliases[lgaUpper];
-
-  final stateUpper = state.trim().toUpperCase();
+/// Resolves any state name variation (e.g. "FCT", "Abuja", "Nasarawa State")
+/// to the exact uppercase key in [nigeriaWardMapping] and INEC polling units dataset.
+String? resolveInecStateKey(String state) {
+  final stateUpper = state
+      .trim()
+      .toUpperCase()
+      .replaceAll(RegExp(r'\s+STATE$'), '')
+      .trim();
   final stateAlias = stateAliases[stateUpper];
 
-  Map<String, List<String>>? stateData;
   for (final s in [state.trim(), stateUpper, if (stateAlias != null) stateAlias]) {
     if (nigeriaWardMapping.containsKey(s)) {
-      stateData = nigeriaWardMapping[s];
-      break;
+      return s;
     }
   }
 
-  if (stateData == null) {
-    for (final k in nigeriaWardMapping.keys) {
-      if (k.toUpperCase() == stateUpper ||
-          k.replaceAll(' ', '').toUpperCase() == stateUpper.replaceAll(' ', '')) {
-        stateData = nigeriaWardMapping[k];
-        break;
-      }
+  for (final k in nigeriaWardMapping.keys) {
+    if (k.toUpperCase() == stateUpper ||
+        k.replaceAll(RegExp(r'[^A-Z0-9]'), '') ==
+            stateUpper.replaceAll(RegExp(r'[^A-Z0-9]'), '')) {
+      return k;
     }
   }
+  return null;
+}
 
-  if (stateData == null) return const [];
+/// Resolves any LGA name variation (e.g. "Nasarawa Egon", "Esit-Eket", "Dawakin Tofa")
+/// to the exact uppercase LGA key in [nigeriaWardMapping] and INEC polling units dataset.
+String? resolveInecLgaKey(String state, String lga) {
+  final stateKey = resolveInecStateKey(state);
+  if (stateKey == null) return null;
+  final stateData = nigeriaWardMapping[stateKey];
+  if (stateData == null) return null;
+
+  final lgaUpper = lga.trim().toUpperCase();
+  final lgaAlias = lgaAliases[lgaUpper];
 
   // 1. Direct key match
   for (final k in stateData.keys) {
     if (k.toUpperCase() == lgaUpper) {
-      return stateData[k] ?? const [];
+      return k;
     }
   }
 
@@ -10563,12 +10899,12 @@ List<String> getStaticWardsForLga(String state, String lga) {
   if (lgaAlias != null) {
     for (final k in stateData.keys) {
       if (k.toUpperCase() == lgaAlias) {
-        return stateData[k] ?? const [];
+        return k;
       }
     }
   }
 
-  // 3. Super-normalized alphanumeric exact match first (strips parentheticals, spaces, punctuation; treats N/M as equivalent)
+  // 3. Super-normalized alphanumeric exact match (strips parentheticals, spaces, punctuation; treats N/M as equivalent)
   String norm(String str) => str
       .toUpperCase()
       .replaceAll(RegExp(r'\s*\([^)]*\)'), '')
@@ -10580,19 +10916,28 @@ List<String> getStaticWardsForLga(String state, String lga) {
   for (final k in stateData.keys) {
     final kNorm = norm(k);
     if (kNorm == targetNorm || (aliasNorm != null && kNorm == aliasNorm)) {
-      return stateData[k] ?? const [];
+      return k;
     }
   }
 
-  // 4. Fallback substring fuzzy match only if exact normalized match did not hit
+  // 4. Fallback substring match ONLY against keys that are not themselves a distinct canonical LGA prefix
   for (final k in stateData.keys) {
     final kNorm = norm(k);
     if ((targetNorm.length >= 4 && kNorm.contains(targetNorm)) ||
-        (kNorm.length >= 4 && targetNorm.contains(kNorm)) ||
-        (aliasNorm != null && aliasNorm.length >= 4 && (kNorm.contains(aliasNorm) || aliasNorm.contains(kNorm)))) {
-      return stateData[k] ?? const [];
+        (aliasNorm != null &&
+            aliasNorm.length >= 4 &&
+            (kNorm.contains(aliasNorm) || aliasNorm.contains(kNorm)))) {
+      return k;
     }
   }
 
-  return const [];
+  return null;
+}
+
+List<String> getStaticWardsForLga(String state, String lga) {
+  final stateKey = resolveInecStateKey(state);
+  if (stateKey == null) return const [];
+  final lgaKey = resolveInecLgaKey(stateKey, lga);
+  if (lgaKey == null) return const [];
+  return nigeriaWardMapping[stateKey]?[lgaKey] ?? const [];
 }

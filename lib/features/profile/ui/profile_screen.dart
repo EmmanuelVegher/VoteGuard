@@ -7,6 +7,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:voteguard/features/auth/ui/liveness_enrollment_screen.dart';
+import 'package:voteguard/services/language_service.dart';
+import 'package:voteguard/services/review_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   final Map<String, dynamic> userProfile;
@@ -409,6 +411,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: LucideIcons.building,
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      ReviewService.showReviewDialog(context, force: true),
+                  icon: const Icon(LucideIcons.star,
+                      size: 16, color: Color(0xFF065F46)),
+                  label: Text(
+                    context.tr("Rate VoteGuard on Google Play"),
+                    style: GoogleFonts.outfit(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF065F46),
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: const Color(0xFFECFDF5),
+                    side: const BorderSide(color: Color(0xFFA7F3D0)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
                 ),
               ),
             ],

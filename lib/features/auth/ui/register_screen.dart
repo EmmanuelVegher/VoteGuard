@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:voteguard/services/geo_service.dart';
 import 'package:voteguard/models/geo_models.dart';
+import 'package:voteguard/core/widgets/auto_translate_app.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -204,8 +205,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   itemBuilder: (context, index) {
                     final unit = _filteredUnits[index];
                     return ListTile(
-                      title: Text(unit.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1E293B))),
-                      subtitle: Text('ID: ${unit.pollingUnitId}', style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                      title: NoTranslate(
+                        child: Text(unit.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1E293B))),
+                      ),
+                      subtitle: NoTranslate(
+                        child: Text('ID: ${unit.pollingUnitId}', style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                      ),
                       trailing: const Icon(LucideIcons.chevronRight, size: 16, color: Color(0xFF94A3B8)),
                       onTap: () {
                         setState(() => _selectedUnit = unit);
@@ -558,7 +563,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
           style: const TextStyle(color: Color(0xFF1E293B), fontSize: 13, fontWeight: FontWeight.w600),
           items: items.map((item) => DropdownMenuItem(
             value: item,
-            child: Text(item.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12)),
+            child: NoTranslate(
+              child: Text(item.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFF1E293B), fontSize: 12)),
+            ),
           )).toList(),
           onChanged: (v) => onChanged(v),
           decoration: InputDecoration(

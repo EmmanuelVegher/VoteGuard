@@ -10,7 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' hide Source;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:intl/intl.dart';
@@ -35,6 +35,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:voteguard/features/observer/ui/document_camera_screen.dart';
 import 'package:voteguard/services/language_service.dart';
 import 'package:voteguard/core/widgets/language_selector_button.dart';
+import 'package:voteguard/services/review_service.dart';
 
 Future<String> _getPublicIP() async {
   try {
@@ -46,6 +47,50 @@ Future<String> _getPublicIP() async {
     }
   } catch (_) {}
   return '192.168.1.1'; // fallback local IP
+}
+
+String _normalizePuComparable(dynamic value) {
+  return (value ?? '')
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '');
+}
+
+String _buildPuSlug(dynamic value) {
+  final slug = (value ?? '')
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+      .replaceAll(RegExp(r'^_+|_+$'), '');
+  return slug;
+}
+
+bool _puMatches(dynamic docPu, dynamic currentPu) {
+  final target = _normalizePuComparable(currentPu);
+  if (target.isEmpty) return true;
+  final candidate = _normalizePuComparable(docPu);
+  if (candidate.isEmpty) return false;
+  return candidate == target;
+}
+
+String _checklistDocId(String? uid, String electionId, dynamic pu) {
+  final slug = _buildPuSlug(pu);
+  if (slug.isEmpty) return '${uid}_$electionId';
+  return '${uid}_${electionId}_$slug';
+}
+
+String _incidentDraftDocId(String? uid, String electionId, dynamic pu) {
+  final slug = _buildPuSlug(pu);
+  if (slug.isEmpty) return '${electionId}_${uid}_draft';
+  return '${electionId}_${uid}_${slug}_draft';
+}
+
+String _incidentLocalDraftSeverity(String electionId, dynamic pu) {
+  final slug = _buildPuSlug(pu);
+  if (slug.isEmpty) return 'draft_$electionId';
+  return 'draft_${electionId}_$slug';
 }
 
 Uint8List _encodeWatermarkedRgbaToJpg(Map<String, dynamic> params) {
@@ -853,14 +898,32 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
   /// Check for and import checklist from related elections (online Firestore + offline Drift DB)
   Future<void> _importChecklistFromRelatedElection() async {
-    // Skip if already prompted for this election in this session
-    if (_promptedChecklistElections.contains(widget.electionId)) return;
-
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      final currentDocId = '${user.uid}_${widget.electionId}';
+      // Load observer's current assigned polling unit so imports are strictly PU-scoped
+      Map<String, dynamic> profileData = {};
+      try {
+        final profileSnap = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        profileData = profileSnap.data() ?? {};
+      } catch (_) {}
+      final currentPu =
+          (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '')
+              .toString()
+              .trim();
+      final puSlug = _buildPuSlug(currentPu);
+      final promptKey = '${widget.electionId}_$puSlug';
+
+      // Skip if already prompted for this election + polling unit in this session
+      if (_promptedChecklistElections.contains(promptKey)) return;
+
+      final currentDocId = _checklistDocId(user.uid, widget.electionId, currentPu);
+      final currentLegacyId = '${user.uid}_${widget.electionId}';
       final currentAltId = '${widget.electionId}_${user.uid}';
 
       // Helper to read local Drift checklists
@@ -875,11 +938,25 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         try {
           final decoded = jsonDecode(item.category);
           if (decoded is Map && decoded.isNotEmpty) {
-            final match = RegExp(r'_([^_]+)$').firstMatch(item.title);
-            final parsedElectionId = match?.group(1) ?? '';
+            String parsedElectionId = '';
+            String parsedPu = '';
+            if (puSlug.isNotEmpty && item.title.endsWith('_$puSlug')) {
+              final withoutPu =
+                  item.title.substring(0, item.title.length - puSlug.length - 1);
+              final uidPrefix = '${user.uid}_';
+              if (withoutPu.startsWith(uidPrefix)) {
+                parsedElectionId = withoutPu.substring(uidPrefix.length);
+                parsedPu = currentPu;
+              }
+            } else if (puSlug.isEmpty) {
+              final match = RegExp(r'_([^_]+)$').firstMatch(item.title);
+              parsedElectionId = match?.group(1) ?? '';
+            }
+            if (parsedElectionId.isEmpty) return null;
             return {
               'electionId': parsedElectionId,
               'observerId': user.uid,
+              'pollingUnit': parsedPu,
               'answers': Map<String, dynamic>.from(decoded),
               'status': item.isCompleted ? 'submitted' : 'draft',
             };
@@ -889,12 +966,16 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       }
 
       bool matchesLocalElection(db.Checklist item, String targetElectionId) {
-        return item.title == '${user.uid}_$targetElectionId' ||
-            item.title == '${targetElectionId}_${user.uid}' ||
-            item.title.endsWith('_$targetElectionId');
+        final expectedPuId = _checklistDocId(user.uid, targetElectionId, currentPu);
+        if (item.title == expectedPuId) return true;
+        if (puSlug.isEmpty) {
+          return item.title == '${user.uid}_$targetElectionId' ||
+              item.title == '${targetElectionId}_${user.uid}';
+        }
+        return false;
       }
 
-      // 1. Abort if current election already has local or Firestore answers
+      // 1. Abort if current election + PU already has local or Firestore answers
       for (final local in localChecklists) {
         if (matchesLocalElection(local, widget.electionId) &&
             decodeLocalChecklist(local) != null) {
@@ -903,33 +984,53 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       }
 
       try {
-        DocumentSnapshot? currentDoc = await FirebaseFirestore.instance
+        DocumentSnapshot currentDoc = await FirebaseFirestore.instance
             .collection('observer_checklists')
             .doc(currentDocId)
             .get()
             .timeout(const Duration(seconds: 4));
+        if (!currentDoc.exists && currentDocId != currentLegacyId) {
+          final legacySnap = await FirebaseFirestore.instance
+              .collection('observer_checklists')
+              .doc(currentLegacyId)
+              .get()
+              .timeout(const Duration(seconds: 4));
+          if (legacySnap.exists &&
+              _puMatches(legacySnap.data()?['pollingUnit'], currentPu)) {
+            currentDoc = legacySnap;
+          }
+        }
         if (!currentDoc.exists) {
-          currentDoc = await FirebaseFirestore.instance
+          final altSnap = await FirebaseFirestore.instance
               .collection('observer_checklists')
               .doc(currentAltId)
               .get()
               .timeout(const Duration(seconds: 4));
+          if (altSnap.exists &&
+              _puMatches(altSnap.data()?['pollingUnit'], currentPu)) {
+            currentDoc = altSnap;
+          }
         }
         if (!currentDoc.exists) {
           final q = await FirebaseFirestore.instance
               .collection('observer_checklists')
               .where('observerId', isEqualTo: user.uid)
               .where('electionId', isEqualTo: widget.electionId)
-              .limit(1)
               .get()
               .timeout(const Duration(seconds: 4));
-          if (q.docs.isNotEmpty) {
-            currentDoc = q.docs.first;
+          for (final doc in q.docs) {
+            if (_puMatches(doc.data()['pollingUnit'], currentPu)) {
+              currentDoc = doc;
+              break;
+            }
           }
         }
         if (currentDoc.exists) {
           final currentData = currentDoc.data() as Map<String, dynamic>?;
-          if (currentData != null && currentData['answers'] != null && (currentData['answers'] as Map).isNotEmpty) {
+          if (currentData != null &&
+              _puMatches(currentData['pollingUnit'], currentPu) &&
+              currentData['answers'] != null &&
+              (currentData['answers'] as Map).isNotEmpty) {
             return;
           }
         }
@@ -948,7 +1049,13 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
         // Check Firestore with offline-safe timeout
         try {
-          for (final candidateId in ['${user.uid}_$electionId', '${electionId}_${user.uid}']) {
+          final puScopedId = _checklistDocId(user.uid, electionId, currentPu);
+          final candidateIds = <String>{
+            puScopedId,
+            '${user.uid}_$electionId',
+            '${electionId}_${user.uid}',
+          };
+          for (final candidateId in candidateIds) {
             final snap = await FirebaseFirestore.instance
                 .collection('observer_checklists')
                 .doc(candidateId)
@@ -956,7 +1063,10 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                 .timeout(const Duration(seconds: 4));
             if (snap.exists) {
               final d = snap.data();
-              if (d != null && d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
+              if (d != null &&
+                  _puMatches(d['pollingUnit'], currentPu) &&
+                  d['answers'] != null &&
+                  (d['answers'] as Map).isNotEmpty) {
                 return d;
               }
             }
@@ -969,7 +1079,9 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
               .timeout(const Duration(seconds: 4));
           for (final doc in qSnap.docs) {
             final d = doc.data();
-            if (d['answers'] != null && (d['answers'] as Map).isNotEmpty) {
+            if (_puMatches(d['pollingUnit'], currentPu) &&
+                d['answers'] != null &&
+                (d['answers'] as Map).isNotEmpty) {
               return d;
             }
           }
@@ -995,18 +1107,6 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       // Direct fallback: scan both Firestore + local Drift checklists for concurrent/overlapping elections
       if (sourceChecklistData == null && _election != null) {
-        String userPuLoose = '';
-        try {
-          final profileSnap = await FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .get()
-              .timeout(const Duration(seconds: 4));
-          final profileData = profileSnap.data() ?? {};
-          userPuLoose = _normalizeLocationLoose(
-              (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '').toString());
-        } catch (_) {}
-
         final Map<String, Map<String, dynamic>> electionsById = {};
         try {
           final electionsSnap = await FirebaseFirestore.instance
@@ -1029,7 +1129,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         } catch (_) {}
 
         final List<Map<String, dynamic>> candidates = [];
-        // Add local Drift checklists first (always includes offline saves)
+        // Add local Drift checklists first (strictly PU-scoped)
         for (final local in localChecklists) {
           final localMap = decodeLocalChecklist(local);
           if (localMap != null) {
@@ -1061,11 +1161,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           final srcElectionId = (d['electionId'] ?? '').toString();
           if (srcElectionId.isEmpty || srcElectionId == widget.electionId) continue;
           if (d['answers'] == null || (d['answers'] as Map).isEmpty) continue;
-
-          if (userPuLoose.isNotEmpty) {
-            final docPuLoose = _normalizeLocationLoose((d['pollingUnit'] ?? '').toString());
-            if (docPuLoose.isNotEmpty && docPuLoose != userPuLoose) continue;
-          }
+          if (!_puMatches(d['pollingUnit'], currentPu)) continue;
 
           final srcElection = electionsById[srcElectionId];
           if (srcElection == null) continue;
@@ -1081,8 +1177,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       if (sourceChecklistData != null && sourceElectionName != null) {
         final data = sourceChecklistData;
-        // Mark as prompted
-        _promptedChecklistElections.add(widget.electionId);
+        // Mark as prompted for this election + polling unit
+        _promptedChecklistElections.add(promptKey);
 
         // Show import dialog
         if (mounted) {
@@ -1130,10 +1226,10 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
                   .set({
                 'electionId': widget.electionId,
                 'observerId': user.uid,
-                'state': data['state'],
-                'lga': data['lga'],
-                'ward': data['ward'],
-                'pollingUnit': data['pollingUnit'],
+                'state': profileData['assignedState'] ?? data['state'],
+                'lga': profileData['assignedLga'] ?? data['lga'],
+                'ward': profileData['assignedWard'] ?? data['ward'],
+                'pollingUnit': currentPu.isNotEmpty ? currentPu : data['pollingUnit'],
                 'answers': data['answers'],
                 'status': 'draft', // Import as draft for review
                 'timestamp': FieldValue.serverTimestamp(),
@@ -1191,12 +1287,33 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
   /// Check for and import incident from related / concurrent elections (online + offline Drift fallback)
   Future<void> _importIncidentFromRelatedElection() async {
-    // Skip if already prompted for this election in this session
-    if (_promptedIncidentElections.contains(widget.electionId)) return;
-
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
+
+      // Load observer's current assigned polling unit so imports are strictly PU-scoped
+      Map<String, dynamic> profileData = {};
+      try {
+        final profileSnap = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        profileData = profileSnap.data() ?? {};
+      } catch (_) {}
+      final currentPu =
+          (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '')
+              .toString()
+              .trim();
+      final puSlug = _buildPuSlug(currentPu);
+      final promptKey = '${widget.electionId}_$puSlug';
+
+      // Skip if already prompted for this election + polling unit in this session
+      if (_promptedIncidentElections.contains(promptKey)) return;
+
+      final currentDraftDocId = _incidentDraftDocId(user.uid, widget.electionId, currentPu);
+      final currentLocalDraftSeverity =
+          _incidentLocalDraftSeverity(widget.electionId, currentPu);
 
       final dbInstance = context.read<db.AppDatabase>();
       List<db.Incident> localIncidents = [];
@@ -1242,6 +1359,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         return {
           'electionId': srcElectionId,
           'observerId': user.uid,
+          'pollingUnit': currentPu,
           'incidentType': item.category,
           'description': item.description,
           'mediaItems': mediaItems,
@@ -1252,37 +1370,38 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         };
       }
 
-      String? extractIncidentElectionId(db.Incident item) {
-        if (item.severity.startsWith('reported_')) {
-          final rest = item.severity.substring('reported_'.length);
-          final sepIdx = rest.indexOf('::');
-          return sepIdx != -1 ? rest.substring(0, sepIdx) : rest;
+      String? extractLocalDraftElectionIdForCurrentPu(db.Incident item) {
+        if (!item.severity.startsWith('draft_')) return null;
+        final rest = item.severity.substring('draft_'.length);
+        if (puSlug.isNotEmpty) {
+          final suffix = '_$puSlug';
+          if (rest.endsWith(suffix)) {
+            return rest.substring(0, rest.length - suffix.length);
+          }
+          return null;
         }
-        if (item.severity.startsWith('draft_')) {
-          return item.severity.substring('draft_'.length);
-        }
-        return null;
+        return rest;
       }
 
-      // 1. Abort if current election already has local reported or draft incident
+      // 1. Abort if current election + PU already has local draft incident
       for (final local in localIncidents) {
-        if ((_isReportedIncidentFor(local.severity, widget.electionId) ||
-                local.severity == 'draft_${widget.electionId}') &&
+        if (local.severity == currentLocalDraftSeverity &&
             hasLocalIncidentDetails(local)) {
           return;
         }
       }
 
-      // 2. Abort if current election already has Firestore draft or reported incident
+      // 2. Abort if current election + PU already has Firestore draft or reported incident
       try {
         final currentDraftDoc = await FirebaseFirestore.instance
             .collection('incident_reports')
-            .doc('${widget.electionId}_${user.uid}_draft')
+            .doc(currentDraftDocId)
             .get()
             .timeout(const Duration(seconds: 4));
         if (currentDraftDoc.exists) {
           final data = currentDraftDoc.data();
           if (data != null &&
+              _puMatches(data['pollingUnit'], currentPu) &&
               data['incidentType'] != null &&
               data['description'] != null &&
               data['description'].toString().isNotEmpty) {
@@ -1295,10 +1414,10 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
             .where('electionId', isEqualTo: widget.electionId)
             .where('observerId', isEqualTo: user.uid)
             .where('status', isEqualTo: 'reported')
-            .limit(1)
             .get()
             .timeout(const Duration(seconds: 4));
-        if (currentReportedSnap.docs.isNotEmpty) {
+        if (currentReportedSnap.docs
+            .any((doc) => _puMatches(doc.data()['pollingUnit'], currentPu))) {
           return;
         }
       } catch (e) {
@@ -1306,41 +1425,48 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
       }
 
       Future<Map<String, dynamic>?> fetchIncidentForElection(String electionId) async {
-        // Check local Drift DB first (reported prioritized over draft)
+        // Check local Drift DB first (strictly PU-scoped draft)
+        final expectedLocalDraft = _incidentLocalDraftSeverity(electionId, currentPu);
         for (final local in localIncidents) {
-          if (_isReportedIncidentFor(local.severity, electionId) && hasLocalIncidentDetails(local)) {
-            return localIncidentToSourceMap(local, electionId);
-          }
-        }
-        for (final local in localIncidents) {
-          if (local.severity == 'draft_$electionId' && hasLocalIncidentDetails(local)) {
+          if (local.severity == expectedLocalDraft && hasLocalIncidentDetails(local)) {
             return localIncidentToSourceMap(local, electionId);
           }
         }
 
-        // Check Firestore with offline-safe timeout
+        // Check Firestore with offline-safe timeout (strictly PU-matched)
         try {
           final querySnap = await FirebaseFirestore.instance
               .collection('incident_reports')
               .where('electionId', isEqualTo: electionId)
               .where('observerId', isEqualTo: user.uid)
               .where('status', isEqualTo: 'reported')
-              .limit(1)
               .get()
               .timeout(const Duration(seconds: 4));
-          if (querySnap.docs.isNotEmpty) {
-            return querySnap.docs.first.data();
+          for (final doc in querySnap.docs) {
+            final d = doc.data();
+            if (_puMatches(d['pollingUnit'], currentPu)) {
+              return d;
+            }
           }
 
-          final draftDoc = await FirebaseFirestore.instance
-              .collection('incident_reports')
-              .doc('${electionId}_${user.uid}_draft')
-              .get()
-              .timeout(const Duration(seconds: 4));
-          if (draftDoc.exists) {
-            final d = draftDoc.data();
-            if (d != null && d['incidentType'] != null) {
-              return d;
+          final puDraftDocId = _incidentDraftDocId(user.uid, electionId, currentPu);
+          final draftIds = <String>{
+            puDraftDocId,
+            '${electionId}_${user.uid}_draft',
+          };
+          for (final draftId in draftIds) {
+            final draftDoc = await FirebaseFirestore.instance
+                .collection('incident_reports')
+                .doc(draftId)
+                .get()
+                .timeout(const Duration(seconds: 4));
+            if (draftDoc.exists) {
+              final d = draftDoc.data();
+              if (d != null &&
+                  _puMatches(d['pollingUnit'], currentPu) &&
+                  d['incidentType'] != null) {
+                return d;
+              }
             }
           }
         } catch (e) {
@@ -1363,20 +1489,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
         }
       }
 
-      // Direct concurrent/overlapping election fallback (scans Drift + Firestore)
+      // Direct concurrent/overlapping election fallback (scans Drift + Firestore, strictly PU-matched)
       if (sourceData == null && _election != null) {
-        String userPuLoose = '';
-        try {
-          final profileSnap = await FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .get()
-              .timeout(const Duration(seconds: 4));
-          final profileData = profileSnap.data() ?? {};
-          userPuLoose = _normalizeLocationLoose(
-              (profileData['assignedPollingUnit'] ?? profileData['pollingUnit'] ?? '').toString());
-        } catch (_) {}
-
         final Map<String, Map<String, dynamic>> electionsById = {};
         try {
           final electionsSnap = await FirebaseFirestore.instance
@@ -1400,7 +1514,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
         final List<Map<String, dynamic>> candidates = [];
         for (final local in localIncidents) {
-          final srcId = extractIncidentElectionId(local);
+          final srcId = extractLocalDraftElectionIdForCurrentPu(local);
           if (srcId != null && hasLocalIncidentDetails(local)) {
             candidates.add(localIncidentToSourceMap(local, srcId));
           }
@@ -1429,11 +1543,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
           final srcElectionId = (d['electionId'] ?? '').toString();
           if (srcElectionId.isEmpty || srcElectionId == widget.electionId) continue;
           if (d['incidentType'] == null || d['incidentType'].toString().isEmpty) continue;
-
-          if (userPuLoose.isNotEmpty) {
-            final docPuLoose = _normalizeLocationLoose((d['pollingUnit'] ?? '').toString());
-            if (docPuLoose.isNotEmpty && docPuLoose != userPuLoose) continue;
-          }
+          if (!_puMatches(d['pollingUnit'], currentPu)) continue;
 
           final srcElection = electionsById[srcElectionId];
           if (srcElection == null) continue;
@@ -1449,8 +1559,8 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
 
       if (sourceData != null && sourceElectionName != null) {
         final importedData = sourceData;
-        // Mark as prompted
-        _promptedIncidentElections.add(widget.electionId);
+        // Mark as prompted for this election + polling unit
+        _promptedIncidentElections.add(promptKey);
 
         // Show import dialog
         if (mounted) {
@@ -1497,10 +1607,10 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
               'description': importedData['description'],
               'mediaItems': importedData['mediaItems'] ?? [],
               'mediaUrls': importedData['mediaUrls'] ?? [],
-              'state': importedData['state'],
-              'lga': importedData['lga'],
-              'ward': importedData['ward'],
-              'pollingUnit': importedData['pollingUnit'],
+              'state': profileData['assignedState'] ?? importedData['state'],
+              'lga': profileData['assignedLga'] ?? importedData['lga'],
+              'ward': profileData['assignedWard'] ?? importedData['ward'],
+              'pollingUnit': currentPu.isNotEmpty ? currentPu : importedData['pollingUnit'],
               'latitude': importedData['latitude'],
               'longitude': importedData['longitude'],
               'deviceId': 'OBS-${DateTime.now().millisecondsSinceEpoch}',
@@ -1514,7 +1624,7 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
             try {
               await FirebaseFirestore.instance
                   .collection('incident_reports')
-                  .doc('${widget.electionId}_${user.uid}_draft')
+                  .doc(currentDraftDocId)
                   .set(payload, SetOptions(merge: true))
                   .timeout(const Duration(seconds: 4));
               syncedRemote = true;
@@ -1526,14 +1636,14 @@ class _ObserverDashboardScreenState extends State<ObserverDashboardScreen>
             try {
               final existingRows = await dbInstance.getAllIncidents();
               for (final row in existingRows) {
-                if (row.severity == 'draft_${widget.electionId}') {
+                if (row.severity == currentLocalDraftSeverity) {
                   await dbInstance.deleteIncident(row.id);
                 }
               }
               await dbInstance.insertIncident(
                 db.IncidentsCompanion(
                   category: drift.Value((importedData['incidentType'] ?? '').toString()),
-                  severity: drift.Value('draft_${widget.electionId}'),
+                  severity: drift.Value(currentLocalDraftSeverity),
                   description: drift.Value((importedData['description'] ?? '').toString()),
                   latitude: drift.Value((importedData['latitude'] as num?)?.toDouble()),
                   longitude: drift.Value((importedData['longitude'] as num?)?.toDouble()),
@@ -2815,6 +2925,10 @@ class _DashboardTab extends StatelessWidget {
         stream: firestore.collection('users').doc(user?.uid).snapshots(),
         builder: (context, profileSnapshot) {
           final profile = profileSnapshot.data?.data() as Map<String, dynamic>?;
+          final currentPu =
+              (profile?['assignedPollingUnit'] ?? profile?['pollingUnit'] ?? '')
+                  .toString()
+                  .trim();
 
           return StreamBuilder<List<int>>(
             stream: Rx.combineLatest3(
@@ -2833,8 +2947,28 @@ class _DashboardTab extends StatelessWidget {
                     .where('electionId', isEqualTo: electionId)
                     .where('submittedBy', isEqualTo: user?.uid)
                     .snapshots(),
-                (check, inc, res) =>
-                    [check.docs.length, inc.docs.length, res.docs.length]),
+                (check, inc, res) {
+              if (profile == null) return [0, 0, 0];
+              final checkCount = check.docs.where((d) {
+                final data = d.data();
+                final status = (data['status'] ?? '').toString().toLowerCase();
+                return status != 'draft' &&
+                    _puMatches(data['pollingUnit'], currentPu);
+              }).length;
+              final incCount = inc.docs.where((d) {
+                final data = d.data();
+                final status = (data['status'] ?? '').toString().toLowerCase();
+                return status != 'draft' &&
+                    _puMatches(data['pollingUnit'], currentPu);
+              }).length;
+              final resCount = res.docs.where((d) {
+                final data = d.data();
+                final status = (data['status'] ?? '').toString().toLowerCase();
+                return status != 'draft' &&
+                    _puMatches(data['pollingUnit'], currentPu);
+              }).length;
+              return [checkCount, incCount, resCount];
+            }),
             builder: (context, statsSnapshot) {
               final stats = statsSnapshot.data ?? [0, 0, 0];
 
@@ -3525,7 +3659,10 @@ class _ChecklistTabState extends State<_ChecklistTab>
         if (_isFinalized) break;
         final user = FirebaseAuth.instance.currentUser;
         if (user == null) break;
-        final docId = '${user.uid}_${widget.electionId}';
+        final currentPu =
+            (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+                .toString();
+        final docId = _checklistDocId(user.uid, widget.electionId, currentPu);
         final encoded = jsonEncode(_answers);
         final localChecklists = await _localDb.getAllChecklists();
         final matchingRows =
@@ -3743,17 +3880,24 @@ class _ChecklistTabState extends State<_ChecklistTab>
       // Step 3: Fetch questions from the template document
       await _loadQuestions(templateId);
 
-      final pu = _userProfile?['assignedPollingUnit'] ?? 'unknown_pu';
-      final primaryId = '${user?.uid}_${widget.electionId}';
+      final currentPu =
+          (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+              .toString()
+              .trim();
+      final pu = currentPu.isNotEmpty ? currentPu : 'unknown_pu';
+      final primaryId = _checklistDocId(user?.uid, widget.electionId, currentPu);
+      final legacyId = '${user?.uid}_${widget.electionId}';
       final secondaryId = '${widget.electionId}_${user?.uid}_$pu';
 
-      // Step 4: Load draft/submission
+      // Step 4: Load draft/submission (strictly scoped to current Polling Unit)
       db.Checklist? localMatch;
       bool loadedLocal = false;
       try {
         final localChecklists = await _localDb.getAllChecklists();
-        final matchIndex = localChecklists
-            .indexWhere((c) => c.title == primaryId || c.title == secondaryId);
+        final matchIndex = localChecklists.indexWhere((c) =>
+            c.title == primaryId ||
+            c.title == secondaryId ||
+            (currentPu.isEmpty && c.title == legacyId));
         if (matchIndex != -1) {
           localMatch = localChecklists[matchIndex];
           _answers
@@ -3773,25 +3917,46 @@ class _ChecklistTabState extends State<_ChecklistTab>
             .doc(primaryId)
             .get()
             .timeout(const Duration(seconds: 5));
-        if (!draft.exists) {
-          draft = await FirebaseFirestore.instance
+        if (draft.exists &&
+            !_puMatches((draft.data() as Map<String, dynamic>?)?['pollingUnit'], currentPu)) {
+          draft = null;
+        }
+        if (draft == null || !draft.exists) {
+          final secSnap = await FirebaseFirestore.instance
               .collection('observer_checklists')
               .doc(secondaryId)
               .get()
               .timeout(const Duration(seconds: 5));
+          if (secSnap.exists &&
+              _puMatches(secSnap.data()?['pollingUnit'], currentPu)) {
+            draft = secSnap;
+          }
         }
-        // Query Fallback to make absolutely sure we find the document by fields!
-        if (!draft.exists) {
+        if ((draft == null || !draft.exists) && primaryId != legacyId) {
+          final legSnap = await FirebaseFirestore.instance
+              .collection('observer_checklists')
+              .doc(legacyId)
+              .get()
+              .timeout(const Duration(seconds: 5));
+          if (legSnap.exists &&
+              _puMatches(legSnap.data()?['pollingUnit'], currentPu)) {
+            draft = legSnap;
+          }
+        }
+        // Query Fallback (strictly filtered by current Polling Unit)
+        if (draft == null || !draft.exists) {
           final querySnap = await FirebaseFirestore.instance
               .collection('observer_checklists')
               .where('observerId', isEqualTo: user?.uid)
               .where('electionId', isEqualTo: widget.electionId)
-              .limit(1)
               .get()
               .timeout(const Duration(seconds: 5));
-          if (querySnap.docs.isNotEmpty) {
-            draft = querySnap.docs.first;
-            debugPrint('Checklist: Found document via query fallback!');
+          for (final doc in querySnap.docs) {
+            if (_puMatches(doc.data()['pollingUnit'], currentPu)) {
+              draft = doc;
+              debugPrint('Checklist: Found PU-matched document via query fallback!');
+              break;
+            }
           }
         }
       } catch (e) {
@@ -4229,9 +4394,13 @@ class _ChecklistTabState extends State<_ChecklistTab>
     setState(() => _submitting = true);
     try {
       final user = FirebaseAuth.instance.currentUser;
-      final pu = _userProfile?['assignedPollingUnit'] ?? 'unknown_pu';
-      // Use the ID format confirmed in Firestore: observerId_electionId
-      final docId = '${user?.uid}_${widget.electionId}';
+      final currentPu =
+          (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+              .toString()
+              .trim();
+      final pu = currentPu.isNotEmpty ? currentPu : 'unknown_pu';
+      // Scope checklist docId by observer + election + polling unit so switching PUs starts fresh
+      final docId = _checklistDocId(user?.uid, widget.electionId, currentPu);
       final dbInstance = context.read<db.AppDatabase>();
 
       final isOnline = await _hasChecklistInternet();
@@ -4361,6 +4530,9 @@ class _ChecklistTabState extends State<_ChecklistTab>
               : 'Progress Saved as Draft'),
           backgroundColor: const Color(0xFF065F46),
         ));
+        if (isFinal) {
+          ReviewService.recordSubmissionAndMaybePrompt(context);
+        }
       }
     } catch (e) {
       final errorStr = e.toString().toLowerCase();
@@ -4374,7 +4546,11 @@ class _ChecklistTabState extends State<_ChecklistTab>
       if (isNetworkError) {
         try {
           final user = FirebaseAuth.instance.currentUser;
-          final docId = '${user?.uid}_${widget.electionId}';
+          final currentPu =
+              (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+                  .toString()
+                  .trim();
+          final docId = _checklistDocId(user?.uid, widget.electionId, currentPu);
           final dbInstance = context.read<db.AppDatabase>();
           await _upsertSingleLocalChecklist(
             dbInstance,
@@ -4420,7 +4596,11 @@ class _ChecklistTabState extends State<_ChecklistTab>
     _autoDraftTimer?.cancel();
     _hasLocalDraftEdits = false;
     final user = FirebaseAuth.instance.currentUser;
-    final docId = '${user?.uid}_${widget.electionId}';
+    final currentPu =
+        (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+            .toString()
+            .trim();
+    final docId = _checklistDocId(user?.uid, widget.electionId, currentPu);
 
     try {
       await FirebaseFirestore.instance
@@ -4435,7 +4615,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
     try {
       final localChecklists = await _localDb.getAllChecklists();
       for (final c in localChecklists) {
-        if (c.title == docId || c.title.endsWith('_${widget.electionId}')) {
+        if (c.title == docId) {
           await _localDb.deleteChecklist(c.id);
         }
       }
@@ -4557,17 +4737,20 @@ class _ChecklistTabState extends State<_ChecklistTab>
       grouped[section]!.add(q);
     }
 
-    final showBottomActions = MediaQuery.of(context).viewInsets.bottom == 0;
-
     return GestureDetector(
       onTap: () => FocusScope.of(context).unfocus(),
-      child: Column(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 96),
         children: [
           if (langService.isTranslating)
             Container(
               width: double.infinity,
-              color: const Color(0xFFECFDF5),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECFDF5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -4580,12 +4763,14 @@ class _ChecklistTabState extends State<_ChecklistTab>
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    langService.tr('Translating checklist...'),
-                    style: GoogleFonts.outfit(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFF065F46),
+                  Flexible(
+                    child: Text(
+                      langService.tr('Translating checklist...'),
+                      style: GoogleFonts.outfit(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF065F46),
+                      ),
                     ),
                   ),
                 ],
@@ -4594,7 +4779,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
           if (_isFinalized)
             Container(
               width: double.infinity,
-              margin: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              margin: const EdgeInsets.only(bottom: 16),
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: const Color(0xFF0F172A),
@@ -4628,7 +4813,7 @@ class _ChecklistTabState extends State<_ChecklistTab>
           else if (_hasSavedDraft || _hasLocalDraftEdits)
             Container(
               width: double.infinity,
-              margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              margin: const EdgeInsets.only(bottom: 16),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: const Color(0xFFFFFBEB),
@@ -4656,7 +4841,8 @@ class _ChecklistTabState extends State<_ChecklistTab>
                                 letterSpacing: 0.5)),
                         const SizedBox(height: 2),
                         Text(
-                            'Your checklist answers are saved as a draft. Please tap "FINAL SUBMIT" at the bottom when complete.',
+                            context.tr(
+                                'Your checklist answers are saved as a draft. Please tap "FINAL SUBMIT" at the bottom when complete.'),
                             style: GoogleFonts.outfit(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
@@ -4668,15 +4854,12 @@ class _ChecklistTabState extends State<_ChecklistTab>
               ),
             ),
           _buildProgressHUD(),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-              children: grouped.entries
-                  .map((entry) => _buildSection(entry.key, entry.value))
-                  .toList(),
-            ),
-          ),
-          if (showBottomActions) _buildBottomActions(),
+          ...grouped.entries
+              .map((entry) => _buildSection(entry.key, entry.value)),
+          if (!_isFinalized) ...[
+            const SizedBox(height: 16),
+            _buildBottomActions(),
+          ],
         ],
       ),
     );
@@ -4684,55 +4867,84 @@ class _ChecklistTabState extends State<_ChecklistTab>
 
   Widget _buildProgressHUD() {
     final progress = _completionProgress;
+    final badge = _isOffline
+        ? _buildConnectionStatusBadge(context.tr('OFFLINE CONNECTION'),
+            const Color(0xFFFEF2F2), const Color(0xFFEF4444))
+        : _buildConnectionStatusBadge(context.tr('LIVE CONNECTION'),
+            const Color(0xFFECFDF5), const Color(0xFF10B981));
+
     return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: const BoxDecoration(color: Colors.white),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Row(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF1F5F9)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+          final isCompact = constraints.maxWidth < 360 || textScale > 1.15;
+
+          final trackerRow = Row(
+            children: [
+              SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(
+                  value: progress,
+                  backgroundColor: const Color(0xFFF1F5F9),
+                  valueColor:
+                      const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
+                  strokeWidth: 5,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(context.tr('COMPLETION TRACKER'),
+                        style: GoogleFonts.outfit(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            color: const Color(0xFF64748B),
+                            letterSpacing: 0.8)),
+                    const SizedBox(height: 2),
+                    Text(
+                        '${(progress * 100).toInt()}% ${context.tr('Questions Answered')}',
+                        style: GoogleFonts.outfit(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: const Color(0xFF0F172A))),
+                  ],
+                ),
+              ),
+            ],
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(
-                  width: 48,
-                  height: 48,
-                  child: CircularProgressIndicator(
-                    value: progress,
-                    backgroundColor: const Color(0xFFF1F5F9),
-                    valueColor:
-                        const AlwaysStoppedAnimation<Color>(Color(0xFF10B981)),
-                    strokeWidth: 6,
-                  ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: badge,
                 ),
-                const SizedBox(width: 20),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(context.tr('COMPLETION TRACKER'),
-                          style: GoogleFonts.outfit(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w900,
-                              color: const Color(0xFF64748B),
-                              letterSpacing: 1)),
-                      Text('${(progress * 100).toInt()}% ${context.tr('Questions Answered')}',
-                          style: GoogleFonts.outfit(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: const Color(0xFF0F172A))),
-                    ],
-                  ),
-                ),
+                const SizedBox(height: 10),
+                trackerRow,
               ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          _isOffline
-              ? _buildConnectionStatusBadge(context.tr('OFFLINE CONNECTION'),
-                  const Color(0xFFFEF2F2), const Color(0xFFEF4444))
-              : _buildConnectionStatusBadge(context.tr('LIVE CONNECTION'),
-                  const Color(0xFFECFDF5), const Color(0xFF10B981)),
-        ],
+            );
+          }
+
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: trackerRow),
+              const SizedBox(width: 12),
+              badge,
+            ],
+          );
+        },
       ),
     );
   }
@@ -5297,13 +5509,18 @@ class _ChecklistTabState extends State<_ChecklistTab>
     if (_isFinalized) return const SizedBox.shrink();
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-      decoration: BoxDecoration(color: Colors.white, boxShadow: [
-        BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 20,
-            offset: const Offset(0, -5))
-      ]),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF1F5F9)),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 16,
+              offset: const Offset(0, 4))
+        ],
+      ),
       child: Column(
         children: [
           Row(
@@ -5311,31 +5528,41 @@ class _ChecklistTabState extends State<_ChecklistTab>
               Expanded(
                   child: OutlinedButton(
                       onPressed: _submitting ? null : () => _save(false),
-                      child: Text('SAVE PROGRESS',
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 14, horizontal: 10),
+                      ),
+                      child: Text(context.tr('SAVE PROGRESS'),
+                          textAlign: TextAlign.center,
                           style: GoogleFonts.outfit(
                               fontSize: 12, fontWeight: FontWeight.bold)))),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Expanded(
                   child: ElevatedButton(
                       onPressed: _submitting ? null : () => _save(true),
                       style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF065F46)),
-                      child: Text('FINAL SUBMIT',
+                          backgroundColor: const Color(0xFF065F46),
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 14, horizontal: 10)),
+                      child: Text(context.tr('FINAL SUBMIT'),
+                          textAlign: TextAlign.center,
                           style: GoogleFonts.outfit(
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
                               color: Colors.white)))),
             ],
           ),
-          if (_hasSavedDraft)
+          if (_hasSavedDraft) ...[
+            const SizedBox(height: 4),
             TextButton(
               onPressed: _submitting ? null : _discardDraft,
-              child: Text('DISCARD DRAFT',
+              child: Text(context.tr('DISCARD DRAFT'),
                   style: GoogleFonts.outfit(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                       color: Colors.red)),
             ),
+          ],
         ],
       ),
     );
@@ -5667,9 +5894,15 @@ class _IncidentsTabState extends State<_IncidentsTab>
 
   Future<void> _clearLocalIncidentDraft() async {
     try {
+      final currentPu =
+          (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+              .toString()
+              .trim();
+      final localDraftSeverity =
+          _incidentLocalDraftSeverity(widget.electionId, currentPu);
       final rows = await _localDb.getAllIncidents();
       for (final row in rows) {
-        if (row.severity == 'draft_${widget.electionId}') {
+        if (row.severity == localDraftSeverity) {
           await _localDb.deleteIncident(row.id);
         }
       }
@@ -5697,11 +5930,18 @@ class _IncidentsTabState extends State<_IncidentsTab>
           break;
         }
 
+        final currentPu =
+            (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+                .toString()
+                .trim();
+        final localDraftSeverity =
+            _incidentLocalDraftSeverity(widget.electionId, currentPu);
+
         await _clearLocalIncidentDraft();
         await _localDb.insertIncident(
           db.IncidentsCompanion(
             category: drift.Value(_selectedType ?? ''),
-            severity: drift.Value('draft_${widget.electionId}'),
+            severity: drift.Value(localDraftSeverity),
             description: drift.Value(_descriptionController.text),
             latitude: drift.Value(_currentPosition?.latitude),
             longitude: drift.Value(_currentPosition?.longitude),
@@ -5742,10 +5982,19 @@ class _IncidentsTabState extends State<_IncidentsTab>
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    final currentPu =
+        (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+            .toString()
+            .trim();
+    final localDraftSeverity =
+        _incidentLocalDraftSeverity(widget.electionId, currentPu);
+    final puDraftDocId = _incidentDraftDocId(user.uid, widget.electionId, currentPu);
+    final legacyDraftDocId = '${widget.electionId}_${user.uid}_draft';
+
     db.Incident? localDraft;
     try {
       final rows = await _localDb.getAllIncidents();
-      final idx = rows.indexWhere((r) => r.severity == 'draft_${widget.electionId}');
+      final idx = rows.indexWhere((r) => r.severity == localDraftSeverity);
       if (idx != -1) {
         localDraft = rows[idx];
       }
@@ -5770,13 +6019,28 @@ class _IncidentsTabState extends State<_IncidentsTab>
     Map<String, dynamic>? remoteDraft;
     DateTime? remoteUpdatedAt;
     try {
-      final draftDoc = await FirebaseFirestore.instance
+      var draftDoc = await FirebaseFirestore.instance
           .collection('incident_reports')
-          .doc('${widget.electionId}_${user.uid}_draft')
+          .doc(puDraftDocId)
           .get()
           .timeout(const Duration(seconds: 4));
-      if (draftDoc.exists && draftDoc.data() != null) {
+      if (draftDoc.exists &&
+          draftDoc.data() != null &&
+          _puMatches(draftDoc.data()!['pollingUnit'], currentPu)) {
         remoteDraft = draftDoc.data()!;
+      } else if (puDraftDocId != legacyDraftDocId) {
+        final legacyDoc = await FirebaseFirestore.instance
+            .collection('incident_reports')
+            .doc(legacyDraftDocId)
+            .get()
+            .timeout(const Duration(seconds: 4));
+        if (legacyDoc.exists &&
+            legacyDoc.data() != null &&
+            _puMatches(legacyDoc.data()!['pollingUnit'], currentPu)) {
+          remoteDraft = legacyDoc.data()!;
+        }
+      }
+      if (remoteDraft != null) {
         final rawTs = remoteDraft['updatedAt'] ?? remoteDraft['createdAt'];
         if (rawTs is Timestamp) {
           remoteUpdatedAt = rawTs.toDate();
@@ -5854,9 +6118,6 @@ class _IncidentsTabState extends State<_IncidentsTab>
 
     try {
       final user = FirebaseAuth.instance.currentUser;
-      // Load local/remote draft first so form fields populate without waiting on GPS
-      await _loadIncidentDraftFromSources();
-
       try {
         final profile = await FirebaseFirestore.instance
             .collection('users')
@@ -5867,6 +6128,9 @@ class _IncidentsTabState extends State<_IncidentsTab>
       } catch (e) {
         debugPrint('Incident: User profile fetch skipped offline: $e');
       }
+
+      // Load PU-scoped local/remote draft after profile is loaded (without waiting on GPS)
+      await _loadIncidentDraftFromSources();
       try {
         _currentPosition = await _determinePosition();
       } catch (e) {
@@ -5947,7 +6211,13 @@ class _IncidentsTabState extends State<_IncidentsTab>
       try {
         final captured = await Navigator.push<File>(
           context,
-          MaterialPageRoute(builder: (context) => const DocumentCameraScreen()),
+          MaterialPageRoute(
+            builder: (context) => const DocumentCameraScreen(
+              title: 'INCIDENT PHOTO',
+              showFrameGuide: false,
+              loadingLabel: 'Starting Camera...',
+            ),
+          ),
         );
         if (captured != null && mounted) {
           setState(() => _media.add({'type': 'photo', 'file': captured}));
@@ -6297,9 +6567,13 @@ class _IncidentsTabState extends State<_IncidentsTab>
       _hasLocalDraftEdits = false;
       await _clearLocalIncidentDraft();
       try {
+        final currentPu =
+            (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+                .toString()
+                .trim();
         await FirebaseFirestore.instance
             .collection('incident_reports')
-            .doc('${widget.electionId}_${user?.uid}_draft')
+            .doc(_incidentDraftDocId(user?.uid, widget.electionId, currentPu))
             .delete()
             .timeout(const Duration(seconds: 4));
       } catch (_) {}
@@ -6315,6 +6589,7 @@ class _IncidentsTabState extends State<_IncidentsTab>
             content: Text('Incident report submitted successfully!'),
             backgroundColor: Color(0xFF10B981)));
         DefaultTabController.maybeOf(context)?.animateTo(0);
+        ReviewService.recordSubmissionAndMaybePrompt(context);
       }
     } catch (e) {
       final errorStr = e.toString().toLowerCase();
@@ -6350,9 +6625,17 @@ class _IncidentsTabState extends State<_IncidentsTab>
     setState(() => _savingDraft = true);
     try {
       final user = FirebaseAuth.instance.currentUser;
+      final currentPu =
+          (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+              .toString()
+              .trim();
       final payload = {
         'electionId': widget.electionId,
         'observerId': user?.uid,
+        'state': _userProfile?['assignedState'],
+        'lga': _userProfile?['assignedLga'],
+        'ward': _userProfile?['assignedWard'],
+        'pollingUnit': currentPu.isNotEmpty ? currentPu : _userProfile?['assignedPollingUnit'],
         'incidentType': _selectedType,
         'description': _descriptionController.text,
         'mediaItems': _media
@@ -6368,7 +6651,7 @@ class _IncidentsTabState extends State<_IncidentsTab>
       try {
         await FirebaseFirestore.instance
             .collection('incident_reports')
-            .doc('${widget.electionId}_${user?.uid}_draft')
+            .doc(_incidentDraftDocId(user?.uid, widget.electionId, currentPu))
             .set(payload, SetOptions(merge: true))
             .timeout(const Duration(seconds: 4));
         syncedRemote = true;
@@ -6645,83 +6928,242 @@ class _IncidentsTabState extends State<_IncidentsTab>
           if (_media.isNotEmpty) ...[
             const SizedBox(height: 24),
             SizedBox(
-              height: 110,
+              height: 120,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: _media.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 16),
-                itemBuilder: (context, i) => Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
-                      width: 100,
-                      height: 110,
-                      decoration: BoxDecoration(
-                          color: const Color(0xFFF8FAFC),
-                          borderRadius: BorderRadius.circular(24),
-                          border: Border.all(color: const Color(0xFFF1F5F9)),
-                          image: _media[i]['type'] == 'photo'
-                              ? DecorationImage(
-                                  image: _media[i]['file'] != null
-                                      ? FileImage(_media[i]['file'])
-                                      : NetworkImage(_media[i]['url'] ?? '') as ImageProvider,
-                                  fit: BoxFit.cover)
-                              : null),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          if (_media[i]['type'] != 'photo') ...[
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: const BoxDecoration(
-                                  color: Colors.white, shape: BoxShape.circle),
-                              child: Icon(
-                                  _media[i]['type'] == 'video'
-                                      ? LucideIcons.video
-                                      : LucideIcons.mic,
-                                  color: const Color(0xFF10B981),
-                                  size: 24),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              _media[i]['type'].toString().toUpperCase(),
-                              style: GoogleFonts.outfit(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w900,
-                                  color: const Color(0xFF94A3B8),
-                                  letterSpacing: 1),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    Positioned(
-                      top: -8,
-                      right: -8,
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() => _media.removeAt(i));
-                          _scheduleIncidentAutoDraft(immediate: true);
-                        },
+                separatorBuilder: (_, __) => const SizedBox(width: 14),
+                itemBuilder: (context, i) {
+                  final item = _media[i];
+                  final type = (item['type'] ?? 'photo').toString().toLowerCase();
+                  final File? file = item['file'] is File ? item['file'] as File : null;
+                  final String? url = item['url']?.toString();
+                  final String? sourcePath =
+                      file?.path ?? (url != null && url.isNotEmpty ? url : null);
+
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      GestureDetector(
+                        onTap: () => _showDraftMediaPreview(item),
                         child: Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                      color: Colors.black12, blurRadius: 4)
-                                ]),
-                            child: const Icon(LucideIcons.x,
-                                size: 14, color: Colors.red)),
+                          width: 112,
+                          height: 120,
+                          decoration: BoxDecoration(
+                            color: type == 'video'
+                                ? const Color(0xFF0F172A)
+                                : const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: type == 'photo'
+                              ? Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    if (file != null)
+                                      Image.file(file, fit: BoxFit.cover, cacheWidth: 320)
+                                    else if (url != null && url.isNotEmpty)
+                                      CachedNetworkImage(
+                                        imageUrl: url,
+                                        fit: BoxFit.cover,
+                                        memCacheWidth: 320,
+                                        errorWidget: (_, __, ___) => const Center(
+                                          child: Icon(LucideIcons.image,
+                                              color: Color(0xFF94A3B8)),
+                                        ),
+                                      ),
+                                    Positioned(
+                                      bottom: 6,
+                                      left: 6,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black54,
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          'PHOTO',
+                                          style: GoogleFonts.outfit(
+                                              fontSize: 8,
+                                              fontWeight: FontWeight.w800,
+                                              color: Colors.white),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : type == 'video'
+                                  ? Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        if (sourcePath != null)
+                                          _DraftVideoThumbnail(source: sourcePath),
+                                        Center(
+                                          child: Container(
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: const BoxDecoration(
+                                              color: Colors.black54,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: const Icon(
+                                              Icons.play_arrow_rounded,
+                                              color: Colors.white,
+                                              size: 24,
+                                            ),
+                                          ),
+                                        ),
+                                        Positioned(
+                                          bottom: 6,
+                                          left: 6,
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: Colors.black54,
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              'VIDEO',
+                                              style: GoogleFonts.outfit(
+                                                  fontSize: 8,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: Colors.white),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(12),
+                                          decoration: const BoxDecoration(
+                                            color: Color(0xFFECFDF5),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                            Icons.play_arrow_rounded,
+                                            color: Color(0xFF059669),
+                                            size: 26,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'AUDIO',
+                                          style: GoogleFonts.outfit(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w900,
+                                              color: const Color(0xFF0F172A),
+                                              letterSpacing: 1),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'TAP TO PLAY',
+                                          style: GoogleFonts.outfit(
+                                              fontSize: 8,
+                                              fontWeight: FontWeight.w700,
+                                              color: const Color(0xFF059669)),
+                                        ),
+                                      ],
+                                    ),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                      Positioned(
+                        top: -6,
+                        right: -6,
+                        child: GestureDetector(
+                          onTap: () {
+                            setState(() => _media.removeAt(i));
+                            _scheduleIncidentAutoDraft(immediate: true);
+                          },
+                          child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: const BoxDecoration(
+                                  color: Colors.white,
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: Colors.black12, blurRadius: 4)
+                                  ]),
+                              child: const Icon(LucideIcons.x,
+                                  size: 14, color: Colors.red)),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  void _showDraftMediaPreview(Map<String, dynamic> item) {
+    final type = (item['type'] ?? 'photo').toString().toLowerCase();
+    final File? file = item['file'] is File ? item['file'] as File : null;
+    final String? url = item['url']?.toString();
+    final String? sourcePath = file?.path ?? (url != null && url.isNotEmpty ? url : null);
+    if (sourcePath == null) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.75,
+          ),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            borderRadius: BorderRadius.circular(24),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            children: [
+              SizedBox(
+                width: double.infinity,
+                height: type == 'audio' ? 280 : 380,
+                child: type == 'video'
+                    ? VideoPlayerWidget(url: sourcePath)
+                    : type == 'audio'
+                        ? AudioPlayerWidget(url: sourcePath)
+                        : InteractiveViewer(
+                            child: file != null
+                                ? Image.file(file, fit: BoxFit.contain)
+                                : CachedNetworkImage(
+                                    imageUrl: sourcePath,
+                                    fit: BoxFit.contain,
+                                    placeholder: (context, _) => const Center(
+                                      child: CircularProgressIndicator(
+                                          color: Color(0xFF10B981)),
+                                    ),
+                                    errorWidget: (context, _, __) => const Center(
+                                      child: Icon(LucideIcons.image,
+                                          color: Colors.grey, size: 40),
+                                    ),
+                                  ),
+                          ),
+              ),
+              Positioned(
+                top: 10,
+                right: 10,
+                child: IconButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  icon: const Icon(LucideIcons.x, color: Colors.white, size: 20),
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -7041,7 +7483,18 @@ class _IncidentsTabState extends State<_IncidentsTab>
                       style: const TextStyle(color: Colors.red)));
             if (!snapshot.hasData)
               return const Center(child: CircularProgressIndicator());
-            final docs = snapshot.data!.docs;
+            final currentPu =
+                (_userProfile?['assignedPollingUnit'] ?? _userProfile?['pollingUnit'] ?? '')
+                    .toString()
+                    .trim();
+            final docs = snapshot.data!.docs.where((doc) {
+              final data = doc.data() as Map<String, dynamic>?;
+              if (data == null) return false;
+              if ((data['status'] ?? '').toString().toLowerCase() == 'draft') {
+                return false;
+              }
+              return _puMatches(data['pollingUnit'], currentPu);
+            }).toList();
             if (docs.isEmpty)
               return Container(
                   padding: const EdgeInsets.all(32),
@@ -7531,9 +7984,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       'logoUrl': null
     },
     {
-      'id': 'pdp',
-      'name': 'Peoples Democratic Party',
-      'abbreviation': 'PDP',
+      'id': 'apga',
+      'name': 'All Progressives Grand Alliance',
+      'abbreviation': 'APGA',
       'logoUrl': null
     },
     {'id': 'lp', 'name': 'Labour Party', 'abbreviation': 'LP', 'logoUrl': null},
@@ -7544,9 +7997,9 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       'logoUrl': null
     },
     {
-      'id': 'apga',
-      'name': 'All Progressives Grand Alliance',
-      'abbreviation': 'APGA',
+      'id': 'pdp',
+      'name': 'Peoples Democratic Party',
+      'abbreviation': 'PDP',
       'logoUrl': null
     },
   ];
@@ -7896,8 +8349,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         }
         for (final row in existingRows) {
           if (row.observerId != user.uid) continue;
-          final matchesElection = row.pollingUnitId == pollingUnitId ||
-              row.pollingUnitId.startsWith('${widget.electionId}_');
+          final matchesElection = row.pollingUnitId == pollingUnitId;
           if (matchesElection) {
             await _localDb.deleteResult(row.id);
           }
@@ -8415,12 +8867,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               observerSubmission = Map<String, dynamic>.from(sub as Map);
               observerStats = observerSubmission;
             } else {
-              // Not found in submissions array -> only wipe SYNCED local copy (never wipe unsynced local Auto-Drafts!)
+              // Not found in submissions array -> only wipe SYNCED local copy for THIS Polling Unit
               final localResults = await _localDb.getAllResults();
               for (final r in localResults) {
                 if (r.observerId == user?.uid &&
-                    (r.pollingUnitId == '${widget.electionId}_$puKey' ||
-                        r.pollingUnitId.startsWith('${widget.electionId}_')) &&
+                    r.pollingUnitId == '${widget.electionId}_$puKey' &&
                     r.isSynced) {
                   await _localDb.deleteResult(r.id);
                   debugPrint(
@@ -8429,12 +8880,11 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               }
             }
           } else {
-            // Entire document absent on Firestore -> only wipe SYNCED local copy
+            // Entire document absent on Firestore -> only wipe SYNCED local copy for THIS Polling Unit
             final localResults = await _localDb.getAllResults();
             for (final r in localResults) {
               if (r.observerId == user?.uid &&
-                  (r.pollingUnitId == '${widget.electionId}_$puKey' ||
-                      r.pollingUnitId.startsWith('${widget.electionId}_')) &&
+                  r.pollingUnitId == '${widget.electionId}_$puKey' &&
                   r.isSynced) {
                 await _localDb.deleteResult(r.id);
                 debugPrint(
@@ -8458,7 +8908,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               .doc(submissionId)
               .get()
               .timeout(const Duration(seconds: 4));
-          if (legacyDoc.exists) {
+          if (legacyDoc.exists &&
+              _puMatches(legacyDoc.data()?['pollingUnit'], pu)) {
             observerSubmission = legacyDoc.data();
           } else {
             legacyDoc = await FirebaseFirestore.instance
@@ -8466,7 +8917,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 .doc(mobileDocId)
                 .get()
                 .timeout(const Duration(seconds: 4));
-            if (legacyDoc.exists) {
+            if (legacyDoc.exists &&
+                _puMatches(legacyDoc.data()?['pollingUnit'], pu)) {
               observerSubmission = legacyDoc.data();
             }
           }
@@ -8484,7 +8936,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               .doc(submissionId)
               .get()
               .timeout(const Duration(seconds: 4));
-          if (legacyStats.exists) {
+          if (legacyStats.exists &&
+              _puMatches(legacyStats.data()?['pollingUnit'], pu)) {
             observerStats = legacyStats.data();
           } else {
             legacyStats = await FirebaseFirestore.instance
@@ -8492,7 +8945,8 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 .doc(mobileDocId)
                 .get()
                 .timeout(const Duration(seconds: 4));
-            if (legacyStats.exists) {
+            if (legacyStats.exists &&
+                _puMatches(legacyStats.data()?['pollingUnit'], pu)) {
               observerStats = legacyStats.data();
             } else {
               legacyStats = await FirebaseFirestore.instance
@@ -8515,8 +8969,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         final localResults = await _localDb.getAllResults();
         final matchingRows = localResults.where((r) =>
             r.observerId == user?.uid &&
-            (r.pollingUnitId == '${widget.electionId}_$puKey' ||
-                r.pollingUnitId.startsWith('${widget.electionId}_')));
+            r.pollingUnitId == '${widget.electionId}_$puKey');
         if (matchingRows.isNotEmpty) {
           final match = matchingRows.last;
           final statsMap =
@@ -8581,12 +9034,20 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           _electionType = electionType;
           _primaryElectionType = primaryElectionType;
           _primaryParty = primaryParty;
-          _parties = partiesData;
+          _parties = List<Map<String, dynamic>>.from(partiesData);
           if (electionType != 'PARTY_PRIMARIES' && allowedParties.isNotEmpty) {
             _parties = _parties
                 .where((p) => allowedParties
                     .contains(p['abbreviation'].toString().toUpperCase()))
                 .toList();
+          }
+          if (electionType != 'PARTY_PRIMARIES') {
+            _parties.sort((a, b) => (a['abbreviation'] ?? '')
+                .toString()
+                .trim()
+                .toUpperCase()
+                .compareTo(
+                    (b['abbreviation'] ?? '').toString().trim().toUpperCase()));
           }
           if (expectedYear != null) {
             _expectedYear = expectedYear;
@@ -9502,14 +9963,12 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 final puKey =
                     computedPuKey.isNotEmpty ? computedPuKey : _cachedPuKey;
 
-                // 1. Delete from local SQLite database
+                // 1. Delete from local SQLite database (strictly for this PU)
                 final dbInstance = _localDb;
                 final localResults = await dbInstance.getAllResults();
                 for (final r in localResults) {
                   if (r.observerId == user?.uid &&
-                      (r.pollingUnitId == '${widget.electionId}_$puKey' ||
-                          r.pollingUnitId
-                              .startsWith('${widget.electionId}_'))) {
+                      r.pollingUnitId == '${widget.electionId}_$puKey') {
                     await dbInstance.deleteResult(r.id);
                   }
                 }
@@ -9571,9 +10030,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
                 final remainingLocal = await dbInstance.getAllResults();
                 for (final r in remainingLocal) {
                   if (r.observerId == user?.uid &&
-                      (r.pollingUnitId == '${widget.electionId}_$puKey' ||
-                          r.pollingUnitId
-                              .startsWith('${widget.electionId}_'))) {
+                      r.pollingUnitId == '${widget.electionId}_$puKey') {
                     await dbInstance.deleteResult(r.id);
                   }
                 }
@@ -9639,6 +10096,48 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
 
   void _attemptSubmit(bool isFinal) {
     _syncStateFromControllers();
+    if (isFinal && _totalValidVotes <= 0) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              const Icon(LucideIcons.triangleAlert, color: Colors.red),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Zero Total Votes Cast',
+                  style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold, color: Colors.black),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Total valid votes cast cannot be 0. If automatic EC8A scanning did not extract party votes, please enter the vote counts manually before submitting.',
+            style: GoogleFonts.outfit(color: Colors.black87, fontSize: 14),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F172A),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text('ENTER VOTES',
+                  style: GoogleFonts.outfit(
+                      fontWeight: FontWeight.bold, color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     final isPrimaries = _electionType == 'PARTY_PRIMARIES';
     if (isPrimaries) {
       _submit(isFinal);
@@ -9764,8 +10263,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     final localResults = await dbInstance.getAllResults();
     for (final existing in localResults) {
       if (existing.observerId == user?.uid &&
-          (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
-              existing.pollingUnitId.startsWith('${widget.electionId}_'))) {
+          existing.pollingUnitId == '${widget.electionId}_$puKey') {
         await dbInstance.deleteResult(existing.id);
       }
     }
@@ -9818,6 +10316,18 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   Future<void> _submit(bool isFinal, {bool ignoreValidation = false}) async {
     if (_submitting) return;
     _syncStateFromControllers();
+    if (isFinal && _totalValidVotes <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Total valid votes cannot be 0. Please enter party vote counts before submitting.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
     final orderedPartyVotes = _buildOrderedPartyVotesMap();
     if (mounted) {
       setState(() {
@@ -10146,8 +10656,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         final localResults = await dbInstance.getAllResults();
         for (final existing in localResults) {
           if (existing.observerId == user?.uid &&
-              (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
-                  existing.pollingUnitId.startsWith('${widget.electionId}_'))) {
+              existing.pollingUnitId == '${widget.electionId}_$puKey') {
             await dbInstance.deleteResult(existing.id);
           }
         }
@@ -10205,6 +10714,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
               backgroundColor: Color(0xFF10B981)));
           // Navigate back to Observer Command Center Dashboard
           DefaultTabController.maybeOf(context)?.animateTo(0);
+          ReviewService.recordSubmissionAndMaybePrompt(context);
         } else {
           // 2. Save Progress Post-Action
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -10238,9 +10748,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
           final localResults = await dbInstance.getAllResults();
           for (final existing in localResults) {
             if (existing.observerId == user?.uid &&
-                (existing.pollingUnitId == '${widget.electionId}_$puKey' ||
-                    existing.pollingUnitId
-                        .startsWith('${widget.electionId}_'))) {
+                existing.pollingUnitId == '${widget.electionId}_$puKey') {
               await dbInstance.deleteResult(existing.id);
             }
           }
@@ -12137,8 +12645,66 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
     );
   }
 
+  static const Map<String, String> _logoHttpHeaders = {
+    'User-Agent':
+        'VoteGuard/8.0 (https://voteguard.com.ng; support@voteguard.com.ng)',
+    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
+
+  String? _resolvePartyLogoUrl(String? rawUrl) {
+    final trimmed = rawUrl?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    if (trimmed.startsWith('data:image/')) return trimmed;
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+    if (trimmed.startsWith('/')) {
+      return 'https://voteguard.com.ng$trimmed';
+    }
+    return 'https://voteguard.com.ng/$trimmed';
+  }
+
   Widget _buildSmartLogo(String? url, String abb, double size,
       {double fontSize = 14}) {
+    final resolvedUrl = _resolvePartyLogoUrl(url);
+    Widget imageWidget;
+
+    if (resolvedUrl == null) {
+      imageWidget = _buildFallbackLogo(abb, size, fontSize);
+    } else if (resolvedUrl.startsWith('data:image/')) {
+      final commaIdx = resolvedUrl.indexOf(',');
+      if (commaIdx != -1) {
+        try {
+          final bytes = base64Decode(resolvedUrl.substring(commaIdx + 1));
+          imageWidget = Image.memory(
+            bytes,
+            fit: BoxFit.contain,
+            errorBuilder: (context, error, stackTrace) =>
+                _buildFallbackLogo(abb, size, fontSize),
+          );
+        } catch (_) {
+          imageWidget = _buildFallbackLogo(abb, size, fontSize);
+        }
+      } else {
+        imageWidget = _buildFallbackLogo(abb, size, fontSize);
+      }
+    } else {
+      imageWidget = CachedNetworkImage(
+        imageUrl: resolvedUrl,
+        httpHeaders: _logoHttpHeaders,
+        fit: BoxFit.contain,
+        placeholder: (context, url) =>
+            _buildFallbackLogo(abb, size, fontSize),
+        errorWidget: (context, failedUrl, error) => Image.network(
+          resolvedUrl,
+          headers: _logoHttpHeaders,
+          fit: BoxFit.contain,
+          errorBuilder: (context, err, stack) =>
+              _buildFallbackLogo(abb, size, fontSize),
+        ),
+      );
+    }
+
     return Container(
       width: size,
       height: size,
@@ -12148,16 +12714,7 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(size * 0.25),
-        child: (url != null && url.isNotEmpty)
-            ? CachedNetworkImage(
-                imageUrl: url,
-                fit: BoxFit.cover,
-                placeholder: (context, url) =>
-                    _buildFallbackLogo(abb, size, fontSize),
-                errorWidget: (context, url, error) =>
-                    _buildFallbackLogo(abb, size, fontSize),
-              )
-            : _buildFallbackLogo(abb, size, fontSize),
+        child: imageWidget,
       ),
     );
   }
@@ -12188,6 +12745,62 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
   }
 }
 
+class _DraftVideoThumbnail extends StatefulWidget {
+  final String source;
+  const _DraftVideoThumbnail({required this.source});
+
+  @override
+  State<_DraftVideoThumbnail> createState() => _DraftVideoThumbnailState();
+}
+
+class _DraftVideoThumbnailState extends State<_DraftVideoThumbnail> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final isRemote = widget.source.startsWith('http://') ||
+          widget.source.startsWith('https://');
+      final controller = isRemote
+          ? VideoPlayerController.networkUrl(Uri.parse(widget.source))
+          : VideoPlayerController.file(File(widget.source));
+      _controller = controller;
+      await controller.initialize();
+      if (mounted) {
+        setState(() => _ready = true);
+      }
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready || _controller == null) {
+      return const ColoredBox(color: Color(0xFF0F172A));
+    }
+    return FittedBox(
+      fit: BoxFit.cover,
+      clipBehavior: Clip.hardEdge,
+      child: SizedBox(
+        width: _controller!.value.size.width,
+        height: _controller!.value.size.height,
+        child: VideoPlayer(_controller!),
+      ),
+    );
+  }
+}
+
 class VideoPlayerWidget extends StatefulWidget {
   final String url;
   const VideoPlayerWidget({super.key, required this.url});
@@ -12210,8 +12823,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Future<void> _initializePlayer() async {
     try {
       debugPrint('Initializing video player for: ${widget.url}');
-      _videoPlayerController =
-          VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      final isRemote = widget.url.startsWith('http://') ||
+          widget.url.startsWith('https://');
+      _videoPlayerController = isRemote
+          ? VideoPlayerController.networkUrl(Uri.parse(widget.url))
+          : VideoPlayerController.file(File(widget.url));
 
       await _videoPlayerController!.initialize();
 
@@ -12331,12 +12947,27 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
     _initAudio();
   }
 
+  Source _resolveAudioSource() {
+    final isRemote =
+        widget.url.startsWith('http://') || widget.url.startsWith('https://');
+    return isRemote ? UrlSource(widget.url) : DeviceFileSource(widget.url);
+  }
+
   Future<void> _initAudio() async {
-    _audioPlayer.onDurationChanged.listen((d) => setState(() => _duration = d));
-    _audioPlayer.onPositionChanged.listen((p) => setState(() => _position = p));
-    _audioPlayer.onPlayerStateChanged
-        .listen((s) => setState(() => _isPlaying = s == PlayerState.playing));
-    await _audioPlayer.setSourceUrl(widget.url);
+    _audioPlayer.onDurationChanged.listen((d) {
+      if (mounted) setState(() => _duration = d);
+    });
+    _audioPlayer.onPositionChanged.listen((p) {
+      if (mounted) setState(() => _position = p);
+    });
+    _audioPlayer.onPlayerStateChanged.listen((s) {
+      if (mounted) setState(() => _isPlaying = s == PlayerState.playing);
+    });
+    try {
+      await _audioPlayer.setSource(_resolveAudioSource());
+    } catch (e) {
+      debugPrint('Audio source init error: $e');
+    }
   }
 
   @override
@@ -12408,7 +13039,7 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
               if (_isPlaying) {
                 await _audioPlayer.pause();
               } else {
-                await _audioPlayer.play(UrlSource(widget.url));
+                await _audioPlayer.play(_resolveAudioSource());
               }
             },
             iconSize: 48,

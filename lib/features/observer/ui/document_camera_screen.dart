@@ -9,7 +9,18 @@ import 'package:image_picker/image_picker.dart';
 /// Keeps VoteGuard in the foreground to eliminate OS background task termination
 /// on aggressive Android ROMs (Tecno HiOS, Infinix XOS, Xiaomi MIUI).
 class DocumentCameraScreen extends StatefulWidget {
-  const DocumentCameraScreen({super.key});
+  final String title;
+  final String frameHint;
+  final bool showFrameGuide;
+  final String loadingLabel;
+
+  const DocumentCameraScreen({
+    super.key,
+    this.title = 'EC8A DOCUMENT SCAN',
+    this.frameHint = 'Fit entire EC8A sheet inside this frame',
+    this.showFrameGuide = true,
+    this.loadingLabel = 'Starting Document Camera...',
+  });
 
   @override
   State<DocumentCameraScreen> createState() => _DocumentCameraScreenState();
@@ -183,7 +194,7 @@ class _DocumentCameraScreenState extends State<DocumentCameraScreen>
               const CircularProgressIndicator(color: Color(0xFF10B981)),
               const SizedBox(height: 16),
               Text(
-                'Starting Document Camera...',
+                widget.loadingLabel,
                 style: GoogleFonts.outfit(color: Colors.white70, fontSize: 14),
               ),
             ],
@@ -279,7 +290,7 @@ class _DocumentCameraScreenState extends State<DocumentCameraScreen>
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          'EC8A DOCUMENT SCAN',
+                          widget.title,
                           style: GoogleFonts.outfit(
                             color: Colors.white,
                             fontSize: 12,
@@ -315,45 +326,46 @@ class _DocumentCameraScreenState extends State<DocumentCameraScreen>
 
                 const Spacer(),
 
-                // Document Frame Guide
-                Container(
-                  width: size.width * 0.88,
-                  height: size.height * 0.60,
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: const Color(0xFF10B981).withOpacity(0.85),
-                      width: 2.5,
+                if (widget.showFrameGuide)
+                  // Document Frame Guide
+                  Container(
+                    width: size.width * 0.88,
+                    height: size.height * 0.60,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: const Color(0xFF10B981).withOpacity(0.85),
+                        width: 2.5,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
                     ),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Stack(
-                    children: [
-                      Positioned(
-                        top: 12,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              'Fit entire EC8A sheet inside this frame',
-                              style: GoogleFonts.outfit(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
+                    child: Stack(
+                      children: [
+                        Positioned(
+                          top: 12,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                widget.frameHint,
+                                style: GoogleFonts.outfit(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
 
                 const Spacer(),
 

@@ -63,6 +63,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
   bool _eyesClosedOnce = false;
   double? _firstTurnYaw;
+  int _lastImageWidth = 0;
+  int _lastImageHeight = 0;
   String? _uploadStatusText;
   String? _errorMessage;
 
@@ -218,6 +220,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       }
 
       final face = faces.first;
+      _lastImageWidth = image.width;
+      _lastImageHeight = image.height;
       _handleStepProgression(face);
     } catch (e) {
       debugPrint("Face evaluation frame drop: $e");
@@ -245,6 +249,27 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
     switch (_step) {
       case LivenessStep.positionFace:
+        // Ensure entire face (not half-face or ceiling) is centered inside the frame
+        final box = face.boundingBox;
+        final frameW = _lastImageWidth > 0 ? _lastImageWidth.toDouble() : 0.0;
+        final frameH = _lastImageHeight > 0 ? _lastImageHeight.toDouble() : 0.0;
+        final hasFullFaceInFrame = frameW == 0 ||
+            frameH == 0 ||
+            (box.left >= frameW * 0.03 &&
+                box.right <= frameW * 0.97 &&
+                box.top >= frameH * 0.03 &&
+                box.bottom <= frameH * 0.97 &&
+                box.height >= frameH * 0.16);
+        if (!hasFullFaceInFrame) {
+          _stateHoldStartTime = null;
+          _updateInstruction(
+            "Center your full face inside the oval",
+            "Keep your entire head (forehead to chin) clearly in view",
+            Icons.center_focus_strong,
+            _progress,
+          );
+          break;
+        }
         if (yaw.abs() < yawLimit && pitch.abs() < pitchLimit) {
           _stateHoldStartTime ??= now;
           final elapsed = now.difference(_stateHoldStartTime!).inMilliseconds;
@@ -511,42 +536,96 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
           int cropX = 0;
           int cropY = 0;
-          int cropDim = decoded.width < decoded.height ? decoded.width : decoded.height;
+          final minSide = decoded.width < decoded.height ? decoded.width : decoded.height;
+          int cropDim = minSide;
 
+          // Guard against blank/all-black camera frames before processing
+          {
+            int totalLum = 0;
+            int maxCh = 0;
+            int samples = 0;
+            final stepX = (decoded.width / 24).ceil().clamp(1, decoded.width);
+            final stepY = (decoded.height / 24).ceil().clamp(1, decoded.height);
+            for (int sy = 0; sy < decoded.height; sy += stepY) {
+              for (int sx = 0; sx < decoded.width; sx += stepX) {
+                final px = decoded.getPixel(sx, sy);
+                final r = px.r.toInt();
+                final g = px.g.toInt();
+                final b = px.b.toInt();
+                totalLum += ((0.299 * r) + (0.587 * g) + (0.114 * b)).round();
+                if (r > maxCh) maxCh = r;
+                if (g > maxCh) maxCh = g;
+                if (b > maxCh) maxCh = b;
+                samples++;
+              }
+            }
+            final avgLum = samples > 0 ? totalLum / samples : 0.0;
+            if (avgLum < 6.0 && maxCh < 18) {
+              try {
+                if (await orientedTempFile.exists()) {
+                  await orientedTempFile.delete();
+                }
+              } catch (_) {}
+              _showErrorDialog(
+                "Captured photo was blank or too dark. Please ensure good lighting and uncover your front camera, then retry.",
+              );
+              return;
+            }
+          }
+
+          String? validationError;
           try {
             final detectedFaces = await _faceDetector.processImage(
               InputImage.fromFilePath(orientedTempFile.path),
             );
 
-            if (detectedFaces.isNotEmpty) {
-              final face = detectedFaces.first.boundingBox;
-              // Biometric passport crop: face occupies ~65% of frame height
-              final desiredDim = (face.height * 1.55).clamp(240.0, decoded.width.toDouble()).toDouble();
-              final halfDim = desiredDim / 2;
-
-              final targetX = face.center.dx;
-              // Center horizontally, slightly shift up to keep hair and collar in frame
-              final targetY = face.center.dy - (face.height * 0.08);
-
-              cropX = (targetX - halfDim).round();
-              cropY = (targetY - halfDim).round();
-              cropDim = desiredDim.round();
+            if (detectedFaces.isEmpty) {
+              validationError =
+                  "No full face was detected in the captured photo. Please hold the phone at eye level with your entire face inside the oval and retry.";
             } else {
-              cropDim = (decoded.width * 0.72).round();
-              cropX = (decoded.width - cropDim) ~/ 2;
-              cropY = (decoded.height - cropDim) ~/ 3;
+              final detected = detectedFaces.first;
+              final face = detected.boundingBox;
+              final yawAngle = (detected.headEulerAngleY ?? 0.0).abs();
+              final pitchAngle = (detected.headEulerAngleX ?? 0.0).abs();
+              final isClipped = face.left < decoded.width * 0.015 ||
+                  face.right > decoded.width * 0.985 ||
+                  face.top < decoded.height * 0.015 ||
+                  face.bottom > decoded.height * 0.985;
+              final isTooSmall = face.height < decoded.height * 0.16;
+
+              if (isClipped || isTooSmall || yawAngle > 20 || pitchAngle > 20) {
+                validationError =
+                    "Only part of your face was visible or you were looking away. Please center your full face (forehead to chin) inside the oval and retry.";
+              } else {
+                // Full-head passport crop: includes entire head, hair, chin, and collar
+                final desiredDim = (face.height * 1.95)
+                    .clamp(240.0, minSide.toDouble())
+                    .toDouble();
+                final halfDim = desiredDim / 2;
+
+                final targetX = face.center.dx;
+                final targetY = face.center.dy - (face.height * 0.05);
+
+                cropX = (targetX - halfDim).round();
+                cropY = (targetY - halfDim).round();
+                cropDim = desiredDim.round();
+              }
             }
           } catch (e) {
             debugPrint("Detector error during crop: $e");
-            cropDim = (decoded.width * 0.72).round();
-            cropX = (decoded.width - cropDim) ~/ 2;
-            cropY = (decoded.height - cropDim) ~/ 3;
+            validationError =
+                "Could not verify a clear full face in the captured photo. Please retry.";
           } finally {
             try {
               if (await orientedTempFile.exists()) {
                 await orientedTempFile.delete();
               }
             } catch (_) {}
+          }
+
+          if (validationError != null) {
+            _showErrorDialog(validationError);
+            return;
           }
 
           if (cropX < 0) cropX = 0;

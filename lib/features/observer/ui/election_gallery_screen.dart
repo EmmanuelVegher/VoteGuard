@@ -20,6 +20,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:voteguard/services/language_service.dart';
 import 'package:voteguard/core/widgets/language_selector_button.dart';
+import 'package:voteguard/core/widgets/auto_translate_app.dart';
+import 'package:voteguard/services/review_service.dart';
 
 class ElectionGalleryScreen extends StatefulWidget {
   const ElectionGalleryScreen({super.key});
@@ -89,6 +91,11 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     _listenForElectionUpdates();
     _loadReadNotifications();
     _listenNotifications();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ReviewService.recordAppSessionAndMaybePrompt(context);
+      }
+    });
   }
 
   @override
@@ -1175,11 +1182,16 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                           } else {
                             setState(() => _isEditingAssignment = true);
                             if (_states.isEmpty) _loadStates();
+                            _initializeEditingFromProfile(profile);
                           }
                         },
-                        child: Text(_isEditingAssignment ? 'CANCEL' : 'CHANGE UNIT',
+                        child: Text(
+                            context.tr(
+                                _isEditingAssignment ? 'CANCEL' : 'CHANGE UNIT'),
                             style: GoogleFonts.outfit(
-                                color: _isEditingAssignment ? Colors.white70 : const Color(0xFF6EE7B7),
+                                color: _isEditingAssignment
+                                    ? Colors.white70
+                                    : const Color(0xFF6EE7B7),
                                 fontSize: 10,
                                 fontWeight: FontWeight.bold))),
                   ],
@@ -1359,6 +1371,97 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     );
   }
 
+  Future<void> _initializeEditingFromProfile(
+      Map<String, dynamic>? profile) async {
+    final initStateName =
+        _selectedState ?? profile?['assignedState']?.toString();
+    final initLgaName = _selectedLga ?? profile?['assignedLga']?.toString();
+    final initWardName = _selectedWard ?? profile?['assignedWard']?.toString();
+    final initPuName =
+        _selectedPU ?? profile?['assignedPollingUnit']?.toString();
+
+    if (initStateName == null || initStateName.isEmpty) return;
+
+    setState(() {
+      _selectedState = initStateName;
+      _selectedLga = (initLgaName != null && initLgaName.isNotEmpty)
+          ? initLgaName
+          : null;
+      _selectedWard = (initWardName != null && initWardName.isNotEmpty)
+          ? initWardName
+          : null;
+      _selectedPU =
+          (initPuName != null && initPuName.isNotEmpty) ? initPuName : null;
+      _isLoadingLgas = true;
+    });
+
+    try {
+      final lgas = await _geoService.getLGAs(initStateName);
+      if (!mounted || _selectedState != initStateName) return;
+      final lgaNames = lgas.map((e) => e.name).toList();
+      final matchedLga = initLgaName != null
+          ? lgaNames.cast<String?>().firstWhere(
+                (l) => l!.toLowerCase().trim() == initLgaName.toLowerCase().trim(),
+                orElse: () => initLgaName,
+              )
+          : null;
+      setState(() {
+        _lgas = lgaNames;
+        _selectedLga = matchedLga;
+        _isLoadingLgas = false;
+      });
+
+      if (matchedLga != null && matchedLga.isNotEmpty) {
+        setState(() => _isLoadingWards = true);
+        final wards = await _geoService.getWards(initStateName, matchedLga);
+        if (!mounted || _selectedLga != matchedLga) return;
+        final wardNames = wards.map((e) => e.name).toList();
+        final matchedWard = initWardName != null
+            ? wardNames.cast<String?>().firstWhere(
+                  (w) =>
+                      w!.toLowerCase().trim() ==
+                      initWardName.toLowerCase().trim(),
+                  orElse: () => initWardName,
+                )
+            : null;
+        setState(() {
+          _wards = wardNames;
+          _selectedWard = matchedWard;
+          _isLoadingWards = false;
+        });
+
+        if (matchedWard != null && matchedWard.isNotEmpty) {
+          setState(() => _isLoadingPUs = true);
+          final pus = await _geoService.getPollingUnits(
+              initStateName, matchedLga, matchedWard);
+          if (!mounted || _selectedWard != matchedWard) return;
+          final puNames = pus.map((e) => e.name).toList();
+          final matchedPu = initPuName != null
+              ? puNames.cast<String?>().firstWhere(
+                    (p) =>
+                        p!.toLowerCase().trim() ==
+                        initPuName.toLowerCase().trim(),
+                    orElse: () => initPuName,
+                  )
+              : null;
+          setState(() {
+            _pus = puNames;
+            _selectedPU = matchedPu;
+            _isLoadingPUs = false;
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoadingLgas = false;
+          _isLoadingWards = false;
+          _isLoadingPUs = false;
+        });
+      }
+    }
+  }
+
   Widget _buildGeoDropdown(String hint, List<String> items, String? value,
       ValueChanged<String?> onChanged, {bool isLoading = false}) {
     // Deduplicate items to prevent duplicate DropdownMenuItem values crash
@@ -1389,14 +1492,22 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text('Loading ${hint.replaceAll("Select ", "")}...',
-                    style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold)),
+                Flexible(
+                  child: Text(
+                      '${context.tr('Loading')} ${context.tr(hint.replaceAll("Select ", ""))}...',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold)),
+                ),
               ] else
-                Text(hint,
-                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                Flexible(
+                  child: Text(context.tr(hint),
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 12)),
+                ),
             ],
           ),
           isExpanded: true,
@@ -1415,7 +1526,16 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
           style: const TextStyle(
               color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
           items: uniqueItems
-              .map((s) => DropdownMenuItem(value: s, child: Text(s)))
+              .map((s) => DropdownMenuItem(
+                    value: s,
+                    child: NoTranslate(
+                      child: Text(
+                        s,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                  ))
               .toList(),
           onChanged: isLoading ? null : onChanged,
         ),
@@ -2122,6 +2242,20 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
         .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
         .replaceAll(RegExp(r'^_+|_+$'), '');
     final docId = '${election.id}_$puKey';
+    final normalizedCurrentPu = pu
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '');
+    bool matchesCurrentPu(dynamic docPu) {
+      if (normalizedCurrentPu.isEmpty) return true;
+      final candidate = (docPu ?? '')
+          .toString()
+          .trim()
+          .toLowerCase()
+          .replaceAll(RegExp(r'[^a-z0-9]+'), '');
+      return candidate.isNotEmpty && candidate == normalizedCurrentPu;
+    }
 
     return StreamBuilder<List<dynamic>>(
         stream: Rx.combineLatest3(
@@ -2139,6 +2273,16 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                 .collection('election_results')
                 .doc(docId)
                 .snapshots(), (check, inc, resSnap) {
+          final checkCount = check.docs.where((d) {
+            final data = d.data();
+            final status = (data['status'] ?? '').toString().toLowerCase();
+            return status != 'draft' && matchesCurrentPu(data['pollingUnit']);
+          }).length;
+          final incCount = inc.docs.where((d) {
+            final data = d.data();
+            final status = (data['status'] ?? '').toString().toLowerCase();
+            return status != 'draft' && matchesCurrentPu(data['pollingUnit']);
+          }).length;
           bool hasSubmittedResult = false;
           if (resSnap.exists && resSnap.data() != null) {
             final data = resSnap.data()!;
@@ -2146,7 +2290,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
             hasSubmittedResult = submissionsList.any(
                 (s) => s['submittedBy'] == user?.uid && s['status'] == 'final');
           }
-          return [check.docs.length, inc.docs.length, hasSubmittedResult];
+          return [checkCount, incCount, hasSubmittedResult];
         }),
         builder: (context, snapshot) {
           final data = snapshot.data ?? [0, 0, false];
@@ -2172,15 +2316,32 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
             setModalState(() => localExporting = type);
             try {
               final user = FirebaseAuth.instance.currentUser;
+              final currentPuNorm = (profile?['assignedPollingUnit'] ?? '')
+                  .toString()
+                  .trim()
+                  .toLowerCase()
+                  .replaceAll(RegExp(r'[^a-z0-9]+'), '');
+              bool docMatchesPu(Map<String, dynamic> d) {
+                if (currentPuNorm.isEmpty) return true;
+                final cPu = (d['pollingUnit'] ?? '')
+                    .toString()
+                    .trim()
+                    .toLowerCase()
+                    .replaceAll(RegExp(r'[^a-z0-9]+'), '');
+                return cPu.isNotEmpty && cPu == currentPuNorm;
+              }
               if (type == 'checklist_pdf' || type == 'checklist_excel') {
                 final snap = await FirebaseFirestore.instance
                     .collection('observer_checklists')
                     .where('electionId', isEqualTo: election.id)
                     .where('observerId', isEqualTo: user?.uid)
-                    .limit(1)
                     .get();
-                if (snap.docs.isNotEmpty) {
-                  final data = {...snap.docs.first.data(), ...profile ?? {}};
+                final matching = snap.docs
+                    .map((d) => d.data())
+                    .where(docMatchesPu)
+                    .toList();
+                if (matching.isNotEmpty) {
+                  final data = {...matching.first, ...profile ?? {}};
                   await ExportService().exportChecklistReport(election, data);
                 }
               } else if (type == 'incident_pdf' || type == 'incident_excel') {
@@ -2189,8 +2350,14 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
                     .where('electionId', isEqualTo: election.id)
                     .where('observerId', isEqualTo: user?.uid)
                     .get();
-                if (snap.docs.isNotEmpty) {
-                  final incidents = snap.docs.map((d) => d.data()).toList();
+                final incidents = snap.docs
+                    .map((d) => d.data())
+                    .where((d) =>
+                        (d['status'] ?? '').toString().toLowerCase() !=
+                            'draft' &&
+                        docMatchesPu(d))
+                    .toList();
+                if (incidents.isNotEmpty) {
                   if (type == 'incident_pdf') {
                     await ExportService()
                         .exportIncidentReport(election, incidents);
