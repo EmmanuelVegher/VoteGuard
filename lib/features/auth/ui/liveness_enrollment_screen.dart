@@ -54,6 +54,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   DateTime? _lastInferenceTime;
   DateTime? _stateHoldStartTime;
   bool _isLaggingDevice = false;
+  int _warmupFrames = 0;
   final List<int> _inferenceDurations = [];
 
   LivenessStep _step = LivenessStep.initializing;
@@ -189,16 +190,19 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       final faces = await _faceDetector.processImage(inputImage);
       stopwatch.stop();
 
-      // Lag detector: track inference execution duration
-      final durationMs = stopwatch.elapsedMilliseconds;
-      _inferenceDurations.add(durationMs);
-      if (_inferenceDurations.length > 6) {
-        _inferenceDurations.removeAt(0);
-        final avgMs = _inferenceDurations.reduce((a, b) => a + b) / _inferenceDurations.length;
-        if (avgMs > 180 && !_isLaggingDevice && mounted) {
-          setState(() {
-            _isLaggingDevice = true;
-          });
+      // Lag detector: skip first 8 warmup frames before evaluating sustained lag
+      _warmupFrames++;
+      if (_warmupFrames > 8) {
+        final durationMs = stopwatch.elapsedMilliseconds;
+        _inferenceDurations.add(durationMs);
+        if (_inferenceDurations.length > 6) {
+          _inferenceDurations.removeAt(0);
+          final avgMs = _inferenceDurations.reduce((a, b) => a + b) / _inferenceDurations.length;
+          if (avgMs > 260 && !_isLaggingDevice && mounted) {
+            setState(() {
+              _isLaggingDevice = true;
+            });
+          }
         }
       }
 
@@ -244,13 +248,13 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         if (compliance.bareChestOrNude) {
           _nudityStrikes = (_nudityStrikes + 1).clamp(0, 4);
         } else {
-          _nudityStrikes = (_nudityStrikes - 1).clamp(0, 4);
+          _nudityStrikes = 0;
         }
 
         if (compliance.wearingGlasses) {
           _glassesStrikes = (_glassesStrikes + 1).clamp(0, 4);
         } else {
-          _glassesStrikes = (_glassesStrikes - 1).clamp(0, 4);
+          _glassesStrikes = 0;
         }
 
         if (_nudityStrikes >= 2) {
@@ -283,9 +287,13 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
             _nudityStrikes == 0 &&
             _glassesStrikes == 0) {
           if (mounted) {
+            final restored = _getStepInstructionCopy(_step);
             setState(() {
               _complianceWarningTitle = null;
               _complianceWarningDetail = null;
+              _instruction = restored.title;
+              _subInstruction = restored.sub;
+              _stepIcon = restored.icon;
             });
           }
         }
@@ -571,6 +579,59 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     }
   }
 
+  ({String title, String sub, IconData icon}) _getStepInstructionCopy(LivenessStep step) {
+    switch (step) {
+      case LivenessStep.positionFace:
+        return (
+          title: "Position your face inside the oval",
+          sub: "Look straight at the front camera",
+          icon: Icons.face_rounded,
+        );
+      case LivenessStep.turnLeft:
+        return (
+          title: "Turn head to your LEFT ◀",
+          sub: "Slowly turn your head left until prompted",
+          icon: Icons.arrow_back_rounded,
+        );
+      case LivenessStep.center1:
+        return (
+          title: "Turn back STRAIGHT 🎯",
+          sub: "Look directly at the camera again",
+          icon: Icons.center_focus_strong_rounded,
+        );
+      case LivenessStep.turnRight:
+        return (
+          title: "Turn head to your RIGHT ▶",
+          sub: "Slowly turn your head right until prompted",
+          icon: Icons.arrow_forward_rounded,
+        );
+      case LivenessStep.center2:
+        return (
+          title: "Turn back STRAIGHT 🎯",
+          sub: "Face the camera to proceed",
+          icon: Icons.center_focus_strong_rounded,
+        );
+      case LivenessStep.blink:
+        return (
+          title: "Blink your eyes 👁️",
+          sub: "Close both eyes and open them",
+          icon: Icons.visibility_rounded,
+        );
+      case LivenessStep.smile:
+        return (
+          title: "Smile for your profile! 😊",
+          sub: "Give a clear, natural smile looking straight",
+          icon: Icons.sentiment_very_satisfied_rounded,
+        );
+      default:
+        return (
+          title: "Position your face inside the oval",
+          sub: "Look straight at the front camera",
+          icon: Icons.face_rounded,
+        );
+    }
+  }
+
   /// Zero-allocation (<0.15ms) live CameraImage stream check for Eyeglasses & Bare-Chest/Nudity.
   /// Samples sparse YCbCr pixels directly in-place from NV21 (Android) or BGRA8888 (iOS) planes.
   /// Safe for 1GB RAM devices: allocates 0 image buffers on the heap.
@@ -655,14 +716,14 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     final fw = (box.width / upW).clamp(0.10, 0.95);
     final fh = (box.height / upH).clamp(0.10, 0.95);
 
-    // 1. Calibrate user's live facial skin signature from left cheek, right cheek, and forehead
+    // 1. Calibrate user's live facial skin signature from hairless upper cheeks and forehead (avoids beard)
     final skinPoints = <({double x, double y})>[
-      (x: fx + 0.24 * fw, y: fy + 0.58 * fh),
-      (x: fx + 0.28 * fw, y: fy + 0.64 * fh),
-      (x: fx + 0.76 * fw, y: fy + 0.58 * fh),
-      (x: fx + 0.72 * fw, y: fy + 0.64 * fh),
-      (x: fx + 0.50 * fw, y: fy + 0.20 * fh),
-      (x: fx + 0.50 * fw, y: fy + 0.54 * fh),
+      (x: fx + 0.24 * fw, y: fy + 0.56 * fh),
+      (x: fx + 0.30 * fw, y: fy + 0.54 * fh),
+      (x: fx + 0.76 * fw, y: fy + 0.56 * fh),
+      (x: fx + 0.70 * fw, y: fy + 0.54 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.16 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.22 * fh),
     ];
 
     double skinYSum = 0, skinCbSum = 0, skinCrSum = 0, cheekGradSum = 0;
@@ -679,99 +740,105 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     final skinCr = skinCrSum / skinPoints.length;
     final baselineCheekGrad = math.max(3.5, cheekGradSum / skinPoints.length);
 
-    // 2. Eyeglasses & Sunglasses Check
-    double eyeYSum = 0;
-    int eyeCount = 0;
-    int glareHits = 0;
-    int darkHits = 0;
+    ({double lumDev, double chromaDev}) measureBandAnomaly(
+      double x0, double y0, double x1, double y1, int steps,
+    ) {
+      final top = sampleYCbCr(x0, y0);
+      final bot = sampleYCbCr(x1, y1);
+      double maxLum = 0.0, maxChroma = 0.0;
+      for (int i = 1; i < steps; i++) {
+        final t = i / steps;
+        final p = sampleYCbCr(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+        final expY = top.y + (bot.y - top.y) * t;
+        final expCb = top.cb + (bot.cb - top.cb) * t;
+        final expCr = top.cr + (bot.cr - top.cr) * t;
+        final lDev = (p.y - expY).abs();
+        final cDev = math.sqrt((p.cb - expCb) * (p.cb - expCb) + (p.cr - expCr) * (p.cr - expCr)) + lDev * 0.45;
+        if (lDev > maxLum) maxLum = lDev;
+        if (cDev > maxChroma) maxChroma = cDev;
+      }
+      return (lumDev: maxLum, chromaDev: maxChroma);
+    }
 
-    for (final eyeCenterX in [fx + 0.30 * fw, fx + 0.70 * fw]) {
-      final eyeCenterY = fy + 0.38 * fh;
-      for (int sy = -2; sy <= 2; sy++) {
+    // 2. Eyeglasses & Sunglasses Check (bilateral + band anomaly so bare eyes & shadows never false-trigger)
+    ({double avgY, double maxY, double glareRatio, double darkRatio}) analyzeEye(double eyeCx) {
+      double sum = 0, maxY = 0;
+      int cnt = 0, glare = 0, dark = 0;
+      final eyeCy = fy + 0.39 * fh;
+      for (int sy = -1; sy <= 1; sy++) {
         for (int sx = -2; sx <= 2; sx++) {
-          final p = sampleYCbCr(eyeCenterX + sx * 0.03 * fw, eyeCenterY + sy * 0.022 * fh);
-          eyeYSum += p.y;
-          eyeCount++;
-          if (p.y > math.min(238.0, skinY + 68.0) &&
-              (p.cb - 128.0).abs() < 16.0 &&
-              (p.cr - 128.0).abs() < 16.0) {
-            glareHits++;
+          final p = sampleYCbCr(eyeCx + sx * 0.025 * fw, eyeCy + sy * 0.015 * fh);
+          sum += p.y;
+          if (p.y > maxY) maxY = p.y;
+          cnt++;
+          if (p.y > math.min(242.0, skinY + 72.0) &&
+              (p.cb - 128.0).abs() < 12.0 &&
+              (p.cr - 128.0).abs() < 12.0) {
+            glare++;
           }
-          if (skinY > 42.0 && p.y < skinY * 0.36) {
-            darkHits++;
+          if (skinY > 42.0 && p.y < skinY * 0.28) {
+            dark++;
           }
         }
       }
+      return (
+        avgY: cnt > 0 ? sum / cnt : skinY,
+        maxY: maxY,
+        glareRatio: cnt > 0 ? glare / cnt : 0.0,
+        darkRatio: cnt > 0 ? dark / cnt : 0.0,
+      );
     }
 
-    final avgEyeY = eyeCount > 0 ? eyeYSum / eyeCount : skinY;
-    final glareRatio = eyeCount > 0 ? glareHits / eyeCount : 0.0;
-    final darkRatio = eyeCount > 0 ? darkHits / eyeCount : 0.0;
+    final lEye = analyzeEye(fx + 0.31 * fw);
+    final rEye = analyzeEye(fx + 0.69 * fw);
 
-    // Nasal bridge horizontal frame bar check (between the eyes at x = fx + 0.50*fw, y = fy + 0.34*fh..0.44*fh)
-    double bridgeMaxJump = 0.0;
-    double bridgeChromaShift = 0.0;
+    final isSunglasses = skinY > 42.0 &&
+        lEye.avgY < skinY * 0.30 &&
+        rEye.avgY < skinY * 0.30 &&
+        lEye.maxY < skinY * 0.56 &&
+        rEye.maxY < skinY * 0.56 &&
+        lEye.darkRatio >= 0.72 &&
+        rEye.darkRatio >= 0.72;
+
+    int bridgeColsHit = 0;
     for (final bx in [fx + 0.47 * fw, fx + 0.50 * fw, fx + 0.53 * fw]) {
-      var prev = sampleYCbCr(bx, fy + 0.31 * fh);
-      for (int k = 1; k <= 6; k++) {
-        final cur = sampleYCbCr(bx, fy + (0.31 + k * 0.022) * fh);
-        final jump = (cur.y - prev.y).abs();
-        if (jump > bridgeMaxJump) bridgeMaxJump = jump;
-        final shift = math.sqrt((cur.cb - skinCb) * (cur.cb - skinCb) +
-                (cur.cr - skinCr) * (cur.cr - skinCr)) +
-            (cur.y - skinY).abs() * 0.5;
-        if (shift > bridgeChromaShift) bridgeChromaShift = shift;
-        prev = cur;
+      final band = measureBandAnomaly(bx, fy + 0.28 * fh, bx, fy + 0.46 * fh, 5);
+      if (band.lumDev >= math.max(18.0, baselineCheekGrad * 2.8) && band.chromaDev >= 22.0) {
+        bridgeColsHit++;
       }
     }
 
-    // Lower orbital rim & outer temple frame edge check
-    int rimHits = 0;
-    for (final rx in [fx + 0.14 * fw, fx + 0.30 * fw, fx + 0.70 * fw, fx + 0.86 * fw]) {
-      var prev = sampleYCbCr(rx, fy + 0.43 * fh);
-      double maxJump = 0.0;
-      for (int k = 1; k <= 5; k++) {
-        final cur = sampleYCbCr(rx, fy + (0.43 + k * 0.025) * fh);
-        final jump = (cur.y - prev.y).abs();
-        if (jump > maxJump) maxJump = jump;
-        prev = cur;
-      }
-      if (maxJump > baselineCheekGrad * 2.4 && maxJump > 15.0) {
-        rimHits++;
-      }
+    bool checkCheekRim(double rx) {
+      final band = measureBandAnomaly(rx, fy + 0.46 * fh, rx, fy + 0.57 * fh, 5);
+      return band.lumDev >= math.max(16.0, baselineCheekGrad * 2.5) && band.chromaDev >= 18.0;
     }
 
-    final isSunglasses = (skinY > 38.0 && avgEyeY < skinY * 0.37) || darkRatio >= 0.45;
-    final hasEyeglassFrame = bridgeMaxJump > math.max(17.0, baselineCheekGrad * 2.5) &&
-        bridgeChromaShift > 20.0 &&
-        (rimHits >= 2 || glareRatio >= 0.08);
-    final hasGlareAndBridge =
-        glareRatio >= 0.13 && bridgeMaxJump > math.max(14.0, baselineCheekGrad * 2.0);
-    final wearingGlasses = isSunglasses || hasEyeglassFrame || hasGlareAndBridge;
+    final leftRim = checkCheekRim(fx + 0.30 * fw);
+    final rightRim = checkCheekRim(fx + 0.70 * fw);
+    final bilateralGlare = lEye.glareRatio >= 0.12 && rEye.glareRatio >= 0.12;
+    final hasEyeglassFrame = bridgeColsHit >= 2 && ((leftRim && rightRim) || bilateralGlare);
+    final wearingGlasses = isSunglasses || hasEyeglassFrame;
 
-    // 3. Bare-Chest / Shirtless / Nudity Check (left shoulder, right shoulder, and lower chest below chin)
+    // 3. Bare-Chest / Shirtless / Nudity Check (clean cheek-chroma calibration, works with beards & overhead lighting)
     bool bareChestOrNude = false;
     final chinY = fy + fh;
     final centerX = fx + 0.50 * fw;
 
-    if (chinY < 0.82 && fh > 0.14 && fw > 0.12) {
+    if (chinY < 0.88 && fh > 0.12 && fw > 0.10) {
       bool isSkinPixel(double nx, double ny) {
-        if (nx < 0.03 || nx > 0.97 || ny < 0.03 || ny > 0.97) return false;
+        if (nx < 0.03 || nx > 0.97 || ny < 0.03 || ny > 0.98) return false;
         final p = sampleYCbCr(nx, ny);
         final chromaDist = math.sqrt(
           (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
         );
-        final lumDiff = (p.y - skinY).abs();
-        final validSkinChroma = p.cr >= 131.0 &&
+        final validSkinChroma = p.cr >= 129.0 &&
             p.cr <= 185.0 &&
-            p.cb >= 76.0 &&
+            p.cb >= 74.0 &&
             p.cb <= 136.0 &&
-            p.cr > p.cb + 6.0 &&
-            p.y > 18.0 &&
-            p.y < 242.0;
-        return validSkinChroma &&
-            chromaDist <= 11.5 &&
-            lumDiff <= math.max(32.0, skinY * 0.36);
+            p.cr > p.cb + 5.0 &&
+            p.y > math.max(24.0, skinY * 0.45) &&
+            p.y < math.min(246.0, skinY * 2.1);
+        return validSkinChroma && chromaDist <= 18.0;
       }
 
       ({double ratio, int total}) sampleTorsoZone(
@@ -784,10 +851,10 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         int total = 0;
         for (int sy = 0; sy <= 3; sy++) {
           final ny = y0 + (y1 - y0) * (sy / 3.0);
-          if (ny > 0.96 || ny <= chinY + 0.15 * fh) continue;
+          if (ny > 0.97 || ny <= chinY + 0.10 * fh) continue;
           for (int sx = 0; sx <= 3; sx++) {
             final nx = x0 + (x1 - x0) * (sx / 3.0);
-            if (nx < 0.04 || nx > 0.96) continue;
+            if (nx < 0.03 || nx > 0.97) continue;
             total++;
             if (isSkinPixel(nx, ny)) hits++;
           }
@@ -795,46 +862,35 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         return (ratio: total > 0 ? hits / total : 0.0, total: total);
       }
 
-      final topTorsoY = chinY + 0.24 * fh;
-      final botTorsoY = math.min(0.95, chinY + 0.85 * fh);
+      final topTorsoY = chinY + 0.14 * fh;
+      final botTorsoY = math.min(0.97, chinY + 0.65 * fh);
 
-      if (botTorsoY - topTorsoY >= 0.09) {
+      if (botTorsoY - topTorsoY >= 0.06) {
         final leftShoulder = sampleTorsoZone(
-          centerX - 0.82 * fw,
-          centerX - 0.26 * fw,
+          centerX - 0.68 * fw,
+          centerX - 0.18 * fw,
           topTorsoY,
           botTorsoY,
         );
         final rightShoulder = sampleTorsoZone(
-          centerX + 0.26 * fw,
-          centerX + 0.82 * fw,
+          centerX + 0.18 * fw,
+          centerX + 0.68 * fw,
           topTorsoY,
           botTorsoY,
         );
         final lowerChest = sampleTorsoZone(
-          centerX - 0.32 * fw,
-          centerX + 0.32 * fw,
-          chinY + 0.38 * fh,
-          math.min(0.96, chinY + 0.88 * fh),
+          centerX - 0.24 * fw,
+          centerX + 0.24 * fw,
+          chinY + 0.20 * fh,
+          math.min(0.97, chinY + 0.72 * fh),
         );
 
-        double collarEdgeMax = 0.0;
-        for (final offX in [-0.35 * fw, 0.0, 0.35 * fw]) {
-          final neckP = sampleYCbCr(centerX + offX, chinY + 0.14 * fh);
-          final chestP = sampleYCbCr(centerX + offX, chinY + 0.45 * fh);
-          final diff = math.sqrt((neckP.cb - chestP.cb) * (neckP.cb - chestP.cb) +
-                  (neckP.cr - chestP.cr) * (neckP.cr - chestP.cr)) +
-              (neckP.y - chestP.y).abs() * 0.4;
-          if (diff > collarEdgeMax) collarEdgeMax = diff;
-        }
-
+        final shoulderAvg = (leftShoulder.ratio + rightShoulder.ratio) / 2.0;
         if (leftShoulder.total >= 6 &&
             rightShoulder.total >= 6 &&
-            lowerChest.total >= 4 &&
-            leftShoulder.ratio >= 0.72 &&
-            rightShoulder.ratio >= 0.72 &&
-            lowerChest.ratio >= 0.72 &&
-            collarEdgeMax < 16.0) {
+            leftShoulder.ratio >= 0.56 &&
+            rightShoulder.ratio >= 0.56 &&
+            (lowerChest.total < 3 ? shoulderAvg >= 0.65 : (lowerChest.ratio >= 0.50 || shoulderAvg >= 0.72))) {
           bareChestOrNude = true;
         }
       }
@@ -869,12 +925,12 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     final fh = (box.height / upH).clamp(0.10, 0.95);
 
     final skinPoints = <({double x, double y})>[
-      (x: fx + 0.24 * fw, y: fy + 0.58 * fh),
-      (x: fx + 0.28 * fw, y: fy + 0.64 * fh),
-      (x: fx + 0.76 * fw, y: fy + 0.58 * fh),
-      (x: fx + 0.72 * fw, y: fy + 0.64 * fh),
-      (x: fx + 0.50 * fw, y: fy + 0.20 * fh),
-      (x: fx + 0.50 * fw, y: fy + 0.54 * fh),
+      (x: fx + 0.24 * fw, y: fy + 0.56 * fh),
+      (x: fx + 0.30 * fw, y: fy + 0.54 * fh),
+      (x: fx + 0.76 * fw, y: fy + 0.56 * fh),
+      (x: fx + 0.70 * fw, y: fy + 0.54 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.16 * fh),
+      (x: fx + 0.50 * fw, y: fy + 0.22 * fh),
     ];
 
     double skinYSum = 0, skinCbSum = 0, skinCrSum = 0, cheekGradSum = 0;
@@ -891,38 +947,55 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     final skinCr = skinCrSum / skinPoints.length;
     final baselineCheekGrad = math.max(3.5, cheekGradSum / skinPoints.length);
 
+    ({double lumDev, double chromaDev}) measureBandAnomaly(
+      double x0, double y0, double x1, double y1, int steps,
+    ) {
+      final top = samplePx(x0, y0);
+      final bot = samplePx(x1, y1);
+      double maxLum = 0.0, maxChroma = 0.0;
+      for (int i = 1; i < steps; i++) {
+        final t = i / steps;
+        final p = samplePx(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+        final expY = top.y + (bot.y - top.y) * t;
+        final expCb = top.cb + (bot.cb - top.cb) * t;
+        final expCr = top.cr + (bot.cr - top.cr) * t;
+        final lDev = (p.y - expY).abs();
+        final cDev = math.sqrt((p.cb - expCb) * (p.cb - expCb) + (p.cr - expCr) * (p.cr - expCr)) + lDev * 0.45;
+        if (lDev > maxLum) maxLum = lDev;
+        if (cDev > maxChroma) maxChroma = cDev;
+      }
+      return (lumDev: maxLum, chromaDev: maxChroma);
+    }
+
     // Check bare chest / nudity first
     final chinY = fy + fh;
     final centerX = fx + 0.50 * fw;
-    if (chinY < 0.82 && fh > 0.14 && fw > 0.12) {
+    if (chinY < 0.88 && fh > 0.12 && fw > 0.10) {
       bool isSkinPixel(double nx, double ny) {
-        if (nx < 0.03 || nx > 0.97 || ny < 0.03 || ny > 0.97) return false;
+        if (nx < 0.03 || nx > 0.97 || ny < 0.03 || ny > 0.98) return false;
         final p = samplePx(nx, ny);
         final chromaDist = math.sqrt(
           (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
         );
-        final lumDiff = (p.y - skinY).abs();
-        final validSkinChroma = p.cr >= 131.0 &&
+        final validSkinChroma = p.cr >= 129.0 &&
             p.cr <= 185.0 &&
-            p.cb >= 76.0 &&
+            p.cb >= 74.0 &&
             p.cb <= 136.0 &&
-            p.cr > p.cb + 6.0 &&
-            p.r >= p.g * 0.92 &&
-            p.y > 18.0 &&
-            p.y < 242.0;
-        return validSkinChroma &&
-            chromaDist <= 11.5 &&
-            lumDiff <= math.max(32.0, skinY * 0.36);
+            p.cr > p.cb + 5.0 &&
+            p.r >= p.g * 0.88 &&
+            p.y > math.max(24.0, skinY * 0.45) &&
+            p.y < math.min(246.0, skinY * 2.1);
+        return validSkinChroma && chromaDist <= 18.0;
       }
 
       ({double ratio, int total}) sampleZone(double x0, double x1, double y0, double y1) {
         int hits = 0, total = 0;
         for (int sy = 0; sy <= 3; sy++) {
           final ny = y0 + (y1 - y0) * (sy / 3.0);
-          if (ny > 0.96 || ny <= chinY + 0.15 * fh) continue;
+          if (ny > 0.97 || ny <= chinY + 0.10 * fh) continue;
           for (int sx = 0; sx <= 3; sx++) {
             final nx = x0 + (x1 - x0) * (sx / 3.0);
-            if (nx < 0.04 || nx > 0.96) continue;
+            if (nx < 0.03 || nx > 0.97) continue;
             total++;
             if (isSkinPixel(nx, ny)) hits++;
           }
@@ -930,103 +1003,88 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         return (ratio: total > 0 ? hits / total : 0.0, total: total);
       }
 
-      final topTorsoY = chinY + 0.24 * fh;
-      final botTorsoY = math.min(0.95, chinY + 0.85 * fh);
-      if (botTorsoY - topTorsoY >= 0.09) {
-        final leftShoulder = sampleZone(centerX - 0.82 * fw, centerX - 0.26 * fw, topTorsoY, botTorsoY);
-        final rightShoulder = sampleZone(centerX + 0.26 * fw, centerX + 0.82 * fw, topTorsoY, botTorsoY);
+      final topTorsoY = chinY + 0.14 * fh;
+      final botTorsoY = math.min(0.97, chinY + 0.65 * fh);
+      if (botTorsoY - topTorsoY >= 0.06) {
+        final leftShoulder = sampleZone(centerX - 0.68 * fw, centerX - 0.18 * fw, topTorsoY, botTorsoY);
+        final rightShoulder = sampleZone(centerX + 0.18 * fw, centerX + 0.68 * fw, topTorsoY, botTorsoY);
         final lowerChest = sampleZone(
-          centerX - 0.32 * fw,
-          centerX + 0.32 * fw,
-          chinY + 0.38 * fh,
-          math.min(0.96, chinY + 0.88 * fh),
+          centerX - 0.24 * fw,
+          centerX + 0.24 * fw,
+          chinY + 0.20 * fh,
+          math.min(0.97, chinY + 0.72 * fh),
         );
 
-        double collarEdgeMax = 0.0;
-        for (final offX in [-0.35 * fw, 0.0, 0.35 * fw]) {
-          final neckP = samplePx(centerX + offX, chinY + 0.14 * fh);
-          final chestP = samplePx(centerX + offX, chinY + 0.45 * fh);
-          final diff = math.sqrt((neckP.cb - chestP.cb) * (neckP.cb - chestP.cb) +
-                  (neckP.cr - chestP.cr) * (neckP.cr - chestP.cr)) +
-              (neckP.y - chestP.y).abs() * 0.4;
-          if (diff > collarEdgeMax) collarEdgeMax = diff;
-        }
-
+        final shoulderAvg = (leftShoulder.ratio + rightShoulder.ratio) / 2.0;
         if (leftShoulder.total >= 6 &&
             rightShoulder.total >= 6 &&
-            lowerChest.total >= 4 &&
-            leftShoulder.ratio >= 0.72 &&
-            rightShoulder.ratio >= 0.72 &&
-            lowerChest.ratio >= 0.72 &&
-            collarEdgeMax < 16.0) {
+            leftShoulder.ratio >= 0.56 &&
+            rightShoulder.ratio >= 0.56 &&
+            (lowerChest.total < 3 ? shoulderAvg >= 0.65 : (lowerChest.ratio >= 0.50 || shoulderAvg >= 0.72))) {
           return "Bare chest or nudity detected. Please wear a shirt or proper clothing covering your chest and shoulders before capturing your observer profile photo.";
         }
       }
     }
 
-    // Check eyeglasses / sunglasses
-    double eyeYSum = 0;
-    int eyeCount = 0, glareHits = 0, darkHits = 0;
-    for (final eyeCenterX in [fx + 0.30 * fw, fx + 0.70 * fw]) {
-      final eyeCenterY = fy + 0.38 * fh;
-      for (int sy = -2; sy <= 2; sy++) {
+    // Check eyeglasses / sunglasses (bilateral + band anomaly)
+    ({double avgY, double maxY, double glareRatio, double darkRatio}) analyzeEye(double eyeCx) {
+      double sum = 0, maxY = 0;
+      int cnt = 0, glare = 0, dark = 0;
+      final eyeCy = fy + 0.39 * fh;
+      for (int sy = -1; sy <= 1; sy++) {
         for (int sx = -2; sx <= 2; sx++) {
-          final p = samplePx(eyeCenterX + sx * 0.03 * fw, eyeCenterY + sy * 0.022 * fh);
-          eyeYSum += p.y;
-          eyeCount++;
-          if (p.y > math.min(238.0, skinY + 68.0) &&
-              (p.cb - 128.0).abs() < 16.0 &&
-              (p.cr - 128.0).abs() < 16.0) {
-            glareHits++;
+          final p = samplePx(eyeCx + sx * 0.025 * fw, eyeCy + sy * 0.015 * fh);
+          sum += p.y;
+          if (p.y > maxY) maxY = p.y;
+          cnt++;
+          if (p.y > math.min(242.0, skinY + 72.0) &&
+              (p.cb - 128.0).abs() < 12.0 &&
+              (p.cr - 128.0).abs() < 12.0) {
+            glare++;
           }
-          if (skinY > 42.0 && p.y < skinY * 0.36) {
-            darkHits++;
+          if (skinY > 42.0 && p.y < skinY * 0.28) {
+            dark++;
           }
         }
       }
+      return (
+        avgY: cnt > 0 ? sum / cnt : skinY,
+        maxY: maxY,
+        glareRatio: cnt > 0 ? glare / cnt : 0.0,
+        darkRatio: cnt > 0 ? dark / cnt : 0.0,
+      );
     }
-    final avgEyeY = eyeCount > 0 ? eyeYSum / eyeCount : skinY;
-    final glareRatio = eyeCount > 0 ? glareHits / eyeCount : 0.0;
-    final darkRatio = eyeCount > 0 ? darkHits / eyeCount : 0.0;
 
-    double bridgeMaxJump = 0.0, bridgeChromaShift = 0.0;
+    final lEye = analyzeEye(fx + 0.31 * fw);
+    final rEye = analyzeEye(fx + 0.69 * fw);
+
+    final isSunglasses = skinY > 42.0 &&
+        lEye.avgY < skinY * 0.30 &&
+        rEye.avgY < skinY * 0.30 &&
+        lEye.maxY < skinY * 0.56 &&
+        rEye.maxY < skinY * 0.56 &&
+        lEye.darkRatio >= 0.72 &&
+        rEye.darkRatio >= 0.72;
+
+    int bridgeColsHit = 0;
     for (final bx in [fx + 0.47 * fw, fx + 0.50 * fw, fx + 0.53 * fw]) {
-      var prev = samplePx(bx, fy + 0.31 * fh);
-      for (int k = 1; k <= 6; k++) {
-        final cur = samplePx(bx, fy + (0.31 + k * 0.022) * fh);
-        final jump = (cur.y - prev.y).abs();
-        if (jump > bridgeMaxJump) bridgeMaxJump = jump;
-        final shift = math.sqrt((cur.cb - skinCb) * (cur.cb - skinCb) +
-                (cur.cr - skinCr) * (cur.cr - skinCr)) +
-            (cur.y - skinY).abs() * 0.5;
-        if (shift > bridgeChromaShift) bridgeChromaShift = shift;
-        prev = cur;
+      final band = measureBandAnomaly(bx, fy + 0.28 * fh, bx, fy + 0.46 * fh, 5);
+      if (band.lumDev >= math.max(18.0, baselineCheekGrad * 2.8) && band.chromaDev >= 22.0) {
+        bridgeColsHit++;
       }
     }
 
-    int rimHits = 0;
-    for (final rx in [fx + 0.14 * fw, fx + 0.30 * fw, fx + 0.70 * fw, fx + 0.86 * fw]) {
-      var prev = samplePx(rx, fy + 0.43 * fh);
-      double maxJump = 0.0;
-      for (int k = 1; k <= 5; k++) {
-        final cur = samplePx(rx, fy + (0.43 + k * 0.025) * fh);
-        final jump = (cur.y - prev.y).abs();
-        if (jump > maxJump) maxJump = jump;
-        prev = cur;
-      }
-      if (maxJump > baselineCheekGrad * 2.4 && maxJump > 15.0) {
-        rimHits++;
-      }
+    bool checkCheekRim(double rx) {
+      final band = measureBandAnomaly(rx, fy + 0.46 * fh, rx, fy + 0.57 * fh, 5);
+      return band.lumDev >= math.max(16.0, baselineCheekGrad * 2.5) && band.chromaDev >= 18.0;
     }
 
-    final isSunglasses = (skinY > 38.0 && avgEyeY < skinY * 0.37) || darkRatio >= 0.45;
-    final hasEyeglassFrame = bridgeMaxJump > math.max(17.0, baselineCheekGrad * 2.5) &&
-        bridgeChromaShift > 20.0 &&
-        (rimHits >= 2 || glareRatio >= 0.08);
-    final hasGlareAndBridge =
-        glareRatio >= 0.13 && bridgeMaxJump > math.max(14.0, baselineCheekGrad * 2.0);
+    final leftRim = checkCheekRim(fx + 0.30 * fw);
+    final rightRim = checkCheekRim(fx + 0.70 * fw);
+    final bilateralGlare = lEye.glareRatio >= 0.12 && rEye.glareRatio >= 0.12;
+    final hasEyeglassFrame = bridgeColsHit >= 2 && ((leftRim && rightRim) || bilateralGlare);
 
-    if (isSunglasses || hasEyeglassFrame || hasGlareAndBridge) {
+    if (isSunglasses || hasEyeglassFrame) {
       return "Eyeglasses or sunglasses detected. Please remove your glasses so your eyes are clearly visible and retry.";
     }
 
@@ -1883,35 +1941,12 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           ),
         ),
 
-        // Instant Capture Button & Adaptive Slow-Device Action
+        // Instant Capture Button (adaptive slow/1GB RAM optimization operates silently)
         if (!isCapturingOrDone && _step != LivenessStep.uploading) ...[
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
             child: Column(
               children: [
-                if (_isLaggingDevice)
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.bolt_rounded, size: 16, color: Color(0xFFF59E0B)),
-                        SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            "Slow device detected • Adaptive mode active or tap below to capture",
-                            style: TextStyle(color: Color(0xFFF59E0B), fontSize: 11, fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 SizedBox(
                   width: double.infinity,
                   height: 48,
@@ -1924,9 +1959,6 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
                       shadowColor: const Color(0xFF0D9488).withValues(alpha: 0.5),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
-                        side: _isLaggingDevice
-                            ? const BorderSide(color: Color(0xFFF59E0B), width: 1.5)
-                            : BorderSide.none,
                       ),
                     ),
                     child: const Row(
