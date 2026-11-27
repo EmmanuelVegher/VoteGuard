@@ -10,6 +10,60 @@ class AuditLogService {
   static String? _cachedIsp;
 
   static String _inferIspFromIp(String ip, [String? explicitIsp]) {
+    final raw = ip.trim().toLowerCase();
+    if (raw.startsWith('2c0f:f5c0:') ||
+        raw.startsWith('102.88.') ||
+        raw.startsWith('102.89.') ||
+        raw.startsWith('102.90.') ||
+        raw.startsWith('102.91.') ||
+        raw.startsWith('102.92.') ||
+        raw.startsWith('102.93.') ||
+        raw.startsWith('197.210.') ||
+        raw.startsWith('41.206.') ||
+        raw.startsWith('41.220.')) {
+      return 'MTN Nigeria';
+    }
+    if (raw.startsWith('2c0f:2280:') ||
+        raw.startsWith('2c0f:2a80:') ||
+        raw.startsWith('105.112.') ||
+        raw.startsWith('105.113.') ||
+        raw.startsWith('105.114.') ||
+        raw.startsWith('105.115.') ||
+        raw.startsWith('105.116.') ||
+        raw.startsWith('105.117.') ||
+        raw.startsWith('105.118.') ||
+        raw.startsWith('105.119.') ||
+        raw.startsWith('105.120.') ||
+        raw.startsWith('105.127.') ||
+        raw.startsWith('197.255.') ||
+        raw.startsWith('154.160.')) {
+      return 'Airtel Nigeria';
+    }
+    if (raw.startsWith('2c0f:f888:') ||
+        raw.startsWith('197.211.') ||
+        raw.startsWith('129.205.') ||
+        raw.startsWith('41.203.') ||
+        raw.startsWith('154.66.')) {
+      return 'Globacom (Glo)';
+    }
+    if (raw.startsWith('41.190.') ||
+        raw.startsWith('154.113.') ||
+        raw.startsWith('196.220.')) {
+      return '9mobile (EMTS)';
+    }
+    if (raw.startsWith('129.222.') ||
+        raw.startsWith('143.105.') ||
+        raw.startsWith('135.129.') ||
+        raw.startsWith('98.97.') ||
+        raw.startsWith('149.19.') ||
+        raw.startsWith('2605:59c0:') ||
+        raw.startsWith('2605:59c1:')) {
+      return 'Starlink (SpaceX)';
+    }
+    if (raw.startsWith('41.242.')) return 'Backbone Connectivity (BCN)';
+    if (raw.startsWith('160.152.') || raw.startsWith('102.212.')) return 'Smile Communications';
+    if (raw.startsWith('217.14.')) return 'Inq. Digital Nigeria';
+
     final clean = (explicitIsp ?? '').trim();
     if (clean.isNotEmpty && clean.toLowerCase() != 'unknown') {
       final l = clean.toLowerCase();
@@ -21,37 +75,6 @@ class AuditLogService {
       if (l.contains('spectranet')) return 'Spectranet';
       if (l.contains('ipnx')) return 'ipNX Nigeria';
       return clean;
-    }
-
-    final raw = ip.trim().toLowerCase();
-    if (raw.startsWith('2c0f:f5c0:')) return 'MTN Nigeria (IPv6)';
-    if (raw.startsWith('2c0f:2a80:')) return 'Airtel Nigeria (IPv6)';
-    if (raw.startsWith('102.88.') ||
-        raw.startsWith('102.89.') ||
-        raw.startsWith('197.210.') ||
-        raw.startsWith('105.112.') ||
-        raw.startsWith('105.113.') ||
-        raw.startsWith('105.114.') ||
-        raw.startsWith('41.206.')) {
-      return 'MTN Nigeria';
-    }
-    if (raw.startsWith('102.90.') ||
-        raw.startsWith('102.91.') ||
-        raw.startsWith('105.119.') ||
-        raw.startsWith('41.242.') ||
-        raw.startsWith('197.255.')) {
-      return 'Airtel Nigeria';
-    }
-    if (raw.startsWith('197.211.') ||
-        raw.startsWith('41.203.') ||
-        raw.startsWith('105.116.')) {
-      return 'Globacom (Glo)';
-    }
-    if (raw.startsWith('41.190.') || raw.startsWith('154.113.')) {
-      return '9mobile (EMTS)';
-    }
-    if (raw.startsWith('129.222.') || raw.startsWith('143.105.')) {
-      return 'Starlink (SpaceX)';
     }
     return 'Mobile Carrier Network';
   }
