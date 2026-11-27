@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:voteguard/services/auth_service.dart';
 import 'package:voteguard/services/notification_service.dart';
+import 'package:voteguard/core/services/audit_log_service.dart';
 
 part 'auth_event.dart';
 part 'auth_state.dart';
@@ -64,8 +65,20 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             message: result['message']));
       } else if (result['requires2FA'] == true) {
         emit(AuthState.requires2FA(event.email, event.password));
+      } else {
+        await AuditLogService.log(
+          action: 'USER_LOGIN',
+          resource: 'auth',
+          details: {'identifier': event.email, 'method': 'mobile_app'},
+        );
       }
     } catch (e) {
+      await AuditLogService.log(
+        action: 'LOGIN_FAILED',
+        resource: 'auth',
+        details: {'identifier': event.email, 'error': e.toString()},
+        userEmailOverride: event.email.contains('@') ? event.email : null,
+      );
       emit(AuthState.failure(e.toString().replaceAll('Exception: ', '')));
     }
   }
@@ -73,6 +86,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   Future<void> _onLogoutRequested(
       LogoutRequested event, Emitter<AuthState> emit) async {
     final currentUserId = _authService.currentUser?.uid;
+    await AuditLogService.log(
+      action: 'USER_LOGOUT',
+      resource: 'auth',
+      userIdOverride: currentUserId,
+    );
     if (currentUserId != null) {
       try {
         await NotificationService().removeTokenInFirestore(currentUserId);

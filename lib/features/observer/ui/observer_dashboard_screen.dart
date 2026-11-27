@@ -4469,6 +4469,13 @@ class _ChecklistTabState extends State<_ChecklistTab>
         await FirebaseFirestore.instance.collection('audit_logs').add({
           'userId': user?.uid,
           'userEmail': user?.email,
+          'userName': _userProfile?['fullName'] ??
+              _userProfile?['name'] ??
+              _userProfile?['displayName'] ??
+              'Observer',
+          'userRole': (_userProfile?['role'] ?? 'OBSERVER').toString().toUpperCase(),
+          'platform': 'mobile_app',
+          'method': 'mobile_app',
           'action': isFinal ? 'CHECKLIST_SUBMIT' : 'CHECKLIST_SAVE_DRAFT',
           'resource': 'checklist',
           'ipAddress': ipAddress,
@@ -6528,6 +6535,13 @@ class _IncidentsTabState extends State<_IncidentsTab>
         await FirebaseFirestore.instance.collection('audit_logs').add({
           'userId': user?.uid,
           'userEmail': user?.email,
+          'userName': _userProfile?['fullName'] ??
+              _userProfile?['name'] ??
+              _userProfile?['displayName'] ??
+              'Observer',
+          'userRole': (_userProfile?['role'] ?? 'OBSERVER').toString().toUpperCase(),
+          'platform': 'mobile_app',
+          'method': 'mobile_app',
           'action': 'INCIDENT_SUBMIT',
           'resource': 'incident',
           'ipAddress': ipAddress,
@@ -10624,6 +10638,13 @@ class _EC8AResultsTabState extends State<_EC8AResultsTab>
         await FirebaseFirestore.instance.collection('audit_logs').add({
           'userId': user?.uid,
           'userEmail': user?.email,
+          'userName': _userProfile?['fullName'] ??
+              _userProfile?['name'] ??
+              _userProfile?['displayName'] ??
+              'Observer',
+          'userRole': (_userProfile?['role'] ?? 'OBSERVER').toString().toUpperCase(),
+          'platform': 'mobile_app',
+          'method': 'mobile_app',
           'action': isFinal ? 'RESULTS_SUBMIT' : 'RESULTS_SAVE_DRAFT',
           'resource': 'results',
           'ipAddress': ipAddress,
