@@ -76,6 +76,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   int _nudityStrikes = 0;
   String? _complianceWarningTitle;
   String? _complianceWarningDetail;
+  bool _isFaceFittedInCircle = false;
+  String _faceFitHint = "Fit your face inside the round circle";
 
   @override
   void initState() {
@@ -138,8 +140,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
       setState(() {
         _step = LivenessStep.positionFace;
-        _instruction = "Position your face inside the oval";
-        _subInstruction = "Look straight at the front camera";
+        _instruction = "Fit your face inside the round circle";
+        _subInstruction = "Make sure your entire face fills the circle";
         _stepIcon = Icons.face_rounded;
         _progress = 0.15;
         _stepStartTime = DateTime.now();
@@ -209,9 +211,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       if (faces.isEmpty) {
         _stateHoldStartTime = null;
         if (_step != LivenessStep.initializing && mounted) {
+          if (_isFaceFittedInCircle) {
+            setState(() {
+              _isFaceFittedInCircle = false;
+              _faceFitHint = "Fit your face inside the round circle";
+            });
+          }
           _updateInstruction(
-            "Position your face inside the frame",
-            "Center your face inside the oval guide",
+            "Fit your face inside the round circle",
+            "Center your entire face inside the circular guide",
             Icons.center_focus_strong,
             _progress,
           );
@@ -331,22 +339,46 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
     switch (_step) {
       case LivenessStep.positionFace:
-        // Ensure entire face (not half-face or ceiling) is centered inside the frame
+        // Ensure entire face fits and fills the centered round facial circle
         final box = face.boundingBox;
         final frameW = _lastImageWidth > 0 ? _lastImageWidth.toDouble() : 0.0;
         final frameH = _lastImageHeight > 0 ? _lastImageHeight.toDouble() : 0.0;
-        final hasFullFaceInFrame = frameW == 0 ||
-            frameH == 0 ||
-            (box.left >= frameW * 0.03 &&
-                box.right <= frameW * 0.97 &&
-                box.top >= frameH * 0.03 &&
-                box.bottom <= frameH * 0.97 &&
-                box.height >= frameH * 0.16);
-        if (!hasFullFaceInFrame) {
+        bool fitsCircle = true;
+        String fitMessage = "✓ Face Properly Fitted in Circle";
+        if (frameW > 0 && frameH > 0) {
+          final cx = box.center.dx / frameW;
+          final cy = box.center.dy / frameH;
+          final fhRatio = box.height / frameH;
+          final dist = math.sqrt((cx - 0.5) * (cx - 0.5) + (cy - 0.45) * (cy - 0.45));
+          final edgesIn = box.left >= frameW * 0.04 &&
+              box.right <= frameW * 0.96 &&
+              box.top >= frameH * 0.04 &&
+              box.bottom <= frameH * 0.96;
+          final minRatio = _isLaggingDevice ? 0.20 : 0.23;
+          if (!edgesIn || dist > (_isLaggingDevice ? 0.26 : 0.22)) {
+            fitsCircle = false;
+            fitMessage = "Center your entire face inside the circle";
+          } else if (fhRatio < minRatio) {
+            fitsCircle = false;
+            fitMessage = "Move closer so your face fills the circle";
+          } else if (fhRatio > 0.80) {
+            fitsCircle = false;
+            fitMessage = "Move slightly back to fit inside the circle";
+          }
+        }
+        if (_isFaceFittedInCircle != fitsCircle || _faceFitHint != fitMessage) {
+          if (mounted) {
+            setState(() {
+              _isFaceFittedInCircle = fitsCircle;
+              _faceFitHint = fitMessage;
+            });
+          }
+        }
+        if (!fitsCircle) {
           _stateHoldStartTime = null;
           _updateInstruction(
-            "Center your full face inside the oval",
-            "Keep your entire head (forehead to chin) clearly in view",
+            fitMessage,
+            "Make sure your entire face (forehead to chin) fits inside the round circle",
             Icons.center_focus_strong,
             _progress,
           );
@@ -1195,15 +1227,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
               final face = detected.boundingBox;
               final yawAngle = (detected.headEulerAngleY ?? 0.0).abs();
               final pitchAngle = (detected.headEulerAngleX ?? 0.0).abs();
-              final isClipped = face.left < decoded.width * 0.015 ||
-                  face.right > decoded.width * 0.985 ||
-                  face.top < decoded.height * 0.015 ||
-                  face.bottom > decoded.height * 0.985;
-              final isTooSmall = face.height < decoded.height * 0.16;
+              final isClipped = face.left < decoded.width * 0.03 ||
+                  face.right > decoded.width * 0.97 ||
+                  face.top < decoded.height * 0.03 ||
+                  face.bottom > decoded.height * 0.97;
+              final isTooSmall = face.height < decoded.height * 0.20;
 
               if (isClipped || isTooSmall || yawAngle > 20 || pitchAngle > 20) {
                 validationError =
-                    "Only part of your face was visible or you were looking away. Please center your full face (forehead to chin) inside the oval and retry.";
+                    "Your face did not fully fit inside the round facial circle. Please move closer and center your full face (forehead to chin) inside the round circle and retry.";
               } else {
                 // Verify eyeglasses and attire (bare chest / nudity) on the captured portrait
                 final complianceErr = _validateDecodedImageGlassesAndAttire(decoded, detected);
@@ -1651,368 +1683,397 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
     }
 
     final isCapturingOrDone = _step == LivenessStep.capturing || _step == LivenessStep.completed;
+    final previewSize = _cameraController!.value.previewSize;
+    final previewW = previewSize != null ? previewSize.height : 480.0;
+    final previewH = previewSize != null ? previewSize.width : 640.0;
 
-    return Column(
-      children: [
-        // Camera Viewport with Oval Frame
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // Camera Viewport
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: Container(
-                    color: Colors.black,
-                    child: Center(
-                      child: AspectRatio(
-                        aspectRatio: 1 / _cameraController!.value.aspectRatio,
-                        child: CameraPreview(_cameraController!),
-                      ),
-                    ),
-                  ),
-                ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenW = constraints.maxWidth;
+        final screenH = constraints.maxHeight;
+        final circleDiameter = math.min(screenW * 0.82, screenH * 0.48).clamp(240.0, 360.0);
+        final circleCenterY = (screenH - 180).clamp(circleDiameter * 0.6, screenH * 0.44);
+        final ringColor = isCapturingOrDone
+            ? AppColors.accent
+            : (_isFaceFittedInCircle ? Colors.cyanAccent : Colors.amberAccent);
 
-                // Centered Oval Guide & Dynamic Glow Border
-                Center(
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            // 1. Full-Screen Edge-to-Edge Live Camera Feed
+            Positioned.fill(
+              child: Container(
+                color: Colors.black,
+                child: FittedBox(
+                  fit: BoxFit.cover,
+                  clipBehavior: Clip.hardEdge,
                   child: SizedBox(
-                    width: 250,
-                    height: 340,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      clipBehavior: Clip.none,
-                      children: [
-                        // Dynamic glow border
-                        Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.rectangle,
-                            borderRadius: BorderRadius.circular(160),
-                            border: Border.all(
-                              color: isCapturingOrDone
-                                  ? AppColors.accent
-                                  : Colors.cyanAccent.withValues(alpha: 0.8),
-                              width: 3.5,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: isCapturingOrDone
-                                    ? AppColors.accent.withValues(alpha: 0.5)
-                                    : Colors.cyanAccent.withValues(alpha: 0.3),
-                                blurRadius: 20,
-                                spreadRadius: 2,
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        // Action pill badge floating at bottom of oval
-                        Positioned(
-                          bottom: -10,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF0F172A).withValues(alpha: 0.95),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: isCapturingOrDone ? AppColors.accent : Colors.cyanAccent,
-                                width: 1.2,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.6),
-                                  blurRadius: 10,
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  _stepIcon,
-                                  size: 16,
-                                  color: isCapturingOrDone ? AppColors.accent : Colors.cyanAccent,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  _getActionBadgeText(),
-                                  style: TextStyle(
-                                    color: isCapturingOrDone ? AppColors.accent : Colors.cyanAccent,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                    width: previewW,
+                    height: previewH,
+                    child: CameraPreview(_cameraController!),
                   ),
                 ),
-
-                // Flash animation effect on capture
-                if (_step == LivenessStep.capturing)
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.45),
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                  ),
-
-                // Real-time Eyeglasses / Bare-Chest Warning Banner Overlay inside Camera Viewport
-                if (_complianceWarningTitle != null)
-                  Positioned(
-                    top: 12,
-                    left: 12,
-                    right: 12,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF450A0A).withValues(alpha: 0.96),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.redAccent, width: 1.8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.65),
-                            blurRadius: 14,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.warning_amber_rounded, color: Colors.amberAccent, size: 22),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _complianceWarningTitle!,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w900,
-                                    letterSpacing: 0.3,
-                                  ),
-                                ),
-                                if (_complianceWarningDetail != null) ...[
-                                  const SizedBox(height: 3),
-                                  Text(
-                                    _complianceWarningDetail!,
-                                    style: const TextStyle(
-                                      color: Color(0xFFFECACA),
-                                      fontSize: 11,
-                                      height: 1.3,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-
-        // HUD Instructions Card
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F172A).withValues(alpha: 0.95),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFF1E293B), width: 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.5),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
               ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (_step == LivenessStep.uploading) ...[
-                Center(
-                  child: Column(
-                    children: [
-                      const CircularProgressIndicator(color: Colors.cyanAccent),
-                      const SizedBox(height: 10),
-                      Text(
-                        _uploadStatusText ?? "Enrolling & Syncing HD Portrait...",
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                      ),
-                    ],
+            ),
+
+            // 2. Darkened Surround with Round Facial Circle Cutout & Ring Border
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: _CircularFaceCutoutPainter(
+                    center: Offset(screenW / 2, circleCenterY),
+                    radius: circleDiameter / 2,
+                    borderColor: ringColor,
                   ),
                 ),
-              ] else ...[
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              ),
+            ),
+
+            // 3. Top Face-Fit Status Pill & Bottom Action Pill on the Round Facial Circle
+            Positioned(
+              left: (screenW - circleDiameter) / 2,
+              top: circleCenterY - circleDiameter / 2,
+              width: circleDiameter,
+              height: circleDiameter,
+              child: IgnorePointer(
+                child: Stack(
+                  alignment: Alignment.center,
+                  clipBehavior: Clip.none,
                   children: [
-                    Expanded(
-                      child: Text(
-                        _instruction,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
+                    // Top Face-Fit Status Pill
+                    Positioned(
+                      top: -14,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: _isFaceFittedInCircle
+                              ? const Color(0xFF065F46)
+                              : const Color(0xFF78350F),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: _isFaceFittedInCircle ? AppColors.accent : Colors.amberAccent,
+                            width: 1.3,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                        child: Text(
+                          _faceFitHint,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
                       ),
                     ),
-                    Text(
-                      "${(_progress * 100).round()}%",
-                      style: const TextStyle(
-                        color: Colors.cyanAccent,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w900,
-                        fontFamily: 'monospace',
+
+                    // Bottom Action Pill Badge floating on the circle bottom
+                    Positioned(
+                      bottom: -14,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6.5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: ringColor,
+                            width: 1.3,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.65),
+                              blurRadius: 10,
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _stepIcon,
+                              size: 16,
+                              color: ringColor,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _getActionBadgeText(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  _subInstruction,
-                  style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-                ),
-                if (_errorMessage != null) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.error_outline_rounded, size: 14, color: Colors.redAccent),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            _errorMessage!,
-                            style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 12),
+              ),
+            ),
 
-                // Gradient Progress Bar (Cyan to Emerald)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: Stack(
-                    children: [
-                      Container(
-                        height: 6,
-                        width: double.infinity,
-                        color: const Color(0xFF1E293B),
+            // 4. Flash animation effect on capture
+            if (_step == LivenessStep.capturing)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(
+                    color: Colors.white.withValues(alpha: 0.45),
+                  ),
+                ),
+              ),
+
+            // 5. Real-time Eyeglasses / Bare-Chest Warning Banner Overlay at Top
+            if (_complianceWarningTitle != null)
+              Positioned(
+                top: 12,
+                left: 14,
+                right: 14,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFB91C1C),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFFECACA), width: 1.8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.65),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
                       ),
-                      FractionallySizedBox(
-                        widthFactor: _progress.clamp(0.0, 1.0),
-                        child: Container(
-                          height: 6,
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [Colors.cyanAccent, AppColors.accent],
+                    ],
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.amberAccent, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _complianceWarningTitle!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.3,
+                              ),
                             ),
-                          ),
+                            if (_complianceWarningDetail != null) ...[
+                              const SizedBox(height: 3),
+                              Text(
+                                _complianceWarningDetail!,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  height: 1.3,
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
-              ],
-            ],
-          ),
-        ),
+              ),
 
-        // Instant Capture Button (adaptive slow/1GB RAM optimization operates silently)
-        if (!isCapturingOrDone && _step != LivenessStep.uploading) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-            child: Column(
-              children: [
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton(
-                    onPressed: _handleManualInstantCapture,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0D9488),
-                      foregroundColor: Colors.white,
-                      elevation: 4,
-                      shadowColor: const Color(0xFF0D9488).withValues(alpha: 0.5),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.camera_alt_rounded, size: 18),
-                        SizedBox(width: 8),
-                        Text(
-                          "CAPTURE PHOTO & VERIFY NOW",
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.8,
-                          ),
+            // 6. Floating Bottom HUD & Action Controls over Full-Screen Camera
+            Positioned(
+              left: 14,
+              right: 14,
+              bottom: 10,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A).withValues(alpha: 0.90),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFF1E293B), width: 1.5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          blurRadius: 16,
+                          offset: const Offset(0, 4),
                         ),
                       ],
                     ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (_step == LivenessStep.uploading) ...[
+                          Center(
+                            child: Column(
+                              children: [
+                                const CircularProgressIndicator(color: Colors.cyanAccent),
+                                const SizedBox(height: 10),
+                                Text(
+                                  _uploadStatusText ?? "Enrolling & Syncing HD Portrait...",
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ] else ...[
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  _instruction,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                "${(_progress * 100).round()}%",
+                                style: const TextStyle(
+                                  color: Colors.cyanAccent,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w900,
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            _subInstruction,
+                            style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11.5),
+                          ),
+                          if (_errorMessage != null) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF991B1B),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFFFCA5A5)),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.error_outline_rounded, size: 14, color: Colors.amberAccent),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      _errorMessage!,
+                                      style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 10),
 
-        // Bottom Action Row: Security Beacon
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-          child: Center(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 7,
-                  height: 7,
-                  decoration: const BoxDecoration(
-                    color: AppColors.accent,
-                    shape: BoxShape.circle,
+                          // Gradient Progress Bar (Cyan to Emerald)
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: Stack(
+                              children: [
+                                Container(
+                                  height: 6,
+                                  width: double.infinity,
+                                  color: const Color(0xFF1E293B),
+                                ),
+                                FractionallySizedBox(
+                                  widthFactor: _progress.clamp(0.0, 1.0),
+                                  child: Container(
+                                    height: 6,
+                                    decoration: const BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [Colors.cyanAccent, AppColors.accent],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                const Text(
-                  "🔒 Anti-Spoofing Active • Live 3D Face Verification",
-                  style: TextStyle(
-                    color: Color(0xFF94A3B8),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
+
+                  if (!isCapturingOrDone && _step != LivenessStep.uploading) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 46,
+                      child: ElevatedButton(
+                        onPressed: _handleManualInstantCapture,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF0D9488),
+                          foregroundColor: Colors.white,
+                          elevation: 4,
+                          shadowColor: const Color(0xFF0D9488).withValues(alpha: 0.5),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.camera_alt_rounded, size: 18),
+                            SizedBox(width: 8),
+                            Text(
+                              "CAPTURE PHOTO & VERIFY NOW",
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.8,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: AppColors.accent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        "🔒 Anti-Spoofing Active • Full-Screen Circular Face Fit",
+                        style: TextStyle(
+                          color: Color(0xFFCBD5E1),
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ),
-      ],
+          ],
+        );
+      },
     );
   }
 
@@ -2202,5 +2263,58 @@ class _PermissionGuideItem extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+class _CircularFaceCutoutPainter extends CustomPainter {
+  final Offset center;
+  final double radius;
+  final Color borderColor;
+
+  const _CircularFaceCutoutPainter({
+    required this.center,
+    required this.radius,
+    required this.borderColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final overlayPath = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..addOval(Rect.fromCircle(center: center, radius: radius));
+
+    final overlayPaint = Paint()
+      ..color = const Color(0xFF020617).withValues(alpha: 0.62)
+      ..style = PaintingStyle.fill;
+    canvas.drawPath(overlayPath, overlayPaint);
+
+    // Outer glow ring
+    final glowPaint = Paint()
+      ..color = borderColor.withValues(alpha: 0.25)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 9.0;
+    canvas.drawCircle(center, radius, glowPaint);
+
+    // Primary circular border
+    final ringPaint = Paint()
+      ..color = borderColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.8;
+    canvas.drawCircle(center, radius, ringPaint);
+
+    // Inner subtle guide circle
+    final innerPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.30)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+    canvas.drawCircle(center, radius - 10, innerPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CircularFaceCutoutPainter oldDelegate) {
+    return oldDelegate.center != center ||
+        oldDelegate.radius != radius ||
+        oldDelegate.borderColor != borderColor;
   }
 }
