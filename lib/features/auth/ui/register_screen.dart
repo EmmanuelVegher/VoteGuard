@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:voteguard/services/geo_service.dart';
 import 'package:voteguard/models/geo_models.dart';
 import 'package:voteguard/core/widgets/auto_translate_app.dart';
+import 'package:voteguard/core/services/audit_log_service.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -314,6 +315,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      await AuditLogService.log(
+        action: 'USER_REGISTER',
+        resource: 'auth',
+        userIdOverride: uid,
+        userEmailOverride: email,
+        userNameOverride: "${_firstNameController.text} ${_lastNameController.text}".trim(),
+        userRoleOverride: 'OBSERVER',
+        details: {
+          'role': 'OBSERVER',
+          'state': _selectedState?.name,
+          'lga': _selectedLga?.name,
+          'ward': _selectedWard?.name,
+          'pollingUnit': _selectedUnit?.name,
+        },
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Registration Successful!'), backgroundColor: Colors.green));

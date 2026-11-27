@@ -22,6 +22,8 @@ class NeonApiService {
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'Accept': 'application/json',
+      'X-Client-Platform': 'mobile_app',
+      'User-Agent': 'VoteGuard Flutter Mobile App',
     };
 
     if (token != null && token.isNotEmpty) {
@@ -309,7 +311,11 @@ class NeonApiService {
         'resource': resource,
         if (userId != null) 'userId': userId,
         if (userRole != null) 'userRole': userRole,
-        if (details != null) 'details': details,
+        'details': {
+          'platform': 'mobile_app',
+          'method': 'mobile_app',
+          ...?details,
+        },
       });
 
       await http.post(

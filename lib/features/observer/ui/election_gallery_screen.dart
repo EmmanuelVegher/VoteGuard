@@ -22,6 +22,7 @@ import 'package:voteguard/services/language_service.dart';
 import 'package:voteguard/core/widgets/language_selector_button.dart';
 import 'package:voteguard/core/widgets/auto_translate_app.dart';
 import 'package:voteguard/services/review_service.dart';
+import 'package:voteguard/core/services/audit_log_service.dart';
 
 class ElectionGalleryScreen extends StatefulWidget {
   const ElectionGalleryScreen({super.key});
@@ -1552,15 +1553,29 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        await FirebaseFirestore.instance
+            await FirebaseFirestore.instance
             .collection('users')
             .doc(user.uid)
             .update({
+          'state': _selectedState,
+          'lga': _selectedLga,
+          'ward': _selectedWard,
+          'pollingUnit': _selectedPU,
           'assignedState': _selectedState,
           'assignedLga': _selectedLga,
           'assignedWard': _selectedWard,
           'assignedPollingUnit': _selectedPU,
         });
+        AuditLogService.log(
+          action: 'UPDATE_ASSIGNMENT',
+          resource: 'user_assignment',
+          details: {
+            'state': _selectedState,
+            'lga': _selectedLga,
+            'ward': _selectedWard,
+            'pollingUnit': _selectedPU,
+          },
+        );
         setState(() => _isEditingAssignment = false);
       }
     } finally {
@@ -2139,11 +2154,21 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     return SizedBox(
       height: 52,
       child: ElevatedButton(
-        onPressed: () => Navigator.pushNamed(
-          context,
-          '/observer/dashboard',
-          arguments: election.id,
-        ),
+        onPressed: () {
+          AuditLogService.log(
+            action: 'ELECTION_SELECTED',
+            resource: 'election_gallery',
+            details: {
+              'electionId': election.id,
+              'electionName': election.name,
+            },
+          );
+          Navigator.pushNamed(
+            context,
+            '/observer/dashboard',
+            arguments: election.id,
+          );
+        },
         style: ElevatedButton.styleFrom(
           backgroundColor: const Color(0xFF064E3B),
           elevation: 0,
