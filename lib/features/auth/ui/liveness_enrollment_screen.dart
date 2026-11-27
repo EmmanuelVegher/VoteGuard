@@ -241,10 +241,45 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       }
 
       final face = faces.first;
+      // Real-time Round Circle Face-Fit Check (always updated even when warnings show)
       final rot = _cameraController!.description.sensorOrientation;
       final isRotated90or270 = rot == 90 || rot == 270;
       _lastImageWidth = isRotated90or270 ? image.height : image.width;
       _lastImageHeight = isRotated90or270 ? image.width : image.height;
+      {
+        final fBox = face.boundingBox;
+        final fwPx = _lastImageWidth > 0 ? _lastImageWidth.toDouble() : 0.0;
+        final fhPx = _lastImageHeight > 0 ? _lastImageHeight.toDouble() : 0.0;
+        bool fits = true;
+        String hint = "✓ Face Properly Fitted in Circle";
+        if (fwPx > 0 && fhPx > 0) {
+          final cx = fBox.center.dx / fwPx;
+          final cy = fBox.center.dy / fhPx;
+          final fhRatio = fBox.height / fhPx;
+          final dist = math.sqrt((cx - 0.5) * (cx - 0.5) + (cy - 0.44) * (cy - 0.44));
+          final edgesIn = fBox.left >= fwPx * 0.02 &&
+              fBox.right <= fwPx * 0.98 &&
+              fBox.top >= fhPx * 0.02 &&
+              fBox.bottom <= fhPx * 0.98;
+          final minRatio = _isLaggingDevice ? 0.17 : 0.19;
+          if (!edgesIn || dist > 0.28) {
+            fits = false;
+            hint = "Center your entire face inside the circle";
+          } else if (fhRatio < minRatio) {
+            fits = false;
+            hint = "Move closer so your face fills the circle";
+          } else if (fhRatio > 0.85) {
+            fits = false;
+            hint = "Move slightly back to fit inside the circle";
+          }
+        }
+        if (mounted && (_isFaceFittedInCircle != fits || _faceFitHint != hint)) {
+          setState(() {
+            _isFaceFittedInCircle = fits;
+            _faceFitHint = hint;
+          });
+        }
+      }
 
       // Real-time Eyeglasses & Bare-Chest/Nudity Check (throttled to ~3.8 FPS / 260ms, zero heap allocation)
       final yawAbs = (face.headEulerAngleY ?? 0.0).abs();
@@ -254,7 +289,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         _lastComplianceTime = now;
         final compliance = _checkStreamGlassesAndAttire(image, face, rot);
         if (compliance.bareChestOrNude) {
-          _nudityStrikes = (_nudityStrikes + 1).clamp(0, 4);
+          _nudityStrikes = (_nudityStrikes + 1).clamp(0, 6);
         } else {
           _nudityStrikes = 0;
         }
@@ -265,7 +300,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           _glassesStrikes = 0;
         }
 
-        if (_nudityStrikes >= 2) {
+        if (_nudityStrikes >= 4) {
           _stateHoldStartTime = null;
           if (mounted) {
             setState(() {
@@ -863,14 +898,16 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         final chromaDist = math.sqrt(
           (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
         );
-        final validSkinChroma = p.cr >= 129.0 &&
-            p.cr <= 185.0 &&
-            p.cb >= 74.0 &&
-            p.cb <= 136.0 &&
-            p.cr > p.cb + 5.0 &&
-            p.y > math.max(24.0, skinY * 0.45) &&
-            p.y < math.min(246.0, skinY * 2.1);
-        return validSkinChroma && chromaDist <= 18.0;
+        final saturation = math.sqrt((p.cb - 128.0) * (p.cb - 128.0) + (p.cr - 128.0) * (p.cr - 128.0));
+        final validSkinChroma = p.cr >= 134.0 &&
+            p.cr <= 180.0 &&
+            p.cb >= 78.0 &&
+            p.cb <= 124.0 &&
+            p.cr > p.cb + 14.0 &&
+            saturation >= 12.0 &&
+            p.y > math.max(28.0, skinY * 0.62) &&
+            p.y < math.min(235.0, skinY * 1.45);
+        return validSkinChroma && chromaDist <= 10.0;
       }
 
       ({double ratio, int total}) sampleTorsoZone(
@@ -918,11 +955,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         );
 
         final shoulderAvg = (leftShoulder.ratio + rightShoulder.ratio) / 2.0;
-        if (leftShoulder.total >= 6 &&
-            rightShoulder.total >= 6 &&
-            leftShoulder.ratio >= 0.56 &&
-            rightShoulder.ratio >= 0.56 &&
-            (lowerChest.total < 3 ? shoulderAvg >= 0.65 : (lowerChest.ratio >= 0.50 || shoulderAvg >= 0.72))) {
+        final faceSkinSat = math.sqrt((skinCb - 128.0) * (skinCb - 128.0) + (skinCr - 128.0) * (skinCr - 128.0));
+        if (faceSkinSat >= 10.0 &&
+            leftShoulder.total >= 8 &&
+            rightShoulder.total >= 8 &&
+            lowerChest.total >= 6 &&
+            leftShoulder.ratio >= 0.75 &&
+            rightShoulder.ratio >= 0.75 &&
+            lowerChest.ratio >= 0.70 &&
+            shoulderAvg >= 0.80) {
           bareChestOrNude = true;
         }
       }
@@ -1009,15 +1050,17 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         final chromaDist = math.sqrt(
           (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
         );
-        final validSkinChroma = p.cr >= 129.0 &&
-            p.cr <= 185.0 &&
-            p.cb >= 74.0 &&
-            p.cb <= 136.0 &&
-            p.cr > p.cb + 5.0 &&
-            p.r >= p.g * 0.88 &&
-            p.y > math.max(24.0, skinY * 0.45) &&
-            p.y < math.min(246.0, skinY * 2.1);
-        return validSkinChroma && chromaDist <= 18.0;
+        final saturation = math.sqrt((p.cb - 128.0) * (p.cb - 128.0) + (p.cr - 128.0) * (p.cr - 128.0));
+        final validSkinChroma = p.cr >= 134.0 &&
+            p.cr <= 180.0 &&
+            p.cb >= 78.0 &&
+            p.cb <= 124.0 &&
+            p.cr > p.cb + 14.0 &&
+            saturation >= 12.0 &&
+            p.r > p.g + 6.0 &&
+            p.y > math.max(28.0, skinY * 0.62) &&
+            p.y < math.min(235.0, skinY * 1.45);
+        return validSkinChroma && chromaDist <= 10.0;
       }
 
       ({double ratio, int total}) sampleZone(double x0, double x1, double y0, double y1) {
@@ -1048,11 +1091,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         );
 
         final shoulderAvg = (leftShoulder.ratio + rightShoulder.ratio) / 2.0;
-        if (leftShoulder.total >= 6 &&
-            rightShoulder.total >= 6 &&
-            leftShoulder.ratio >= 0.56 &&
-            rightShoulder.ratio >= 0.56 &&
-            (lowerChest.total < 3 ? shoulderAvg >= 0.65 : (lowerChest.ratio >= 0.50 || shoulderAvg >= 0.72))) {
+        final faceSkinSat = math.sqrt((skinCb - 128.0) * (skinCb - 128.0) + (skinCr - 128.0) * (skinCr - 128.0));
+        if (faceSkinSat >= 10.0 &&
+            leftShoulder.total >= 8 &&
+            rightShoulder.total >= 8 &&
+            lowerChest.total >= 6 &&
+            leftShoulder.ratio >= 0.75 &&
+            rightShoulder.ratio >= 0.75 &&
+            lowerChest.ratio >= 0.70 &&
+            shoulderAvg >= 0.80) {
           return "Bare chest or nudity detected. Please wear a shirt or proper clothing covering your chest and shoulders before capturing your observer profile photo.";
         }
       }
@@ -1691,8 +1738,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       builder: (context, constraints) {
         final screenW = constraints.maxWidth;
         final screenH = constraints.maxHeight;
-        final circleDiameter = math.min(screenW * 0.82, screenH * 0.48).clamp(240.0, 360.0);
-        final circleCenterY = (screenH - 180).clamp(circleDiameter * 0.6, screenH * 0.44);
+        final circleDiameter = math.min(screenW * 0.90, screenH * 0.56).clamp(280.0, 440.0);
+        final circleCenterY = (screenH - 185).clamp(circleDiameter * 0.56, screenH * 0.44);
         final ringColor = isCapturingOrDone
             ? AppColors.accent
             : (_isFaceFittedInCircle ? Colors.cyanAccent : Colors.amberAccent);
