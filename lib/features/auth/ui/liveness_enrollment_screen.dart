@@ -78,6 +78,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   String? _complianceWarningDetail;
   bool _isFaceFittedInCircle = false;
   String _faceFitHint = "Fit your face inside the round circle";
+  bool _isChallengeCompleted = false;
 
   @override
   void initState() {
@@ -146,6 +147,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         _progress = 0.15;
         _stepStartTime = DateTime.now();
         _stateHoldStartTime = null;
+        _isChallengeCompleted = false;
+        _isFaceFittedInCircle = false;
       });
     } catch (e) {
       debugPrint("Camera init error: $e");
@@ -300,7 +303,7 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           _glassesStrikes = 0;
         }
 
-        if (_nudityStrikes >= 4) {
+        if (_nudityStrikes >= 3) {
           _stateHoldStartTime = null;
           if (mounted) {
             setState(() {
@@ -589,16 +592,28 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
         if (now.difference(_stepStartTime).inMilliseconds < 300) return;
 
         final smileThreshold = _isLaggingDevice ? 0.25 : 0.38;
-        if (smile > smileThreshold && yaw.abs() < (yawLimit + 2) && pitch.abs() < pitchLimit) {
+        if (smile > smileThreshold &&
+            _isFaceFittedInCircle &&
+            yaw.abs() < (yawLimit + 2) &&
+            pitch.abs() < pitchLimit) {
           _stateHoldStartTime ??= now;
           if (now.difference(_stateHoldStartTime!).inMilliseconds >= (_isLaggingDevice ? 200 : 350)) {
+            if (mounted) {
+              setState(() {
+                _isChallengeCompleted = true;
+                _progress = 1.0;
+              });
+            }
+            if (!_isFaceFittedInCircle || _complianceWarningTitle != null) {
+              return;
+            }
             _isEvaluating = true;
             _stateHoldStartTime = null;
             HapticFeedback.mediumImpact();
             setState(() {
               _step = LivenessStep.capturing;
-              _instruction = "Hold still! Capturing HD portrait...";
-              _subInstruction = "Enhancing clarity & cropping biometric photo";
+              _instruction = "Liveness Challenge Completed! Hold still...";
+              _subInstruction = "Enhancing clarity & capturing biometric photo";
               _stepIcon = Icons.camera_rounded;
               _progress = 1.0;
             });
@@ -616,7 +631,10 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
   }
 
   Future<void> _handleManualInstantCapture() async {
-    if (_isEvaluating ||
+    if (!_isFaceFittedInCircle ||
+        !_isChallengeCompleted ||
+        _complianceWarningTitle != null ||
+        _isEvaluating ||
         _step == LivenessStep.capturing ||
         _step == LivenessStep.uploading ||
         _step == LivenessStep.completed) {
@@ -899,15 +917,15 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
         );
         final saturation = math.sqrt((p.cb - 128.0) * (p.cb - 128.0) + (p.cr - 128.0) * (p.cr - 128.0));
-        final validSkinChroma = p.cr >= 134.0 &&
-            p.cr <= 180.0 &&
-            p.cb >= 78.0 &&
-            p.cb <= 124.0 &&
-            p.cr > p.cb + 14.0 &&
-            saturation >= 12.0 &&
-            p.y > math.max(28.0, skinY * 0.62) &&
-            p.y < math.min(235.0, skinY * 1.45);
-        return validSkinChroma && chromaDist <= 10.0;
+        final validSkinChroma = p.cr >= 131.0 &&
+            p.cr <= 184.0 &&
+            p.cb >= 74.0 &&
+            p.cb <= 128.0 &&
+            p.cr > p.cb + 8.0 &&
+            saturation >= 9.5 &&
+            p.y > math.max(24.0, skinY * 0.48) &&
+            p.y < math.min(242.0, skinY * 1.65);
+        return validSkinChroma && chromaDist <= 14.5;
       }
 
       ({double ratio, int total}) sampleTorsoZone(
@@ -956,14 +974,14 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
         final shoulderAvg = (leftShoulder.ratio + rightShoulder.ratio) / 2.0;
         final faceSkinSat = math.sqrt((skinCb - 128.0) * (skinCb - 128.0) + (skinCr - 128.0) * (skinCr - 128.0));
-        if (faceSkinSat >= 10.0 &&
-            leftShoulder.total >= 8 &&
-            rightShoulder.total >= 8 &&
-            lowerChest.total >= 6 &&
-            leftShoulder.ratio >= 0.75 &&
-            rightShoulder.ratio >= 0.75 &&
-            lowerChest.ratio >= 0.70 &&
-            shoulderAvg >= 0.80) {
+        if (faceSkinSat >= 9.0 &&
+            leftShoulder.total >= 6 &&
+            rightShoulder.total >= 6 &&
+            lowerChest.total >= 4 &&
+            leftShoulder.ratio >= 0.62 &&
+            rightShoulder.ratio >= 0.62 &&
+            lowerChest.ratio >= 0.58 &&
+            shoulderAvg >= 0.66) {
           bareChestOrNude = true;
         }
       }
@@ -1051,16 +1069,16 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
           (p.cb - skinCb) * (p.cb - skinCb) + (p.cr - skinCr) * (p.cr - skinCr),
         );
         final saturation = math.sqrt((p.cb - 128.0) * (p.cb - 128.0) + (p.cr - 128.0) * (p.cr - 128.0));
-        final validSkinChroma = p.cr >= 134.0 &&
-            p.cr <= 180.0 &&
-            p.cb >= 78.0 &&
-            p.cb <= 124.0 &&
-            p.cr > p.cb + 14.0 &&
-            saturation >= 12.0 &&
-            p.r > p.g + 6.0 &&
-            p.y > math.max(28.0, skinY * 0.62) &&
-            p.y < math.min(235.0, skinY * 1.45);
-        return validSkinChroma && chromaDist <= 10.0;
+        final validSkinChroma = p.cr >= 131.0 &&
+            p.cr <= 184.0 &&
+            p.cb >= 74.0 &&
+            p.cb <= 128.0 &&
+            p.cr > p.cb + 8.0 &&
+            saturation >= 9.5 &&
+            p.r >= p.g * 0.96 &&
+            p.y > math.max(24.0, skinY * 0.48) &&
+            p.y < math.min(242.0, skinY * 1.65);
+        return validSkinChroma && chromaDist <= 14.5;
       }
 
       ({double ratio, int total}) sampleZone(double x0, double x1, double y0, double y1) {
@@ -1092,14 +1110,14 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
         final shoulderAvg = (leftShoulder.ratio + rightShoulder.ratio) / 2.0;
         final faceSkinSat = math.sqrt((skinCb - 128.0) * (skinCb - 128.0) + (skinCr - 128.0) * (skinCr - 128.0));
-        if (faceSkinSat >= 10.0 &&
-            leftShoulder.total >= 8 &&
-            rightShoulder.total >= 8 &&
-            lowerChest.total >= 6 &&
-            leftShoulder.ratio >= 0.75 &&
-            rightShoulder.ratio >= 0.75 &&
-            lowerChest.ratio >= 0.70 &&
-            shoulderAvg >= 0.80) {
+        if (faceSkinSat >= 9.0 &&
+            leftShoulder.total >= 6 &&
+            rightShoulder.total >= 6 &&
+            lowerChest.total >= 4 &&
+            leftShoulder.ratio >= 0.62 &&
+            rightShoulder.ratio >= 0.62 &&
+            lowerChest.ratio >= 0.58 &&
+            shoulderAvg >= 0.66) {
           return "Bare chest or nudity detected. Please wear a shirt or proper clothing covering your chest and shoulders before capturing your observer profile photo.";
         }
       }
@@ -1738,8 +1756,8 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
       builder: (context, constraints) {
         final screenW = constraints.maxWidth;
         final screenH = constraints.maxHeight;
-        final circleDiameter = math.min(screenW * 0.90, screenH * 0.56).clamp(280.0, 440.0);
-        final circleCenterY = (screenH - 185).clamp(circleDiameter * 0.56, screenH * 0.44);
+        final circleDiameter = math.min(screenW * 0.86, screenH * 0.48).clamp(260.0, 400.0);
+        final circleCenterY = (screenH - 220).clamp(circleDiameter * 0.55, screenH * 0.39);
         final ringColor = isCapturingOrDone
             ? AppColors.accent
             : (_isFaceFittedInCircle ? Colors.cyanAccent : Colors.amberAccent);
@@ -2058,36 +2076,57 @@ class _LivenessEnrollmentScreenState extends State<LivenessEnrollmentScreen> {
 
                   if (!isCapturingOrDone && _step != LivenessStep.uploading) ...[
                     const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 46,
-                      child: ElevatedButton(
-                        onPressed: _handleManualInstantCapture,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0D9488),
-                          foregroundColor: Colors.white,
-                          elevation: 4,
-                          shadowColor: const Color(0xFF0D9488).withValues(alpha: 0.5),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                        child: const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.camera_alt_rounded, size: 18),
-                            SizedBox(width: 8),
-                            Text(
-                              "CAPTURE PHOTO & VERIFY NOW",
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 0.8,
+                    Builder(
+                      builder: (context) {
+                        final canCaptureNow = _isFaceFittedInCircle &&
+                            _isChallengeCompleted &&
+                            _complianceWarningTitle == null;
+                        final buttonLabel = !_isFaceFittedInCircle
+                            ? "FIT FACE INSIDE CIRCLE FIRST"
+                            : !_isChallengeCompleted
+                                ? "COMPLETE CHALLENGE (${(_progress * 100).round()}%)"
+                                : _complianceWarningTitle != null
+                                    ? "RESOLVE ALERT ABOVE FIRST"
+                                    : "CAPTURE PHOTO & VERIFY NOW";
+                        return SizedBox(
+                          width: double.infinity,
+                          height: 46,
+                          child: ElevatedButton(
+                            onPressed: canCaptureNow ? _handleManualInstantCapture : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: canCaptureNow
+                                  ? const Color(0xFF0D9488)
+                                  : const Color(0xFF1E293B),
+                              disabledBackgroundColor: const Color(0xFF1E293B),
+                              foregroundColor: Colors.white,
+                              disabledForegroundColor: const Color(0xFF94A3B8),
+                              elevation: canCaptureNow ? 4 : 0,
+                              shadowColor: const Color(0xFF0D9488).withValues(alpha: 0.5),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                side: canCaptureNow
+                                    ? BorderSide.none
+                                    : const BorderSide(color: Color(0xFF334155)),
                               ),
                             ),
-                          ],
-                        ),
-                      ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.camera_alt_rounded, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  buttonLabel,
+                                  style: const TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 0.6,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ],
 
