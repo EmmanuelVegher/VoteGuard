@@ -22,6 +22,7 @@ import 'package:voteguard/services/language_service.dart';
 import 'package:voteguard/core/widgets/language_selector_button.dart';
 import 'package:voteguard/core/widgets/auto_translate_app.dart';
 import 'package:voteguard/services/review_service.dart';
+import 'package:voteguard/services/app_update_service.dart';
 import 'package:voteguard/core/services/audit_log_service.dart';
 
 class ElectionGalleryScreen extends StatefulWidget {
@@ -53,6 +54,9 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
   // Notifications State
   final _secureStorage = const FlutterSecureStorage();
   StreamSubscription<QuerySnapshot>? _notificationsSubscription;
+  StreamSubscription<QuerySnapshot>? _privateNotificationsSubscription;
+  List<Map<String, dynamic>> _pushNotifications = [];
+  List<Map<String, dynamic>> _privateNotifications = [];
   List<Map<String, dynamic>> _notifications = [];
   Set<String> _readNotificationIds = {};
 
@@ -94,6 +98,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     _listenNotifications();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
+        AppUpdateService.checkForUpdate();
         ReviewService.recordAppSessionAndMaybePrompt(context);
       }
     });
@@ -104,6 +109,7 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     _connectivityTimer?.cancel();
     _electionsSubscription?.cancel();
     _notificationsSubscription?.cancel();
+    _privateNotificationsSubscription?.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -124,9 +130,86 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
     }
   }
 
+  static const String _targetedUserOnlySentinel = '__TARGETED_USER_ONLY__';
+
+  bool _isPushNotificationAllowedForUser(
+    Map<String, dynamic> n,
+    String? currentUserId,
+  ) {
+    final singleTarget = n['targetUserId']?.toString().trim() ?? '';
+    final rawTargetIds = n['targetUserIds'];
+    final audience = n['targetAudience'];
+    final audienceUserIds =
+        audience is Map ? audience['userIds'] : null;
+
+    final hasTargetList = rawTargetIds is List || audienceUserIds is List;
+    final targetIds = <String>{
+      if (rawTargetIds is List)
+        ...rawTargetIds.map((e) => e.toString().trim()).where((s) => s.isNotEmpty),
+      if (audienceUserIds is List)
+        ...audienceUserIds.map((e) => e.toString().trim()).where((s) => s.isNotEmpty),
+    };
+
+    final rawTargetRoles = (n['targetRoles'] as List<dynamic>?) ?? [];
+    final hasTargetedSentinel = rawTargetRoles.any(
+      (r) => r.toString().trim().toUpperCase() == _targetedUserOnlySentinel,
+    );
+    final isStrictlyUserTargeted =
+        singleTarget.isNotEmpty ||
+        hasTargetList ||
+        n['isTargetedUsersOnly'] == true ||
+        n['targetType']?.toString().toLowerCase() == 'users' ||
+        hasTargetedSentinel;
+
+    if (isStrictlyUserTargeted) {
+      if (currentUserId == null || currentUserId.isEmpty) return false;
+      if (singleTarget.isNotEmpty && singleTarget == currentUserId) return true;
+      if (targetIds.contains(currentUserId)) return true;
+      return false;
+    }
+
+    return true;
+  }
+
+  void _rebuildMergedNotifications() {
+    final combined = <Map<String, dynamic>>[
+      ..._privateNotifications,
+      ..._pushNotifications,
+    ];
+    combined.sort((a, b) {
+      final aTs = (a['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+      final bTs = (b['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+      return bTs.compareTo(aTs);
+    });
+
+    // Deduplicate identical notifications written to both collections within 30s
+    final deduped = <Map<String, dynamic>>[];
+    for (final item in combined) {
+      final itemTitle = item['title']?.toString() ?? '';
+      final itemBody = (item['body'] ?? item['message'])?.toString() ?? '';
+      final itemMs =
+          (item['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+      final isDup = deduped.any((existing) {
+        if (existing['id'] == item['id']) return true;
+        final exTitle = existing['title']?.toString() ?? '';
+        final exBody = (existing['body'] ?? existing['message'])?.toString() ?? '';
+        if (exTitle != itemTitle || exBody != itemBody) return false;
+        final exMs =
+            (existing['createdAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+        return (exMs - itemMs).abs() < 30000;
+      });
+      if (!isDup) deduped.add(item);
+    }
+
+    _notifications = deduped;
+  }
+
   void _listenNotifications() {
     _notificationsSubscription?.cancel();
+    _privateNotificationsSubscription?.cancel();
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+
+    // 1. Listen to broadcast / legacy push_notifications (strictly filtered by targetUserId/targetUserIds)
     _notificationsSubscription = FirebaseFirestore.instance
         .collection('push_notifications')
         .where('triggered', isEqualTo: true)
@@ -135,18 +218,19 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
       (snapshot) {
         if (mounted) {
           setState(() {
-            _notifications = snapshot.docs
-                .map((doc) => {'id': doc.id, ...doc.data()})
-                .where((n) {
-                  // If notification has targetUserId, only display to that exact targeted user
-                  final target = n['targetUserId']?.toString();
-                  if (target != null && target.isNotEmpty) {
-                    return target == currentUserId;
-                  }
-                  // General/system announcements remain visible to all
-                  return true;
+            _pushNotifications = snapshot.docs
+                .map((doc) {
+                  final d = doc.data();
+                  return {
+                    'id': doc.id,
+                    'source': 'push',
+                    ...d,
+                    'body': d['body'] ?? d['message'] ?? '',
+                  };
                 })
+                .where((n) => _isPushNotificationAllowedForUser(n, currentUserId))
                 .toList();
+            _rebuildMergedNotifications();
           });
         }
       },
@@ -154,6 +238,36 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
         debugPrint('Notifications listen error (check Firestore rules): $e');
       },
     );
+
+    // 2. Listen to this user's private inbox: notifications/{uid}/items
+    if (currentUserId != null && currentUserId.isNotEmpty) {
+      _privateNotificationsSubscription = FirebaseFirestore.instance
+          .collection('notifications')
+          .doc(currentUserId)
+          .collection('items')
+          .snapshots()
+          .listen(
+        (snapshot) {
+          if (mounted) {
+            setState(() {
+              _privateNotifications = snapshot.docs.map((doc) {
+                final d = doc.data();
+                return {
+                  'id': doc.id,
+                  'source': 'user',
+                  ...d,
+                  'body': d['body'] ?? d['message'] ?? '',
+                };
+              }).toList();
+              _rebuildMergedNotifications();
+            });
+          }
+        },
+        onError: (e) {
+          debugPrint('Private notifications listen error: $e');
+        },
+      );
+    }
   }
 
   Future<void> _markAsRead(String notificationId) async {
@@ -906,13 +1020,27 @@ class _ElectionGalleryScreenState extends State<ElectionGalleryScreen>
         const SizedBox(width: 4),
         Builder(
           builder: (context) {
-            // Filter notifications for this user based on their role from profile
-            final userRole = profile?['role']?.toString() ?? '';
+            // Filter notifications for this user based on strict user targeting or role
+            final userRole = (profile?['role']?.toString() ?? '').trim().toUpperCase();
+            final currentUid = FirebaseAuth.instance.currentUser?.uid;
             final filteredNotifications = _notifications.where((n) {
+              // Private notifications from notifications/{uid}/items always belong to this user
+              if (n['source'] == 'user') return true;
+              // Re-verify strict user targeting
+              if (!_isPushNotificationAllowedForUser(n, currentUid)) return false;
+
               final targetRoles = (n['targetRoles'] as List<dynamic>?) ?? [];
-              // Show if targetRoles is empty (broadcast) or includes the user's role
-              return targetRoles.isEmpty ||
-                  targetRoles.any((r) => r.toString() == userRole);
+              final normalizedRoles = targetRoles
+                  .map((r) => r.toString().trim().toUpperCase())
+                  .where((r) => r.isNotEmpty)
+                  .toList();
+
+              // If strictly user-targeted, it already passed _isPushNotificationAllowedForUser
+              if (normalizedRoles.contains(_targetedUserOnlySentinel)) {
+                return true;
+              }
+              // Show if targetRoles is empty (general broadcast) or includes the user's role
+              return normalizedRoles.isEmpty || normalizedRoles.contains(userRole);
             }).toList();
             // Sort newest first
             filteredNotifications.sort((a, b) {
